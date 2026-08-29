@@ -13,11 +13,16 @@ Clients / UI / Voice / Device transports
                  |
   Runtime plane: conversation -> goals -> workers -> tools
                  |
- Capability plane: models | memory | world state | computer | browser | home
+  Capability plane: models | memory | world state | computer | browser | home
                   | devices | communications | notifications | voice routing
+                  | engineering | research | perception | developer workers
                  |
       Infrastructure adapters and durable stores
 ```
+
+Experience projections, the HUD, client sessions, and observability sit at
+the edge. They consume events and query authorities; they do not own business
+state.
 
 The arrows represent dependency direction. A client or adapter may call a
 product contract; it must not reach around the authority plane to execute a
@@ -39,6 +44,8 @@ capability directly.
 | Voice | Capability adapter | STT/TTS/realtime session and interruption state | Executing tools outside the common authority path |
 | Computer/browser | Capability adapter | Translate typed actions to a selected device/session | Making direct autonomous network/device policy |
 | UI/transport | Edge adapter | Present state and collect user decisions | Becoming the source of truth for approval or audit |
+| Experience projection | Read model | Project real events into owner-scoped HUD/client state | Mutating authorities or faking lifecycle state |
+| Engineering/research/perception | Product service + injected provider | Bound specialist work, evidence, and on-demand observation | Shell bypass, hidden memory, continuous capture |
 
 ## Event model
 
@@ -51,7 +58,7 @@ Every cross-boundary event uses `jarvis.events.Event` with:
 - optional session and actor ids;
 - structured payload, severity, and lifecycle state.
 
-Phase 04 uses `InMemoryEventBus` plus durable event persistence through the
+Phase 05 uses `InMemoryEventBus` plus durable event persistence through the
 repository. Later durable delivery, outbox, or distributed transports are
 adapters and must preserve this envelope.
 
@@ -61,9 +68,10 @@ adapters and must preserve this envelope.
 emits `system.bootstrap.started` and `system.bootstrap.ready`. Shutdown emits
 `system.shutdown.started` and `system.shutdown.completed`. Phase 04 startup
 composes local authority, SQLite, model, tool, satellite,
-computer/browser/device/home/communication/notification, and voice
-boundaries, but performs no model load, audio-hardware open, or non-loopback
-network bind.
+computer/browser/device/home/communication/notification, voice routing,
+experience, engineering, research, perception, and developer-worker
+boundaries, but performs no model load, audio-hardware open, capture loop, or
+non-loopback network bind.
 
 ## Security ordering
 

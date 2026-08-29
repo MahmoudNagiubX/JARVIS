@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import AsyncIterator
 from uuid import uuid4
+from pathlib import Path
 
 from .bus import InMemoryEventBus
 from .config import JarvisConfig
@@ -35,6 +36,10 @@ from .contracts import (
     TextToSpeech,
     WorldState,
     CapabilityDescriptor,
+    ApprovalProjection,
+    DeviceProjection,
+    GoalProjection,
+    NotificationProjection,
 )
 from .devices.satellite.registry import WindowsSatelliteRegistry
 from .devices.fabric import DeviceFabricService
@@ -60,6 +65,16 @@ from .browser.service import BrowserActionService, LocalBrowserController
 from .world_state.service import DurableWorldStateService
 from .world_state.workspace import WorkspaceContextService
 from .goals.engine import DurableGoalEngine
+from .clients.service import ClientSessionService
+from .developer.service import DeveloperWorkerGateway
+from .engineering.providers import JupyterEngineeringProvider, KiCadEngineeringProvider
+from .engineering.service import EngineeringService, EngineeringWorker
+from .experience.gateway import ExperienceGatewayService
+from .experience.projections import ExperienceProjection
+from .observability.service import ObservabilityService
+from .perception.service import PerceptionService
+from .research.providers import LocalDocumentProvider
+from .research.service import ResearchService
 
 
 class RuntimeState(StrEnum):
@@ -112,6 +127,15 @@ class JarvisRuntime:
     notifications: NotificationService
     voice_routing: VoiceRoutingService
     capabilities: CapabilityRegistry
+    experience: ExperienceGatewayService
+    experience_projection: ExperienceProjection
+    clients: ClientSessionService
+    observability: ObservabilityService
+    engineering: EngineeringService
+    engineering_worker: EngineeringWorker
+    research: ResearchService
+    perception: PerceptionService
+    developer_workers: DeveloperWorkerGateway
     runtime_id: str
     state: RuntimeState = RuntimeState.CREATED
 
@@ -169,6 +193,8 @@ class JarvisRuntime:
         )
         self.repository.append_event(completed)
         await self.event_bus.publish(completed)
+        self.experience_projection.close()
+        self.observability.close()
         self.state = RuntimeState.STOPPED
         self.database.close()
         await self.event_bus.close()
@@ -214,6 +240,56 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     context = ContextAssembler(memory, world_state, goals, proactive, personalization, registry, offline, capabilities)
     agent = AgentRuntime(repository, event_bus, models, tool_service, max_steps=effective_config.max_agent_steps, context_assembler=context)
     scheduler = BackgroundScheduler()
+    runtime_ref: dict[str, JarvisRuntime] = {}
+
+    async def experience_state(owner_id: str) -> dict[str, object]:
+        devices = tuple(
+            DeviceProjection(item.device_id, item.status, item.name, tuple(sorted(item.capabilities)), item.last_seen)
+            for item in await device_fabric.list(owner_id)
+        )
+        goals_view = tuple(
+            GoalProjection(item.goal_id, item.title or item.description, item.status.value, item.priority)
+            for item in await goals.list(owner_id)
+        )
+        notifications_view = tuple(
+            NotificationProjection(item.notification_id, item.title, item.message, item.severity, item.dismissed_at is not None)
+            for item in await notifications.list(owner_id)
+        )
+        approvals_view = tuple(
+            ApprovalProjection(str(row["id"]), str(row["action"]), str(row["status"]), row.get("decision_reason"))
+            for row in repository.pending_approvals(owner_id)
+        )
+        model = await models.health(ModelRoute.GENERAL_REASONING)
+        current = runtime_ref.get("runtime")
+        return {
+            "system": {
+                "runtime_state": current.state.value if current else "created",
+                "offline": not offline.state.online,
+                "model_provider": model.provider,
+                "model_available": model.available,
+            },
+            "devices": devices,
+            "goals": goals_view,
+            "notifications": notifications_view,
+            "approvals": approvals_view,
+        }
+
+    experience_projection = ExperienceProjection(event_bus, experience_state, repository=repository)
+    observability = ObservabilityService(event_bus)
+    clients = ClientSessionService(repository, event_bus)
+    engineering = EngineeringService(
+        repository, event_bus, permission, approval, audit,
+        (JupyterEngineeringProvider(), KiCadEngineeringProvider()),
+    )
+    engineering_worker = EngineeringWorker(engineering, event_bus, repository)
+    research = ResearchService(repository, event_bus, permission, audit, local=LocalDocumentProvider((str(Path.cwd()),)))
+    perception = PerceptionService(repository, event_bus, permission, audit)
+    developer_workers = DeveloperWorkerGateway()
+    for provider in developer_workers.providers():
+        capabilities.register(CapabilityDescriptor(
+            f"developer.{provider.name}", "developer-worker-gateway", None, provider.available, "bounded",
+            permission="tool.request", metadata={"executable": provider.executable, "reason": provider.reason},
+        ))
 
     async def maintenance_owner() -> str | None:
         owner = repository.first_owner()
@@ -240,7 +316,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     scheduler.add("world-state-expiry", 60, expire_world_state)
     scheduler.add("goal-proactive-check", 60, detect_proactive)
     scheduler.add("health-check", 120, refresh_health)
-    return JarvisRuntime(
+    runtime = JarvisRuntime(
         config=effective_config,
         event_bus=event_bus,
         database=database,
@@ -279,8 +355,19 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         notifications=notifications,
         voice_routing=voice_routing,
         capabilities=capabilities,
+        experience=ExperienceGatewayService(experience_projection),
+        experience_projection=experience_projection,
+        clients=clients,
+        observability=observability,
+        engineering=engineering,
+        engineering_worker=engineering_worker,
+        research=research,
+        perception=perception,
+        developer_workers=developer_workers,
         runtime_id=f"runtime-{uuid4()}",
     )
+    runtime_ref["runtime"] = runtime
+    return runtime
 
 
 def _register_capabilities(capabilities: CapabilityRegistry) -> None:
@@ -303,6 +390,12 @@ def _register_capabilities(capabilities: CapabilityRegistry) -> None:
         "device.venom.health", "venom", "venom", False, "read",
         metadata={"reason": "not_probed", "network": "unknown-until-deployment"},
     ))
+    capabilities.register(CapabilityDescriptor("engineering.jupyter", "jupyter-adapter", None, False, "read", permission="tool.request", metadata={"reason": "adapter_injected_at_deployment"}))
+    capabilities.register(CapabilityDescriptor("engineering.kicad", "kicad-adapter", None, False, "read", permission="tool.request", metadata={"reason": "adapter_injected_at_deployment"}))
+    capabilities.register(CapabilityDescriptor("engineering.worker", "local-worker-runtime", None, True, "bounded", permission="tool.request"))
+    capabilities.register(CapabilityDescriptor("research.local", "local-document-provider", None, True, "read", permission="tool.request"))
+    capabilities.register(CapabilityDescriptor("research.browser", "browser-adapter", None, False, "read", requires_internet=True, permission="tool.request"))
+    capabilities.register(CapabilityDescriptor("perception.screen", "perception-adapter", None, False, "read", permission="tool.request", metadata={"continuous_capture": False, "raw_frame_retention": False}))
 
 
 async def bootstrap_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:

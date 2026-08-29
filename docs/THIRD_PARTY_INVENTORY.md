@@ -1,6 +1,6 @@
 # Third-party inventory
 
-This is the Phase 04 inventory for source references and declared dependency
+This is the Phase 05 inventory for source references and declared dependency
 surfaces. It is not a final distribution notice.
 
 | Source/component | Local evidence | License/status | Phase 03 treatment |
@@ -16,6 +16,12 @@ surfaces. It is not a final distribution notice.
 | Mem0 / Cognee / Graphiti | No runtime package selected | Not introduced | Reference-only evaluation; JARVIS memory remains authoritative |
 | LangGraph | No runtime package selected | Not introduced | Reference-only evaluation; JARVIS goal engine remains authoritative |
 | PostgreSQL / pgvector | Product migration boundary only | No runtime package dependency | Partial/deferred adapter path; no live service claimed |
+| Jupyter MCP | `C:\Jarivs\08_engineering\jupyter-mcp\ARCHITECTURE.md`, `README.md` | BSD-3-Clause donor; read-only audit | Capability, scope, and context concepts only; no source copied |
+| OpenJarvis | `C:\Jarivs\02_agent_runtime\openjarvis\LICENSE`, `pyproject.toml` | Apache-2.0 donor; broad optional provider surface | Research/agent reference only; no source or dependency copied |
+| Hermes Agent | `C:\Jarivs\02_agent_runtime\hermes-agent\LICENSE`, `README.md` | MIT donor; hosted and terminal integrations | Worker/research reference only; no source or dependency copied |
+| OpenClaw | `C:\Jarivs\07_communications\openclaw\LICENSE`, `README.md` | MIT donor; broad gateway/channel surface | Multi-device and ACP reference only; no source or dependency copied |
+| Linux Voice Assistant | `C:\Jarivs\06_voice_room\linux-voice-assistant\LICENSE.md`, `README.md` | Apache-2.0 donor | Voice/satellite reference only; no source or dependency copied |
+| OCR/local vision/OmniParser/UI-TARS | No runtime package selected | Deferred/reference-only | Capability/provider boundaries only; no models downloaded or copied |
 
 ## Declared dependency surfaces reviewed
 
@@ -40,5 +46,5 @@ review trademarks and contributor terms, and record the result in an updated
 inventory. A package license does not automatically license its provider SDKs,
 models, or bundled assets. Microsoft UFO is an adapter boundary only and is
 not merged. Playwright, Home Assistant, MQTT, email, Telegram, and Discord are
-optional adapter surfaces only; none is a runtime dependency. No Phase 04 donor
+optional adapter surfaces only; none is a runtime dependency. No Phase 05 donor
 repository was modified.

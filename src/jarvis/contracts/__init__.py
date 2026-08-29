@@ -14,10 +14,35 @@ from .communication import (
     CommunicationThread,
 )
 from .capabilities import CapabilityDescriptor
+from .clients import ALLOWED_CLIENT_TOPICS, ClientSession
 from .autonomy import AutonomyDecision, AutonomyLevel, AutonomyRule
 from .computer import ComputerAction, ComputerCapability, ComputerController, ComputerResult
+from .developer import DeveloperWorkerAdapter, DeveloperWorkerProvider
 from .context import AgentContextSnapshot
 from .devices import DeviceHeartbeat, DeviceRecord, DeviceRole, DeviceStatus
+from .engineering import (
+    EngineeringAction,
+    EngineeringArtifact,
+    EngineeringProvider,
+    EngineeringResult,
+    EngineeringSession,
+    EngineeringWorkspace,
+)
+from .experience import (
+    ApprovalProjection,
+    ConversationProjection,
+    DeviceProjection,
+    EngineeringProjection,
+    ExperienceGateway,
+    ExperienceState,
+    GoalProjection,
+    HudState,
+    NotificationProjection,
+    ResearchProjection,
+    RunProjection,
+    SystemStatusProjection,
+    VoiceProjection,
+)
 from .home import HomeAction, HomeController, HomeEntity, HomeResult, HomeTransport, MQTTTransport
 from .goals import Goal, GoalCheckpoint, GoalEngine, GoalStatus
 from .identity import DeviceIdentity, Identity, IdentityService
@@ -38,6 +63,26 @@ from .notifications import Notification
 from .offline import ConnectivityState, OfflineCapabilityDecision
 from .personalization import PersonalizationProfile, PersonalizationUpdate
 from .proactive import FindingStatus, ProactiveFinding, ProactiveFindingType
+from .perception import (
+    CameraObservation,
+    OCRProvider,
+    PerceptionProvider,
+    PerceptionResult,
+    ScreenObservation,
+    VisualElement,
+    VisualRegion,
+)
+from .research import (
+    CitationRecord,
+    EvidenceItem,
+    ResearchFinding,
+    ResearchPlan,
+    ResearchReport,
+    ResearchRequest,
+    ResearchRun,
+    ResearchSource,
+    ResearchStep,
+)
 from .tools import Tool, ToolContext, ToolRegistry, ToolResult, ToolResultStatus
 from .voice import (
     RealtimeVoiceSession,
@@ -86,15 +131,38 @@ __all__ = [
     "CommunicationSendResult",
     "CommunicationThread",
     "CapabilityDescriptor",
+    "ALLOWED_CLIENT_TOPICS",
+    "ClientSession",
     "ComputerAction",
     "ComputerCapability",
     "ComputerController",
     "ComputerResult",
+    "DeveloperWorkerAdapter",
+    "DeveloperWorkerProvider",
     "DeviceHeartbeat",
     "DeviceIdentity",
     "DeviceRecord",
     "DeviceRole",
     "DeviceStatus",
+    "EngineeringAction",
+    "EngineeringArtifact",
+    "EngineeringProvider",
+    "EngineeringResult",
+    "EngineeringSession",
+    "EngineeringWorkspace",
+    "ApprovalProjection",
+    "ConversationProjection",
+    "DeviceProjection",
+    "EngineeringProjection",
+    "ExperienceGateway",
+    "ExperienceState",
+    "GoalProjection",
+    "HudState",
+    "NotificationProjection",
+    "ResearchProjection",
+    "RunProjection",
+    "SystemStatusProjection",
+    "VoiceProjection",
     "Goal",
     "GoalCheckpoint",
     "GoalEngine",
@@ -133,6 +201,22 @@ __all__ = [
     "FindingStatus",
     "ProactiveFinding",
     "ProactiveFindingType",
+    "CameraObservation",
+    "OCRProvider",
+    "PerceptionProvider",
+    "PerceptionResult",
+    "ScreenObservation",
+    "VisualElement",
+    "VisualRegion",
+    "CitationRecord",
+    "EvidenceItem",
+    "ResearchFinding",
+    "ResearchPlan",
+    "ResearchReport",
+    "ResearchRequest",
+    "ResearchRun",
+    "ResearchSource",
+    "ResearchStep",
     "PermissionDecision",
     "PermissionEffect",
     "PermissionEngine",

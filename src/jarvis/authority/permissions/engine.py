@@ -55,6 +55,9 @@ class PolicyPermissionEngine:
             PermissionRule("home.publish_mqtt", PermissionEffect.ALLOW, "restricted_mqtt_publish"),
             PermissionRule("communication.read", PermissionEffect.ALLOW, "safe_communication_read"),
             PermissionRule("communication.send", PermissionEffect.ALLOW, "configured_communication"),
+            PermissionRule("engineering.", PermissionEffect.ALLOW, "bounded_engineering"),
+            PermissionRule("research.", PermissionEffect.ALLOW, "bounded_research"),
+            PermissionRule("perception.", PermissionEffect.ALLOW, "on_demand_perception"),
             PermissionRule("tool.", PermissionEffect.REQUIRE_APPROVAL, "tool_policy_requires_approval"),
             PermissionRule("computer.", PermissionEffect.REQUIRE_APPROVAL, "computer_action_requires_approval"),
         )

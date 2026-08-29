@@ -33,6 +33,16 @@ PersonalJarvis and aceFelix concepts were used only as read-only architectural
 references; no model, provider SDK, or donor source was copied. The final
 repository remains dependency-free and donor worktrees remain unmodified.
 
+## Phase 05 disposition
+
+Jupyter MCP was inspected read-only for notebook scopes, capability discovery,
+audit, and context patterns. OpenJarvis, Hermes, OpenClaw, and Linux Voice
+Assistant were inspected only for provider, worker, device, and voice
+reference points. Phase 05 implements product-owned experience, engineering,
+research, perception, client, and observability contracts with injected
+adapters. No donor code, UI asset, model, hosted API, or provider SDK was
+copied.
+
 ## Integration gates
 
 Every migrated component must pass these gates:

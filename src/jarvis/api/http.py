@@ -43,6 +43,29 @@ class CoreHttpServer:
                     query = parse_qs(parsed.query)
                     if route == "/health":
                         self._respond(HTTPStatus.OK, asyncio.run(application.health()))
+                    elif route in {"/hud", "/experience/hud"}:
+                        self.send_response(HTTPStatus.OK)
+                        encoded = application.experience_hud().encode("utf-8")
+                        self.send_header("Content-Type", "text/html; charset=utf-8")
+                        self.send_header("Content-Length", str(len(encoded)))
+                        self.end_headers()
+                        self.wfile.write(encoded)
+                    elif route == "/experience/state":
+                        values = {key: items[0] for key, items in query.items() if items}
+                        self._respond(HTTPStatus.OK, asyncio.run(application.experience_state(self._authenticated(values).identity.owner_id)))
+                    elif route == "/experience/system":
+                        values = {key: items[0] for key, items in query.items() if items}
+                        self._respond(HTTPStatus.OK, asyncio.run(application.experience_system(self._authenticated(values).identity.owner_id)))
+                    elif route == "/experience/timeline":
+                        limit = int(query.get("limit", [100])[0])
+                        values = {key: items[0] for key, items in query.items() if items}
+                        self._respond(HTTPStatus.OK, {"events": application.experience_timeline(self._authenticated(values).identity.owner_id, limit)})
+                    elif route == "/experience/events":
+                        principal = self._authenticated({key: items[0] for key, items in query.items() if items})
+                        self._stream([asyncio.run(application.experience_state(principal.identity.owner_id))])
+                    elif route == "/experience/clients":
+                        values = {key: items[0] for key, items in query.items() if items}
+                        self._respond(HTTPStatus.OK, {"clients": application.list_clients(self._authenticated(values).identity.owner_id)})
                     elif route == "/events":
                         correlation_id = query.get("correlation_id", [None])[0]
                         self._respond(HTTPStatus.OK, {"events": application.events(correlation_id)})
@@ -109,6 +132,28 @@ class CoreHttpServer:
                         ))})
                     elif route == "/capabilities":
                         self._respond(HTTPStatus.OK, {"capabilities": application.capabilities(query.get("device_id", [None])[0])})
+                    elif route == "/research/runs":
+                        values = {key: items[0] for key, items in query.items() if items}
+                        self._respond(HTTPStatus.OK, {"runs": application.research_list(self._authenticated(values).identity.owner_id)})
+                    elif route.startswith("/research/runs/") and route.endswith("/evidence"):
+                        parts = route.strip("/").split("/")
+                        values = {key: items[0] for key, items in query.items() if items}
+                        evidence = application.research_evidence(self._authenticated(values).identity.owner_id, parts[2])
+                        self._respond(HTTPStatus.OK, {"evidence": evidence})
+                    elif route.startswith("/research/runs/"):
+                        values = {key: items[0] for key, items in query.items() if items}
+                        run = application.research_get(self._authenticated(values).identity.owner_id, route.rsplit("/", 1)[-1])
+                        self._respond(HTTPStatus.OK if run else HTTPStatus.NOT_FOUND, run or {"error": "not_found"})
+                    elif route == "/engineering/providers":
+                        self._respond(HTTPStatus.OK, {"providers": application.engineering_providers()})
+                    elif route.startswith("/engineering/sessions/"):
+                        values = {key: items[0] for key, items in query.items() if items}
+                        result = application.engineering_get_session(self._authenticated(values).identity.owner_id, route.rsplit("/", 1)[-1])
+                        self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
+                    elif route == "/perception/capabilities":
+                        self._respond(HTTPStatus.OK, application.perception_capabilities())
+                    elif route == "/workers/developer/providers":
+                        self._respond(HTTPStatus.OK, {"providers": application.developer_providers()})
                     else:
                         self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
                 except PermissionError:
@@ -162,6 +207,51 @@ class CoreHttpServer:
                             return
                         result = asyncio.run(application.cancel(run_id, principal.identity, principal.device))
                         self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
+                        return
+                    if route == "/experience/clients":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.connect_client(principal.identity, principal.device, body))
+                        self._respond(HTTPStatus.CREATED, result)
+                        return
+                    if route.startswith("/experience/clients/") and route.endswith("/disconnect"):
+                        principal = self._authenticated(body)
+                        asyncio.run(application.disconnect_client(principal.identity, route.strip("/").split("/")[2]))
+                        self._respond(HTTPStatus.NO_CONTENT, {})
+                        return
+                    if route == "/research/runs":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.research_start(principal.identity, principal.device, body))
+                        self._respond(HTTPStatus.ACCEPTED, result)
+                        return
+                    if route.startswith("/research/runs/") and route.endswith("/cancel"):
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.research_cancel(principal.identity.owner_id, route.strip("/").split("/")[2]))
+                        self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
+                        return
+                    if route == "/engineering/sessions":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.engineering_session(principal.identity, principal.device, body))
+                        self._respond(HTTPStatus.CREATED, result)
+                        return
+                    if route == "/engineering/actions":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.engineering_action(principal.identity, principal.device, body))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route.startswith("/engineering/approvals/"):
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.engineering_approval(principal.identity, route.rsplit("/", 1)[-1], bool(body.get("approved", False)), str(body.get("decided_by", principal.identity.identity_id))))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/perception/screen":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.perception_screen(principal.identity, principal.device, body))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/perception/window":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.perception_window(principal.identity, principal.device, str(body["window"])))
+                        self._respond(HTTPStatus.OK, result)
                         return
                     if route.startswith("/computer/approvals/"):
                         principal = self._authenticated(body)

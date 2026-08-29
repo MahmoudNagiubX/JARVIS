@@ -31,6 +31,10 @@ class EventCategory(StrEnum):
     PERSONALIZATION = "personalization"
     PROACTIVE = "proactive"
     NODE = "node"
+    EXPERIENCE = "experience"
+    RESEARCH = "research"
+    PERCEPTION = "perception"
+    DEVELOPER_WORKER = "developer_worker"
 
 
 class EventSeverity(StrEnum):

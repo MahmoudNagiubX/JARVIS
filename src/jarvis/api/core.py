@@ -10,6 +10,7 @@ from ..authority.identity.service import EnrollmentGrant
 from ..bootstrap import JarvisRuntime
 from ..contracts import (
     BrowserAction,
+    ClientSession,
     ComputerAction,
     DeviceIdentity,
     DeviceRecord,
@@ -17,6 +18,10 @@ from ..contracts import (
     GoalStatus,
     HomeAction,
     Identity,
+    EngineeringAction,
+    EngineeringWorkspace,
+    ResearchRequest,
+    VisualRegion,
     MemoryCandidate,
     MemoryQuery,
     MemorySensitivity,
@@ -323,6 +328,94 @@ class CoreApplication:
 
     async def context(self, identity: Identity, device: DeviceIdentity, query: str = "") -> dict[str, Any]:
         return (await self.runtime.context.assemble(identity, device, query)).as_dict()
+
+    # Phase 05 experience and specialist use cases --------------------
+    async def experience_state(self, owner_id: str) -> dict[str, Any]:
+        return await self.runtime.experience.state(owner_id)
+
+    async def experience_system(self, owner_id: str) -> dict[str, Any]:
+        system = await self.runtime.experience.system(owner_id)
+        result = asdict(system)
+        result["observability"] = self.runtime.observability.snapshot()
+        return result
+
+    def experience_timeline(self, owner_id: str, limit: int = 100) -> list[dict[str, object]]:
+        return self.runtime.experience.timeline(owner_id, limit)
+
+    def experience_hud(self) -> str:
+        return self.runtime.experience.hud()
+
+    async def connect_client(self, identity: Identity, device: DeviceIdentity | None, values: dict[str, object]) -> dict[str, Any]:
+        topics = tuple(item for item in values.get("subscriptions", ()) if isinstance(item, str))
+        return asdict(await self.runtime.clients.connect(identity, device, topics, ui_profile=str(values.get("ui_profile", "hud"))))
+
+    async def disconnect_client(self, identity: Identity, client_session_id: str) -> None:
+        await self.runtime.clients.disconnect(client_session_id, identity)
+
+    def list_clients(self, owner_id: str) -> list[dict[str, Any]]:
+        return [asdict(item) for item in self.runtime.clients.list(owner_id)]
+
+    def engineering_providers(self) -> list[dict[str, object]]:
+        return list(self.runtime.engineering.list_providers())
+
+    async def engineering_session(self, identity: Identity, device: DeviceIdentity, values: dict[str, object]) -> dict[str, Any]:
+        root = str(values.get("root", "")).strip()
+        if not root:
+            raise ValueError("engineering workspace root is required")
+        workspace = EngineeringWorkspace(
+            str(values.get("workspace_id", "")), root,
+            tuple(item for item in values.get("read_scope", (root,)) if isinstance(item, str)),
+            tuple(item for item in values.get("write_scope", ()) if isinstance(item, str)),
+            frozenset(item for item in values.get("allowed_tools", ()) if isinstance(item, str)),
+            float(values.get("timeout_seconds", 30)), str(values.get("risk", "read")), bool(values.get("approval_required", True)),
+        )
+        session = await self.runtime.engineering.create_session(identity, device, str(values.get("provider", "jupyter")), workspace)
+        return asdict(session)
+
+    async def engineering_action(self, identity: Identity, device: DeviceIdentity, values: dict[str, object]) -> dict[str, Any]:
+        action = EngineeringAction(str(values["session_id"]), str(values["action"]), values.get("target") if isinstance(values.get("target"), str) else None, values.get("parameters") if isinstance(values.get("parameters"), dict) else {}, bool(values.get("dry_run", True)), values.get("action_id") if isinstance(values.get("action_id"), str) else None)
+        return asdict(await self.runtime.engineering.execute(action, identity, device))
+
+    async def engineering_approval(self, identity: Identity, approval_id: str, approved: bool, decided_by: str) -> dict[str, Any]:
+        result = await self.runtime.engineering.decide(approval_id, approved, decided_by)
+        return asdict(result)
+
+    def engineering_get_session(self, owner_id: str, session_id: str) -> dict[str, Any] | None:
+        session = self.runtime.engineering.get_session(session_id, owner_id)
+        return asdict(session) if session else None
+
+    async def research_start(self, identity: Identity, device: DeviceIdentity, values: dict[str, object]) -> dict[str, Any]:
+        request = ResearchRequest(str(values.get("query", "")), identity.owner_id, device.device_id, int(values.get("max_steps", 8)), int(values.get("max_sources", 8)), float(values.get("max_seconds", 30)), values.get("context") if isinstance(values.get("context"), dict) else {})
+        return asdict(await self.runtime.research.start(request, identity, device))
+
+    def research_list(self, owner_id: str) -> list[dict[str, Any]]:
+        return [asdict(item) for item in self.runtime.research.list(owner_id)]
+
+    def research_get(self, owner_id: str, run_id: str) -> dict[str, Any] | None:
+        run = self.runtime.research.get(run_id, owner_id)
+        return asdict(run) if run else None
+
+    async def research_cancel(self, owner_id: str, run_id: str) -> dict[str, Any] | None:
+        run = await self.runtime.research.cancel(run_id, owner_id)
+        return asdict(run) if run else None
+
+    def research_evidence(self, owner_id: str, run_id: str) -> list[dict[str, Any]]:
+        return [asdict(item) for item in self.runtime.research.evidence(run_id, owner_id)]
+
+    async def perception_screen(self, identity: Identity, device: DeviceIdentity, values: dict[str, object]) -> dict[str, Any]:
+        region_value = values.get("region")
+        region = VisualRegion(*(int(region_value[key]) for key in ("x", "y", "width", "height"))) if isinstance(region_value, dict) and all(key in region_value for key in ("x", "y", "width", "height")) else None
+        result = await self.runtime.perception.capture_screen(identity, device, window=values.get("window") if isinstance(values.get("window"), str) else None, region=region)
+        return asdict(result)
+
+    async def perception_window(self, identity: Identity, device: DeviceIdentity, window: str) -> dict[str, Any]:
+        return asdict(await self.runtime.perception.capture_window(identity, device, window))
+
+    def perception_capabilities(self) -> dict[str, object]:
+        return self.runtime.perception.capabilities()
+
+    def developer_providers(self) -> list[dict[str, Any]]:
+        return [asdict(item) for item in self.runtime.developer_workers.providers()]
 
     # Phase 04 computer, browser, device, home, communications, and UI use cases
     async def list_devices(self, owner_id: str) -> list[dict[str, Any]]:
