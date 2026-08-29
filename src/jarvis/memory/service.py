@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -17,7 +16,6 @@ from ..contracts import (
     MemoryRecord,
     MemoryRetention,
     MemorySensitivity,
-    MemorySource,
 )
 from ..events import Event, EventCategory, EventState
 from ..persistence.repositories import RuntimeRepository
@@ -220,33 +218,7 @@ class DurableMemoryService:
 
     @staticmethod
     def extract_candidates(owner_id: str, text: str, source_reference: str | None = None) -> tuple[MemoryCandidate, ...]:
-        normalized = " ".join(text.split())
-        lowered = normalized.casefold()
-        if len(normalized) < 5 or lowered in {"hello", "hi", "thanks", "thank you", "ok", "okay"}:
-            return ()
-        source = MemorySource.CONVERSATION.value
-        candidates: list[MemoryCandidate] = []
-        if re.search(r"keep (your|the) answers? short|be concise|short answers", lowered):
-            candidates.append(MemoryCandidate(owner_id, "Mahmoud prefers concise answers.", "preference", source, source_reference, {"key": "verbosity", "value": "concise"}, 0.98, tags=("style",)))
-        match = re.search(r"(?:call me|my name is) ([A-Za-z][\w -]{1,50})", normalized, re.I)
-        if match:
-            name = match.group(1).strip(" .,!?")
-            candidates.append(MemoryCandidate(owner_id, f"Preferred name is {name}.", "profile", source, source_reference, {"key": "preferred_name", "value": name}, 0.98, tags=("identity",)))
-        if re.search(r"\b(i prefer|i like|my preference is)\b", lowered):
-            candidates.append(MemoryCandidate(owner_id, normalized, "preference", source, source_reference, {"key": "freeform_preference", "value": normalized}, 0.85))
-        match = re.search(r"(?:working on|project is|project:)\s*([^.!?]{2,100})", normalized, re.I)
-        if match:
-            project = match.group(1).strip()
-            candidates.append(MemoryCandidate(owner_id, f"Mahmoud is working on {project}.", "project", source, source_reference, {"key": "active_project", "value": project}, 0.88, tags=("work",)))
-        if re.search(r"\bdeadline\b|\bdue\b", lowered):
-            candidates.append(MemoryCandidate(owner_id, normalized, "task", source, source_reference, {"key": "deadline_context", "value": normalized}, 0.82, tags=("deadline",)))
-        if lowered.startswith("remember that") or lowered.startswith("important:"):
-            candidates.append(MemoryCandidate(owner_id, normalized, "fact", source, source_reference, {}, 0.82))
-        if lowered.startswith("decision:"):
-            candidates.append(MemoryCandidate(owner_id, normalized, "decision", source, source_reference, {}, 0.9))
-        if lowered.startswith("goal:"):
-            candidates.append(MemoryCandidate(owner_id, normalized, "goal", source, source_reference, {}, 0.88))
-        return tuple(candidates)
+        return DeterministicMemoryExtractor.extract_sync(owner_id, text, source_reference)
 
     async def maintain(self, owner_id: str) -> dict[str, int]:
         now = datetime.now(UTC)

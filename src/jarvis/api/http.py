@@ -20,6 +20,9 @@ from ..experience.websocket import accept_key, close_frame, ping_frame, text_fra
 class CoreHttpServer:
     """Small local API adapter; it never binds outside the loopback interface."""
 
+    PUBLIC_GET_ROUTES = frozenset({"/health", "/hud", "/experience/hud"})
+    _STREAM_GET_ROUTES = frozenset({"/experience/events", "/experience/events/ws", "/events/stream"})
+
     def __init__(self, application: CoreApplication, host: str = "127.0.0.1", port: int = 8787) -> None:
         if host not in {"127.0.0.1", "::1", "localhost"}:
             raise ValueError("JARVIS HTTP server must remain loopback-only")
@@ -41,6 +44,8 @@ class CoreHttpServer:
     def _handler(self) -> type[BaseHTTPRequestHandler]:
         application = self.application
         ticket_service = self.stream_tickets
+        public_get_routes = self.PUBLIC_GET_ROUTES
+        stream_get_routes = self._STREAM_GET_ROUTES
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
@@ -50,6 +55,13 @@ class CoreHttpServer:
                     query = parse_qs(parsed.query)
                     if "credential" in query:
                         raise PermissionError("query_credentials_not_allowed")
+                    values = {key: items[0] for key, items in query.items() if items}
+                    # Public shells expose no runtime state. Every other
+                    # ordinary GET authenticates before route dispatch; stream
+                    # routes authenticate through their ticket-aware boundary.
+                    principal = None
+                    if route not in public_get_routes and route not in stream_get_routes:
+                        principal = self._authenticated(values)
                     if route == "/health":
                         self._respond(HTTPStatus.OK, asyncio.run(application.health()))
                     elif route in {"/hud", "/experience/hud"}:
@@ -60,14 +72,11 @@ class CoreHttpServer:
                         self.end_headers()
                         self.wfile.write(encoded)
                     elif route == "/experience/state":
-                        values = {key: items[0] for key, items in query.items() if items}
                         self._respond(HTTPStatus.OK, asyncio.run(application.experience_state(self._authenticated(values).identity.owner_id)))
                     elif route == "/experience/system":
-                        values = {key: items[0] for key, items in query.items() if items}
                         self._respond(HTTPStatus.OK, asyncio.run(application.experience_system(self._authenticated(values).identity.owner_id)))
                     elif route == "/experience/timeline":
                         limit = int(query.get("limit", [100])[0])
-                        values = {key: items[0] for key, items in query.items() if items}
                         self._respond(HTTPStatus.OK, {"events": application.experience_timeline(self._authenticated(values).identity.owner_id, limit)})
                     elif route == "/experience/events":
                         principal = self._stream_principal(query, "experience.events")
@@ -75,7 +84,6 @@ class CoreHttpServer:
                     elif route == "/experience/events/ws":
                         self._websocket(query)
                     elif route == "/experience/clients":
-                        values = {key: items[0] for key, items in query.items() if items}
                         self._respond(HTTPStatus.OK, {"clients": application.list_clients(self._authenticated(values).identity.owner_id)})
                     elif route == "/events":
                         correlation_id = query.get("correlation_id", [None])[0]
@@ -149,23 +157,19 @@ class CoreHttpServer:
                             self._owner(query), query.get("active_only", ["false"])[0].casefold() == "true"
                         ))})
                     elif route == "/capabilities":
-                        self._respond(HTTPStatus.OK, {"capabilities": application.capabilities(query.get("device_id", [None])[0])})
+                        self._respond(HTTPStatus.OK, {"capabilities": application.capabilities(principal.device.device_id if principal else None)})
                     elif route == "/research/runs":
-                        values = {key: items[0] for key, items in query.items() if items}
                         self._respond(HTTPStatus.OK, {"runs": application.research_list(self._authenticated(values).identity.owner_id)})
                     elif route.startswith("/research/runs/") and route.endswith("/evidence"):
                         parts = route.strip("/").split("/")
-                        values = {key: items[0] for key, items in query.items() if items}
                         evidence = application.research_evidence(self._authenticated(values).identity.owner_id, parts[2])
                         self._respond(HTTPStatus.OK, {"evidence": evidence})
                     elif route.startswith("/research/runs/"):
-                        values = {key: items[0] for key, items in query.items() if items}
                         run = application.research_get(self._authenticated(values).identity.owner_id, route.rsplit("/", 1)[-1])
                         self._respond(HTTPStatus.OK if run else HTTPStatus.NOT_FOUND, run or {"error": "not_found"})
                     elif route == "/engineering/providers":
                         self._respond(HTTPStatus.OK, {"providers": application.engineering_providers()})
                     elif route.startswith("/engineering/sessions/"):
-                        values = {key: items[0] for key, items in query.items() if items}
                         result = application.engineering_get_session(self._authenticated(values).identity.owner_id, route.rsplit("/", 1)[-1])
                         self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
                     elif route == "/perception/capabilities":
@@ -680,8 +684,13 @@ class CoreHttpServer:
 
             def _authenticated(self, values: dict[str, Any]) -> Any:
                 values = dict(values)
-                if self.command == "GET" and "credential" in values:
-                    raise PermissionError("query_credentials_not_allowed")
+                if self.command == "GET":
+                    if "credential" in values:
+                        raise PermissionError("query_credentials_not_allowed")
+                    # GET query parameters are resource filters, never
+                    # principal material. Device/identity stay header-bound.
+                    values.pop("device_id", None)
+                    values.pop("identity_id", None)
                 authorization = self.headers.get("Authorization", "")
                 if "credential" not in values and authorization.casefold().startswith("bearer "):
                     values["credential"] = authorization[7:].strip()

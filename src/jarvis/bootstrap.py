@@ -285,7 +285,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     workspace_intelligence = WorkspaceIntelligenceService(repository, event_bus, workspace_context)
     event_intelligence = EventIntelligenceService(repository, event_bus)
     briefings = BriefingService(repository, event_bus)
-    automation = AutomationService(repository, event_bus, skill_executor=skill_executor, missions=missions, briefings=briefings, online_checker=lambda: offline.state.online)
+    automation = AutomationService(repository, event_bus, skill_executor=skill_executor, missions=missions, briefings=briefings, offline=offline, capabilities=capabilities)
     automation.notifications = notifications
     communications_intelligence = CommunicationIntelligenceService(repository, event_bus)
     worker_coordinator = WorkerCoordinator(repository, event_bus, developer_gateway=None, permission=permission)

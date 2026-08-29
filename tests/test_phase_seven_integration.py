@@ -128,8 +128,9 @@ class PhaseSevenIntegrationTests(unittest.IsolatedAsyncioTestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = f"http://{server.address[0]}:{server.address[1]}"
+        auth_headers = {"Authorization": f"Bearer {issued.raw}", "X-JARVIS-Device-ID": issued.device_id, "X-JARVIS-Identity-ID": self.identity.identity_id}
         try:
-            with urlopen(f"{base}/v1/skills") as response:
+            with urlopen(Request(f"{base}/v1/skills", headers=auth_headers)) as response:
                 skills = json.loads(response.read().decode())
             self.assertEqual(len(skills["skills"]), 8)
             request = Request(f"{base}/v1/missions", data=json.dumps({**auth, "title": "API mission", "request": "inspect current status"}).encode(), headers={"Content-Type": "application/json"})

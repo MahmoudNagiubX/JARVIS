@@ -182,7 +182,7 @@ class PhaseFourIntegrationTests(unittest.IsolatedAsyncioTestCase):
             status, created = request("POST", "/v1/notifications", {**auth, "title": "Ready", "message": "Phase 04 ready"})
             self.assertEqual(status, 201)
             self.assertEqual(created["title"], "Ready")
-            status, capabilities = request("GET", "/v1/capabilities")
+            status, capabilities = request("GET", "/v1/capabilities", headers=auth_headers)
             self.assertEqual(status, 200)
             self.assertTrue(capabilities["capabilities"])
         finally:

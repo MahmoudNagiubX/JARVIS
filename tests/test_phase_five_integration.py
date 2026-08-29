@@ -96,7 +96,7 @@ class PhaseFiveIntegrationTests(unittest.IsolatedAsyncioTestCase):
             except HTTPError as exc:
                 self.fail(exc.read().decode())
             self.assertEqual(state["state"], "idle")
-            with urlopen(f"{base}/v1/workers/developer/providers") as response:
+            with urlopen(Request(f"{base}/v1/workers/developer/providers", headers=auth_headers)) as response:
                 providers = json.loads(response.read().decode())
             self.assertIn("providers", providers)
         finally:

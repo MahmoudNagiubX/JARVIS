@@ -21,8 +21,10 @@ from jarvis.contracts import ApprovalRequest, LLMResponse
 from jarvis.skills import Skill
 from jarvis.events import Event, EventCategory, EventState
 from jarvis.memory import CompositeMemoryExtractor, DeterministicMemoryExtractor, LocalModelMemoryExtractor
+from jarvis.memory.service import DurableMemoryService
 from jarvis.models.gateway import ModelGateway
 from jarvis.models.providers import MockModelProvider
+from jarvis.missions.service import MissionService
 from jarvis.skills import SkillManifest, SkillStatus, SkillStep
 
 
@@ -90,6 +92,23 @@ class MasterAuditRemediationTests(unittest.IsolatedAsyncioTestCase):
         resumed = await self.runtime.missions.resume(self.identity.owner_id, mission.mission_id, approval_granted=False)
         self.assertEqual(resumed.status.value, "running")
 
+    async def test_mission_without_approval_engine_fails_closed(self) -> None:
+        missions = MissionService(self.runtime.repository, self.runtime.event_bus, permission=self.runtime.missions.permission, approvals=None)
+        mission_type = __import__("jarvis.contracts", fromlist=["Mission"]).Mission
+        mission = await missions.create(mission_type("", self.identity.owner_id, "fix the failed build", "Fix build"))
+        mission = await missions.plan(self.identity.owner_id, mission.mission_id)
+        mission = await missions.start(self.identity.owner_id, mission.mission_id, self.identity, self.device)
+        for _ in range(len(mission.plan.steps) + 1):
+            mission = await missions.advance(self.identity.owner_id, mission.mission_id)
+            if mission.status.value == "failed":
+                break
+            mission = await missions.complete_step(self.identity.owner_id, mission.mission_id)
+        self.assertEqual(mission.status.value, "failed")
+        self.assertEqual(mission.blocked_reason, "approval_engine_unavailable")
+        self.assertIsNone(mission.approval_id)
+        with self.assertRaises(ValueError):
+            await missions.resume(self.identity.owner_id, mission.mission_id, approval_granted=True)
+
     async def test_automation_persists_binding_and_mission_child_reference(self) -> None:
         rule = await self.runtime.automation.create(AutomationRule(
             "", self.identity.owner_id, "Create bounded mission", AutomationTrigger("schedule", "*"),
@@ -113,11 +132,76 @@ class MasterAuditRemediationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.status, "failed")
         self.assertIn("automation_execution_binding_unavailable", str(run.result))
 
+    async def test_automation_binding_is_a_privilege_ceiling(self) -> None:
+        rule = await self.runtime.automation.create(AutomationRule(
+            "", self.identity.owner_id, "Ceiling", AutomationTrigger("schedule", "*"),
+            actions=(AutomationAction("notification", "Ready", {"message": "Ready"}),),
+        ), self.identity, self.device)
+        binding = self.runtime.repository.automation_binding(rule.rule_id, self.identity.owner_id)
+        assert binding is not None
+        with self.runtime.repository.database.transaction() as db:
+            db.execute(
+                "UPDATE devices SET capabilities_json = ?, scopes_json = ? WHERE id = ?",
+                (json.dumps([*self.device.capabilities, "capability.new"]), json.dumps([*self.device.scopes, "scope.new"]), self.device.device_id),
+            )
+        principal = self.runtime.automation._resolve_binding(binding)
+        self.assertIsNotNone(principal)
+        self.assertNotIn("capability.new", principal[1].capabilities)
+        self.assertNotIn("scope.new", principal[1].scopes)
+        with self.runtime.repository.database.transaction() as db:
+            db.execute("UPDATE devices SET capabilities_json = ?, scopes_json = ? WHERE id = ?", (json.dumps([]), json.dumps([]), self.device.device_id))
+        constrained = self.runtime.automation._resolve_binding(binding)
+        self.assertEqual(constrained[1].capabilities, frozenset())
+        self.assertEqual(constrained[1].scopes, frozenset())
+        await self.runtime.identity.revoke_device(self.device.device_id)
+        self.assertIsNone(self.runtime.automation._resolve_binding(binding))
+        run = (await self.runtime.automation.run_schedule(self.identity.owner_id))[0]
+        self.assertEqual(run.status, "failed")
+
+    async def test_offline_local_automations_continue_and_remote_skills_suppress(self) -> None:
+        local_skill = Skill(
+            SkillManifest("offline_local", "Offline local", "Runs locally.", required_capabilities=("workspace.read",)),
+            (SkillStep("local", "Health", "system.health", required_capabilities=("workspace.read",)),),
+        )
+        remote_skill = Skill(
+            SkillManifest("offline_remote", "Offline remote", "Requires remote access.", required_capabilities=("remote.lookup",), network_requirement="remote"),
+            (SkillStep("remote", "Health", "system.health", required_capabilities=("remote.lookup",)),),
+        )
+        self.runtime.skills.register(local_skill)
+        self.runtime.skills.register(remote_skill)
+        local_actions = (
+            AutomationAction("notification", "Offline notice", {"message": "local"}),
+            AutomationAction("briefing", "morning"),
+            AutomationAction("mission", "Inspect local state", {"request": "Inspect local state"}),
+            AutomationAction("skill", local_skill.manifest.skill_id),
+        )
+        local_rules = []
+        for index, action in enumerate(local_actions):
+            local_rules.append(await self.runtime.automation.create(AutomationRule(
+                "", self.identity.owner_id, f"Local offline {index}", AutomationTrigger("schedule", "*"), actions=(action,), cooldown_seconds=0,
+            ), self.identity, self.device))
+        remote_rule = await self.runtime.automation.create(AutomationRule(
+            "", self.identity.owner_id, "Remote offline", AutomationTrigger("schedule", "*"),
+            actions=(AutomationAction("skill", remote_skill.manifest.skill_id),), cooldown_seconds=0,
+        ), self.identity, self.device)
+        self.runtime.offline.set_online(False, "test")
+        runs = {run.rule_id: run for run in await self.runtime.automation.run_schedule(self.identity.owner_id)}
+        self.assertTrue(all(runs[rule.rule_id].status == "completed" for rule in local_rules), str({rule.rule_id: runs[rule.rule_id].result for rule in local_rules}))
+        self.assertEqual(runs[remote_rule.rule_id].status, "failed")
+        self.assertIn("automation_offline", str(runs[remote_rule.rule_id].result))
+
     async def test_local_memory_composite_falls_back_without_model_download(self) -> None:
         extractor = CompositeMemoryExtractor(local=None)
         candidates = await extractor.extract(self.identity.owner_id, "Keep your answers short.")
         self.assertEqual(candidates[0].structured_data["key"], "verbosity")
         self.assertEqual(DeterministicMemoryExtractor.extract_sync(self.identity.owner_id, "hello"), ())
+
+    async def test_legacy_memory_extraction_delegates_to_the_deterministic_extractor(self) -> None:
+        text = "Keep your answers short."
+        self.assertEqual(
+            DurableMemoryService.extract_candidates(self.identity.owner_id, text),
+            DeterministicMemoryExtractor.extract_sync(self.identity.owner_id, text),
+        )
 
     async def test_capability_truth_and_worker_exports_are_inspectable(self) -> None:
         from jarvis.agents.workers import WorkerCoordinator, WorkerStatus
@@ -224,6 +308,45 @@ class MasterAuditRemediationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPError) as reused:
                 urlopen(f"{base}/v1/events/stream?stream_ticket={ticket}")
             self.assertEqual(reused.exception.code, 401)
+        finally:
+            server.shutdown()
+
+    async def test_metadata_gets_require_auth_and_capabilities_are_device_bound(self) -> None:
+        server = CoreHttpServer(CoreApplication(self.runtime), port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://{server.address[0]}:{server.address[1]}"
+        headers = {"Authorization": f"Bearer {self.credential}", "X-JARVIS-Device-ID": self.device.device_id, "X-JARVIS-Identity-ID": self.identity.identity_id}
+        routes = ("/v1/communications/channels", "/v1/capabilities?device_id=other-device", "/v1/engineering/providers", "/v1/perception/capabilities", "/v1/workers/developer/providers", "/v1/skills", "/v1/skills/run_tests", "/v1/skills/run_tests/versions")
+        try:
+            for route in routes:
+                with self.assertRaises(HTTPError) as missing:
+                    urlopen(f"{base}{route}")
+                self.assertEqual(missing.exception.code, 401)
+                with urlopen(Request(f"{base}{route}", headers=headers)) as response:
+                    self.assertEqual(response.status, 200)
+            with urlopen(f"{base}/v1/health") as response:
+                self.assertEqual(response.status, 200)
+            for route in ("/v1/hud", "/v1/experience/hud"):
+                with urlopen(f"{base}{route}") as response:
+                    self.assertEqual(response.status, 200)
+        finally:
+            server.shutdown()
+
+    async def test_stream_ticket_rejects_a_revoked_bound_device(self) -> None:
+        server = CoreHttpServer(CoreApplication(self.runtime), port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://{server.address[0]}:{server.address[1]}"
+        body = {"credential": self.credential, "device_id": self.device.device_id, "identity_id": self.identity.identity_id, "scope": "events"}
+        try:
+            request = Request(f"{base}/v1/auth/stream-ticket", data=json.dumps(body).encode(), method="POST", headers={"Content-Type": "application/json"})
+            with urlopen(request) as response:
+                ticket = json.loads(response.read().decode())["stream_ticket"]
+            await self.runtime.identity.revoke_device(self.device.device_id)
+            with self.assertRaises(HTTPError) as revoked:
+                urlopen(f"{base}/v1/events/stream?stream_ticket={ticket}")
+            self.assertEqual(revoked.exception.code, 401)
         finally:
             server.shutdown()
 

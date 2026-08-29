@@ -1054,6 +1054,14 @@ class RuntimeRepository:
         with self.database.transaction() as db:
             db.execute("UPDATE automation_bindings SET enabled = ?, updated_at = ? WHERE id = ?", (int(enabled), iso(updated_at or utc_now()), binding_id))
 
+    def replace_automation_binding(self, binding: Any) -> None:
+        """Persist explicit re-authorization; normal execution never widens authority."""
+        with self.database.transaction() as db:
+            db.execute(
+                "UPDATE automation_bindings SET identity_id = ?, device_id = ?, service_principal = ?, scopes_json = ?, capabilities_json = ?, created_by = ?, enabled = ?, updated_at = ? WHERE id = ? AND rule_id = ? AND owner_id = ?",
+                (binding.identity_id, binding.device_id, binding.service_principal, json_text(list(binding.scopes)), json_text(list(binding.capabilities)), binding.created_by, int(binding.enabled), iso(binding.updated_at or utc_now()), binding.binding_id, binding.rule_id, binding.owner_id),
+            )
+
     def insert_evaluation_run(self, run: Any) -> None:
         with self.database.transaction() as db:
             db.execute("INSERT OR REPLACE INTO evaluation_runs(id, owner_id, suite, status, passed, regression, summary, results_json, started_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (run.run_id, run.owner_id, run.suite, run.status, int(run.passed), int(run.regression), run.summary, json_text([asdict(item) if hasattr(item, "__dataclass_fields__") else dict(item) for item in run.results]), iso(run.started_at), iso(run.completed_at)))

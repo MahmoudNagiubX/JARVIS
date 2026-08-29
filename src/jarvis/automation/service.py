@@ -9,8 +9,10 @@ from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from ..bus import InMemoryEventBus
+from ..capabilities.registry import CapabilityRegistry
 from ..contracts import DeviceIdentity, Identity
 from ..events import Event, EventCategory, EventState
+from ..offline.service import OfflineModeService
 from ..persistence.repositories import RuntimeRepository
 
 
@@ -87,14 +89,18 @@ class AutomationService:
 
     ALLOWED_ACTIONS = frozenset({"skill", "mission", "notification", "briefing"})
 
-    def __init__(self, repository: RuntimeRepository, event_bus: InMemoryEventBus, *, skill_executor: Any = None, missions: Any = None, notifications: Any = None, briefings: Any = None, online_checker: Callable[[], bool] | None = None) -> None:
+    def __init__(self, repository: RuntimeRepository, event_bus: InMemoryEventBus, *, skill_executor: Any = None, missions: Any = None, notifications: Any = None, briefings: Any = None, offline: OfflineModeService | None = None, capabilities: CapabilityRegistry | None = None, online_checker: Callable[[], bool] | None = None) -> None:
         self.repository = repository
         self.event_bus = event_bus
         self.skill_executor = skill_executor
         self.missions = missions
         self.notifications = notifications
         self.briefings = briefings
-        self.online_checker = online_checker or (lambda: True)
+        self.offline = offline
+        self.capabilities = capabilities
+        # Kept as a constructor compatibility seam. Connectivity decisions are
+        # intentionally made per action through OfflineModeService instead.
+        del online_checker
         self._rules: dict[str, AutomationRule] = {}
         self._subscriptions: dict[str, object] = {}
 
@@ -169,6 +175,28 @@ class AutomationService:
             self.repository.update_automation_binding(updated.binding_id, enabled=enabled, updated_at=updated.updated_at)
         return updated
 
+    async def reauthorize_binding(self, owner_id: str, rule_id: str, identity: Identity, device: DeviceIdentity) -> AutomationRule:
+        """Explicitly refresh a binding after a user-authorized authority change."""
+        current = await self.get(owner_id, rule_id)
+        if current is None or not current.binding_id:
+            raise KeyError(rule_id)
+        if identity.owner_id != owner_id or device.owner_id != owner_id:
+            raise PermissionError("automation_owner_binding_mismatch")
+        row = self.repository.automation_binding(rule_id, owner_id)
+        if row is None:
+            raise KeyError(current.binding_id)
+        now = datetime.now(UTC)
+        updated_binding = AutomationExecutionBinding(
+            str(row["id"]), rule_id, owner_id, identity.identity_id, device.device_id,
+            "bound-device", tuple(sorted(device.scopes)), tuple(sorted(device.capabilities)),
+            identity.identity_id, bool(row["enabled"]), self._time(row.get("created_at")), now,
+        )
+        self.repository.replace_automation_binding(updated_binding)
+        updated = replace(current, updated_at=now)
+        self._rules[rule_id] = updated
+        self.repository.insert_automation_rule(updated)
+        return updated
+
     async def handle_event(self, event: Event, *, context: Mapping[str, object] | None = None) -> tuple[AutomationRun, ...]:
         if event.category is EventCategory.AUTOMATION:
             return ()
@@ -209,14 +237,17 @@ class AutomationService:
         status = "completed"
         binding = self.repository.automation_binding(rule.rule_id, rule.owner_id)
         principal = self._resolve_binding(binding)
-        if binding is None or principal is None or not self.online_checker():
-            results.append({"status": "suppressed", "error_code": "automation_execution_binding_unavailable" if binding is None or principal is None else "automation_offline"})
+        if binding is None or principal is None:
+            results.append({"status": "suppressed", "error_code": "automation_execution_binding_unavailable"})
             status = "failed"
         else:
             identity, device = principal
         for action in rule.actions if status == "completed" else ():
             try:
-                if action.kind == "skill":
+                offline_reason = self._offline_block_reason(action)
+                if offline_reason:
+                    result = {"status": "suppressed", "error_code": offline_reason}
+                elif action.kind == "skill":
                     if self.skill_executor is None:
                         result = {"status": "suppressed", "error_code": "skill_context_unavailable"}
                     else:
@@ -334,9 +365,33 @@ class AutomationService:
             scopes = frozenset(json.loads(str(row.get("scopes_json", "[]"))))
         else:
             device_kind, platform = str(device_row["device_kind"]), str(device_row["platform"])
-            capabilities = frozenset(json.loads(str(device_row["capabilities_json"])))
-            scopes = frozenset(json.loads(str(device_row["scopes_json"])))
+            bound_capabilities = frozenset(json.loads(str(row.get("capabilities_json", "[]"))))
+            bound_scopes = frozenset(json.loads(str(row.get("scopes_json", "[]"))))
+            capabilities = frozenset(json.loads(str(device_row["capabilities_json"]))) & bound_capabilities
+            scopes = frozenset(json.loads(str(device_row["scopes_json"]))) & bound_scopes
         return (
             Identity(str(identity_row["id"]), str(identity_row["display_name"]), str(identity_row["owner_id"]), roles),
             DeviceIdentity(device_id, str(row["owner_id"]), device_kind, platform, capabilities, scopes),
         )
+
+    def _offline_block_reason(self, action: AutomationAction) -> str | None:
+        """Keep local actions available offline and suppress only unavailable work."""
+        if self.offline is None or self.offline.state.online or action.kind != "skill":
+            return None
+        registry = getattr(self.skill_executor, "registry", None)
+        skill = registry.get(action.target) if registry is not None else None
+        if skill is None:
+            return None
+        network_requirement = skill.manifest.network_requirement.casefold()
+        if network_requirement not in {"", "none", "local", "offline"}:
+            return "automation_offline_network_requirement_unavailable"
+        required = set(skill.manifest.required_capabilities)
+        for step in skill.steps:
+            required.update(step.required_capabilities)
+        for capability in required:
+            if not self.offline.can_use(capability).available:
+                return "automation_offline_capability_unavailable"
+            descriptor = self.capabilities.get(capability, available_only=False) if self.capabilities else None
+            if descriptor is not None and descriptor.requires_internet:
+                return "automation_offline_capability_unavailable"
+        return None
