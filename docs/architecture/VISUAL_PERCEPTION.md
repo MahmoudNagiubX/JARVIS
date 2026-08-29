@@ -8,6 +8,6 @@ regions only.
 
 Provider priority for later deployments is native/UIAutomation, browser DOM,
 OCR, local vision, then visual fallback. OmniParser and UI-TARS are reference
-boundaries only. The default Phase 05 provider is deferred because no local
+boundaries only. The default provider is deferred because no local
 capture or OCR adapter was configured. Camera is architecture-only and
 continuous camera capture is off.

@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 from typing import Any
 
 from .core import CoreApplication
+from .auth import StreamTicketService
 from ..experience.projections import ExperienceProjection
 from ..experience.websocket import accept_key, close_frame, ping_frame, text_frame
 
@@ -23,6 +24,7 @@ class CoreHttpServer:
         if host not in {"127.0.0.1", "::1", "localhost"}:
             raise ValueError("JARVIS HTTP server must remain loopback-only")
         self.application = application
+        self.stream_tickets = StreamTicketService()
         self.server = ThreadingHTTPServer((host, port), self._handler())
 
     @property
@@ -38,6 +40,7 @@ class CoreHttpServer:
 
     def _handler(self) -> type[BaseHTTPRequestHandler]:
         application = self.application
+        ticket_service = self.stream_tickets
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
@@ -45,6 +48,8 @@ class CoreHttpServer:
                 route = self._route(parsed.path)
                 try:
                     query = parse_qs(parsed.query)
+                    if "credential" in query:
+                        raise PermissionError("query_credentials_not_allowed")
                     if route == "/health":
                         self._respond(HTTPStatus.OK, asyncio.run(application.health()))
                     elif route in {"/hud", "/experience/hud"}:
@@ -65,7 +70,7 @@ class CoreHttpServer:
                         values = {key: items[0] for key, items in query.items() if items}
                         self._respond(HTTPStatus.OK, {"events": application.experience_timeline(self._authenticated(values).identity.owner_id, limit)})
                     elif route == "/experience/events":
-                        principal = self._authenticated({key: items[0] for key, items in query.items() if items})
+                        principal = self._stream_principal(query, "experience.events")
                         self._stream([asyncio.run(application.experience_state(principal.identity.owner_id))])
                     elif route == "/experience/events/ws":
                         self._websocket(query)
@@ -74,13 +79,16 @@ class CoreHttpServer:
                         self._respond(HTTPStatus.OK, {"clients": application.list_clients(self._authenticated(values).identity.owner_id)})
                     elif route == "/events":
                         correlation_id = query.get("correlation_id", [None])[0]
-                        self._respond(HTTPStatus.OK, {"events": application.events(correlation_id)})
+                        principal = self._authenticated({})
+                        self._respond(HTTPStatus.OK, {"events": application.events(correlation_id, principal.identity.owner_id)})
                     elif route == "/events/stream":
                         correlation_id = query.get("correlation_id", [None])[0]
-                        self._stream(application.events(correlation_id))
+                        principal = self._stream_principal(query, "events")
+                        self._stream(application.events(correlation_id, principal.identity.owner_id))
                     elif route.startswith("/approvals/"):
                         approval_id = route.rsplit("/", 1)[-1]
-                        result = asyncio.run(application.approval(approval_id))
+                        principal = self._authenticated({})
+                        result = asyncio.run(application.approval(approval_id, principal.identity.owner_id))
                         self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
                     elif route == "/memory":
                         self._respond(HTTPStatus.OK, {"memories": asyncio.run(application.list_memory(
@@ -210,6 +218,11 @@ class CoreHttpServer:
                 route = self._route(parsed.path)
                 try:
                     body = self._body()
+                    if route == "/auth/stream-ticket":
+                        principal = self._authenticated(body)
+                        ticket = ticket_service.issue(principal, str(body.get("scope", "events")))
+                        self._respond(HTTPStatus.CREATED, {"stream_ticket": ticket.token, "scope": ticket.scope, "expires_at": ticket.expires_at.isoformat()})
+                        return
                     if route == "/messages":
                         principal = asyncio.run(application.authenticate_principal(
                             str(body["credential"]), str(body["device_id"]), str(body["identity_id"])
@@ -262,6 +275,16 @@ class CoreHttpServer:
                             result = asyncio.run(application.mission_action(principal.identity.owner_id, parts[1], parts[2], principal.identity, principal.device, approval_granted=bool(body.get("approval_granted", False))))
                             self._respond(HTTPStatus.OK, result)
                             return
+                    if route.startswith("/skill-executions/") and route.endswith("/resume"):
+                        principal = self._authenticated(body)
+                        execution_id = route.strip("/").split("/")[1]
+                        self._respond(HTTPStatus.OK, asyncio.run(application.resume_skill(execution_id, principal.identity, principal.device)))
+                        return
+                    if route.startswith("/skills/executions/") and route.endswith("/resume"):
+                        principal = self._authenticated(body)
+                        execution_id = route.strip("/").split("/")[2]
+                        self._respond(HTTPStatus.OK, asyncio.run(application.resume_skill(execution_id, principal.identity, principal.device)))
+                        return
                     if route.startswith("/skills/"):
                         parts = route.strip("/").split("/")
                         if len(parts) == 3 and parts[2] in {"enable", "disable"}:
@@ -293,7 +316,7 @@ class CoreHttpServer:
                         return
                     if route == "/automations":
                         principal = self._authenticated(body)
-                        self._respond(HTTPStatus.CREATED, asyncio.run(application.create_automation(principal.identity.owner_id, body)))
+                        self._respond(HTTPStatus.CREATED, asyncio.run(application.create_automation(principal.identity.owner_id, body, principal.identity, principal.device)))
                         return
                     if route.startswith("/automations/"):
                         parts = route.strip("/").split("/")
@@ -572,12 +595,16 @@ class CoreHttpServer:
                 with a full ASGI adapter without changing the experience API.
                 """
 
-                values = {key: items[0] for key, items in query.items() if items}
-                if "credential" not in values:
-                    authorization = self.headers.get("Authorization", "")
-                    if authorization.casefold().startswith("bearer "):
-                        values["credential"] = authorization[7:].strip()
-                principal = self._authenticated(values)
+                ticket = query.get("stream_ticket", [None])[0]
+                if ticket:
+                    issued = ticket_service.consume(ticket, "experience.events.ws")
+                    if issued is None:
+                        raise PermissionError("invalid_stream_ticket")
+                    principal = asyncio.run(application.principal(issued.identity_id, issued.device_id))
+                    if principal is None or principal.identity.owner_id != issued.owner_id:
+                        raise PermissionError("stream_ticket_principal_revoked")
+                else:
+                    principal = self._authenticated({})
                 key = self.headers.get("Sec-WebSocket-Key", "")
                 if self.headers.get("Upgrade", "").casefold() != "websocket":
                     raise ValueError("WebSocket Upgrade header is required")
@@ -645,31 +672,42 @@ class CoreHttpServer:
                         pass
 
             def _owner(self, query: dict[str, list[str]]) -> str:
-                row = application.runtime.repository.first_owner()
-                if row is None:
-                    raise ValueError("owner_id is required")
                 requested = query.get("owner_id", [None])[0]
-                auth_keys = {"credential", "device_id", "identity_id"}
-                if auth_keys.issubset(query):
-                    principal = self._authenticated({key: query[key][0] for key in auth_keys})
-                    if requested and requested != principal.identity.owner_id:
-                        raise PermissionError("owner_binding_mismatch")
-                    return principal.identity.owner_id
-                owner = requested or str(row["id"])
-                if owner != str(row["id"]):
+                principal = self._authenticated({})
+                if requested and requested != principal.identity.owner_id:
                     raise PermissionError("owner_authentication_required")
-                return owner
+                return principal.identity.owner_id
 
             def _authenticated(self, values: dict[str, Any]) -> Any:
+                values = dict(values)
+                if self.command == "GET" and "credential" in values:
+                    raise PermissionError("query_credentials_not_allowed")
+                authorization = self.headers.get("Authorization", "")
+                if "credential" not in values and authorization.casefold().startswith("bearer "):
+                    values["credential"] = authorization[7:].strip()
+                values.setdefault("device_id", self.headers.get("X-JARVIS-Device-ID") or self.headers.get("X-Device-ID"))
+                values.setdefault("identity_id", self.headers.get("X-JARVIS-Identity-ID") or self.headers.get("X-Identity-ID"))
                 required = ("credential", "device_id", "identity_id")
-                if any(key not in values for key in required):
-                    raise ValueError("credential, device_id, and identity_id are required")
+                if any(not values.get(key) for key in required):
+                    raise PermissionError("credential_device_and_identity_required")
                 principal = asyncio.run(application.authenticate_principal(
                     str(values["credential"]), str(values["device_id"]), str(values["identity_id"])
                 ))
                 if principal is None:
                     raise PermissionError("principal_not_found")
                 return principal
+
+            def _stream_principal(self, query: dict[str, list[str]], scope: str) -> Any:
+                token = query.get("stream_ticket", [None])[0]
+                if token:
+                    issued = ticket_service.consume(token, scope)
+                    if issued is None:
+                        raise PermissionError("invalid_stream_ticket")
+                    principal = asyncio.run(application.principal(issued.identity_id, issued.device_id))
+                    if principal is None or principal.identity.owner_id != issued.owner_id:
+                        raise PermissionError("stream_ticket_principal_revoked")
+                    return principal
+                return self._authenticated({})
 
             def _body(self) -> dict[str, Any]:
                 length = int(self.headers.get("Content-Length", "0"))

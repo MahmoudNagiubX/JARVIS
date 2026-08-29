@@ -120,7 +120,7 @@ class DurableProactiveService:
         if not finding.auto_action_allowed or not decision.allowed or decision.level.value > 2:
             raise ValueError("finding action is not allowed for automatic execution")
         await self._emit("proactive.auto_action_started", owner_id, {"finding_id": finding_id, "action": finding.recommended_action}, EventState.ACCEPTED)
-        arguments = dict(finding.evidence)
+        arguments = {key: value for key, value in finding.evidence.items() if key in {"project_path", "test_file"}}
         if "project_path" not in arguments:
             path_facts = await self.world_state.facts(WorldStateQuery(owner_id, "workspace.project_path"))
             if path_facts:

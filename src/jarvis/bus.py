@@ -1,4 +1,4 @@
-"""Small in-process event bus for the foundation bootstrap."""
+"""Small in-process event bus for the runtime bootstrap."""
 
 from __future__ import annotations
 

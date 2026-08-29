@@ -60,7 +60,7 @@ Every cross-boundary event uses `jarvis.events.Event` with:
 - optional session and actor ids;
 - structured payload, severity, and lifecycle state.
 
-Phase 05 uses `InMemoryEventBus` plus durable event persistence through the
+The runtime uses `InMemoryEventBus` plus durable event persistence through the
 repository. Later durable delivery, outbox, or distributed transports are
 adapters and must preserve this envelope.
 
@@ -68,8 +68,8 @@ adapters and must preserve this envelope.
 
 `created -> starting -> ready -> stopping -> stopped` is explicit. Startup
 emits `system.bootstrap.started` and `system.bootstrap.ready`. Shutdown emits
-`system.shutdown.started` and `system.shutdown.completed`. Phase 04 startup
-composes local authority, SQLite, model, tool, satellite,
+`system.shutdown.started` and `system.shutdown.completed`. Startup composes
+local authority, SQLite, model, tool, satellite,
 computer/browser/device/home/communication/notification, voice routing,
 experience, engineering, research, perception, and developer-worker
 boundaries, but performs no model load, audio-hardware open, capture loop, or
@@ -77,7 +77,7 @@ non-loopback network bind.
 
 ## Security ordering
 
-For a consequential capability request, the Phase 04 sequence is:
+For a consequential capability request, the sequence is:
 
 ```text
 authenticate -> authorize -> validate -> request approval -> audit decision

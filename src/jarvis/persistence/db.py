@@ -1,6 +1,6 @@
 """SQLite persistence adapter used for local durability and offline tests.
 
-The domain only depends on repositories. SQLite is the Phase 03 zero-install
+The domain only depends on repositories. SQLite is the zero-install local
 adapter; the schema is deliberately close to the BMO relational model so a
 future PostgreSQL adapter does not change the product contracts.
 """
@@ -421,6 +421,25 @@ CREATE TABLE IF NOT EXISTS skill_versions (
     created_at TEXT NOT NULL,
     UNIQUE(skill_id, version)
 );
+CREATE TABLE IF NOT EXISTS skill_executions (
+    id TEXT PRIMARY KEY,
+    skill_id TEXT NOT NULL,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    identity_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    current_step INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    approval_id TEXT,
+    correlation_id TEXT NOT NULL,
+    values_json TEXT NOT NULL,
+    results_json TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_skill_executions_owner ON skill_executions(owner_id, updated_at);
 CREATE TABLE IF NOT EXISTS workspace_projects (
     id TEXT PRIMARY KEY,
     owner_id TEXT NOT NULL REFERENCES owners(id),
@@ -490,6 +509,21 @@ CREATE TABLE IF NOT EXISTS automation_runs (
     started_at TEXT NOT NULL,
     completed_at TEXT
 );
+CREATE TABLE IF NOT EXISTS automation_bindings (
+    id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL UNIQUE REFERENCES automation_rules(id),
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    identity_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    service_principal TEXT NOT NULL,
+    scopes_json TEXT NOT NULL,
+    capabilities_json TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_automation_bindings_owner ON automation_bindings(owner_id, enabled);
 CREATE INDEX IF NOT EXISTS idx_automation_rules_owner ON automation_rules(owner_id, enabled, updated_at);
 CREATE INDEX IF NOT EXISTS idx_automation_runs_rule ON automation_runs(rule_id, started_at);
 CREATE TABLE IF NOT EXISTS evaluation_runs (

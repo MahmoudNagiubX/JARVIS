@@ -11,7 +11,7 @@ arbitrary shell text. The intended implementation order is native Windows
 API, UI Automation, then a product-owned UFO adapter boundary, followed later
 by vision assistance. Microsoft UFO is not merged or imported.
 
-Phase 04 adds reconnect, capability advertisement, status inspection, and
+The runtime provides reconnect, capability advertisement, status inspection, and
 revocation helpers while retaining the typed command boundary. The protocol
 and mock handler are tested in-process. Physical Windows UI automation,
 transport security, and a real satellite process remain partial acceptance

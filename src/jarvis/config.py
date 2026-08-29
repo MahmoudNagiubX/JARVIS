@@ -1,6 +1,6 @@
 """Configuration for the foundation bootstrap.
 
-Configuration is intentionally small in Phase 02. Secrets remain outside this
+Configuration is intentionally small. Secrets remain outside this
 object, and model/network clients are never contacted as a side effect of
 import or bootstrap.
 """

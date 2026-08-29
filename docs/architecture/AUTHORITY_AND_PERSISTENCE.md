@@ -15,9 +15,9 @@ missing scope/capability, critical risk, and unknown actions. Safe reads and
 reversible fixtures may be allowed; consequential tools require a durable
 approval decision.
 
-`RuntimeRepository` is the only persistence service boundary. The Phase 02
-SQLite adapter persists the relational runtime records listed in
+`RuntimeRepository` is the only persistence service boundary. The SQLite
+adapter persists the relational runtime records listed in
 `CORE_RUNTIME.md`. `persistence/migrations/001_initial.sql` records the
 migration boundary; the schema is created by the zero-install adapter for
 local operation. PostgreSQL migration, pooling, and pgvector are intentionally
-Phase 03+ work.
+deferred adapter work.

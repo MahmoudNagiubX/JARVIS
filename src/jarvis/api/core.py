@@ -84,8 +84,9 @@ class CoreApplication:
 
     async def principal(self, identity_id: str, device_id: str) -> DemoPrincipal | None:
         identity = await self.runtime.identity.get_identity(identity_id)
+        device_row = self.runtime.repository.device(device_id)
         device = await self.runtime.identity.device(device_id)
-        if identity is None or device is None or identity.owner_id != device.owner_id:
+        if identity is None or device is None or device_row is None or device_row.get("status") != "active" or identity.owner_id != device.owner_id:
             return None
         return DemoPrincipal(identity, device)
 
@@ -186,7 +187,7 @@ class CoreApplication:
             "venom": asdict(self.runtime.venom.health()),
         }
 
-    # Phase 03 application use cases ------------------------------------
+    # Core application use cases ----------------------------------------
     async def list_memory(
         self,
         owner_id: str,
@@ -331,7 +332,7 @@ class CoreApplication:
     async def context(self, identity: Identity, device: DeviceIdentity, query: str = "") -> dict[str, Any]:
         return (await self.runtime.context.assemble(identity, device, query)).as_dict()
 
-    # Phase 07 bounded intelligence use cases --------------------------
+    # Bounded intelligence use cases -----------------------------------
     async def list_missions(self, owner_id: str) -> list[dict[str, Any]]:
         return [asdict(item) for item in await self.runtime.missions.list(owner_id)]
 
@@ -379,6 +380,9 @@ class CoreApplication:
     async def execute_skill(self, skill_id: str, values: dict[str, object], identity: Identity, device: DeviceIdentity) -> dict[str, Any]:
         return asdict(await self.runtime.skill_executor.execute(skill_id, values, identity, device))
 
+    async def resume_skill(self, execution_id: str, identity: Identity, device: DeviceIdentity) -> dict[str, Any]:
+        return asdict(await self.runtime.skill_executor.resume(execution_id, identity, device))
+
     async def workspace_projects(self, owner_id: str) -> list[dict[str, Any]]:
         return [asdict(item) for item in await self.runtime.workspace_intelligence.list(owner_id)]
 
@@ -407,12 +411,12 @@ class CoreApplication:
     async def list_automations(self, owner_id: str) -> list[dict[str, Any]]:
         return [asdict(item) for item in await self.runtime.automation.list(owner_id)]
 
-    async def create_automation(self, owner_id: str, values: dict[str, object]) -> dict[str, Any]:
+    async def create_automation(self, owner_id: str, values: dict[str, object], identity: Identity | None = None, device: DeviceIdentity | None = None) -> dict[str, Any]:
         trigger_values = values.get("trigger", {})
         trigger = AutomationTrigger(str(trigger_values.get("kind", "event")), str(trigger_values.get("value", ""))) if isinstance(trigger_values, dict) else AutomationTrigger("event", "")
         conditions = tuple(AutomationCondition(str(item.get("key")), str(item.get("operator", "equals")), item.get("value", True)) for item in values.get("conditions", ()) if isinstance(item, dict))
         actions = tuple(AutomationAction(str(item.get("kind")), str(item.get("target")), item.get("arguments", {})) for item in values.get("actions", ()) if isinstance(item, dict))
-        item = await self.runtime.automation.create(AutomationRule(str(values.get("rule_id", "")), owner_id, str(values.get("name", "")), trigger, conditions, actions, str(values.get("risk_level", "safe")), float(values.get("cooldown_seconds", 300)), bool(values.get("enabled", True))))
+        item = await self.runtime.automation.create(AutomationRule(str(values.get("rule_id", "")), owner_id, str(values.get("name", "")), trigger, conditions, actions, str(values.get("risk_level", "safe")), float(values.get("cooldown_seconds", 300)), bool(values.get("enabled", True))), identity, device)
         return asdict(item)
 
     async def set_automation_enabled(self, owner_id: str, rule_id: str, enabled: bool) -> dict[str, Any]:
@@ -424,7 +428,7 @@ class CoreApplication:
     async def run_evaluation(self, suite: str, owner_id: str | None = None) -> dict[str, Any]:
         return asdict(await self.runtime.evaluations.run(suite, owner_id=owner_id))
 
-    # Phase 05 experience and specialist use cases --------------------
+    # Experience and specialist use cases ------------------------------
     async def experience_state(self, owner_id: str) -> dict[str, Any]:
         return await self.runtime.experience.state(owner_id)
 
@@ -512,7 +516,7 @@ class CoreApplication:
     def developer_providers(self) -> list[dict[str, Any]]:
         return [asdict(item) for item in self.runtime.developer_workers.providers()]
 
-    # Phase 04 computer, browser, device, home, communications, and UI use cases
+    # Computer, browser, device, home, communications, and UI use cases
     async def list_devices(self, owner_id: str) -> list[dict[str, Any]]:
         return [self._device_dict(item) for item in await self.runtime.device_fabric.list(owner_id)]
 
@@ -653,10 +657,13 @@ class CoreApplication:
             raise ValueError("datetime must be an ISO string")
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
-    def events(self, correlation_id: str | None = None) -> list[dict[str, Any]]:
-        return self.runtime.repository.events(correlation_id)
+    def events(self, correlation_id: str | None = None, owner_id: str | None = None) -> list[dict[str, Any]]:
+        return self.runtime.repository.events(correlation_id, owner_id)
 
-    async def approval(self, approval_id: str) -> dict[str, Any] | None:
+    async def approval(self, approval_id: str, owner_id: str | None = None) -> dict[str, Any] | None:
+        row = self.runtime.repository.approval(approval_id)
+        if row is None or (owner_id is not None and row.get("requester_id") != owner_id):
+            return None
         decision = await self.runtime.approval.get(approval_id)
         if decision is None:
             return None

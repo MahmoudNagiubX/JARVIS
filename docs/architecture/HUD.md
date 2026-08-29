@@ -1,6 +1,6 @@
 # HUD
 
-Phase 05 provides a dependency-free static HUD at `GET /v1/hud`. It is an
+The runtime provides a dependency-free static HUD at `GET /v1/hud`. It is an
 original dark technical console built from local HTML, CSS, and JavaScript;
 there are no Marvel assets, copied donor UI assets, CDN dependencies, or
 browser-side business rules.

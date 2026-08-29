@@ -1,4 +1,4 @@
-"""Single persistence boundary for the Phase 03 runtime."""
+"""Single persistence boundary for the local runtime."""
 
 from .db import SQLiteDatabase
 from .models import ConversationRecord, MessageRecord, RunRecord, SessionRecord

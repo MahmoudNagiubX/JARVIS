@@ -23,8 +23,11 @@ class DurablePersonalizationService:
         "tone": "calm/formal/intelligent",
         "language_mode": "Egyptian Arabic + English technical terms",
         "notification_tolerance": "normal",
+        "briefing_preference": "morning",
+        "worker_preference": "local_first",
+        "response_length": "concise",
     }
-    ALLOWED_KEYS = set(DEFAULTS) | {"preferred_tools", "common_project_directories", "usual_work_periods"}
+    ALLOWED_KEYS = set(DEFAULTS) | {"preferred_tools", "common_project_directories", "usual_work_periods", "common_workflows", "notification_dismissal_patterns", "briefing_preference", "worker_preference", "response_length"}
 
     def __init__(self, repository: RuntimeRepository, event_bus: InMemoryEventBus, audit: DurableAuditService | None = None) -> None:
         self.repository = repository
@@ -45,6 +48,8 @@ class DurablePersonalizationService:
             raise ValueError("personalization key is not editable")
         if isinstance(update.value, str) and len(update.value) > 500:
             raise ValueError("personalization value is too long")
+        if len(json.dumps(update.value, ensure_ascii=False, default=str)) > 2000 or any(token in key.casefold() for token in ("secret", "password", "credential", "token")):
+            raise ValueError("personalization value is not allowed")
         self.repository.set_personalization(owner_id, key, update.value, update.source)
         await self._audit(owner_id, "personalization.updated", {"key": key, "source": update.source})
         await self._emit("personalization.updated", owner_id, {"key": key, "source": update.source}, EventState.COMPLETED)
@@ -66,11 +71,33 @@ class DurablePersonalizationService:
         if match:
             await self.update(owner_id, PersonalizationUpdate("preferred_name", match.group(1).strip(" .,!?") , "conversation"))
             learned.append("preferred_name")
+        tool_match = re.search(r"(?:prefer|use|choose)\s+(?:the\s+)?([a-z][a-z0-9_.-]{2,40})\s+tool", lowered)
+        if tool_match:
+            profile = await self.get(owner_id)
+            tools = list(profile.values.get("preferred_tools", [])) if isinstance(profile.values.get("preferred_tools"), list) else []
+            if tool_match.group(1) not in tools:
+                tools.append(tool_match.group(1))
+            await self.update(owner_id, PersonalizationUpdate("preferred_tools", tools[-20:], "conversation"))
+            learned.append("preferred_tools")
+        period_match = re.search(r"(?:usually|normally)\s+work(?:s)?\s+([^.!?]{2,80})", lowered)
+        if period_match:
+            await self.update(owner_id, PersonalizationUpdate("usual_work_periods", [period_match.group(1).strip()], "conversation"))
+            learned.append("usual_work_periods")
+        workflow_match = re.search(r"(?:workflow|when i)\s*[: ]\s*([^.!?]{2,100})", text, re.I)
+        if workflow_match:
+            await self.update(owner_id, PersonalizationUpdate("common_workflows", [workflow_match.group(1).strip()[:100]], "conversation"))
+            learned.append("common_workflows")
+        if re.search(r"\b(morning|daily) brief", lowered):
+            await self.update(owner_id, PersonalizationUpdate("briefing_preference", "morning", "conversation"))
+            learned.append("briefing_preference")
+        if re.search(r"\b(short|concise|brief) responses?\b", lowered):
+            await self.update(owner_id, PersonalizationUpdate("response_length", "short", "conversation"))
+            learned.append("response_length")
         return tuple(learned)
 
     async def delete(self, owner_id: str, key: str) -> PersonalizationProfile:
-        if key not in self.DEFAULTS:
-            raise ValueError("only default profile values can be reset")
+        if key not in self.ALLOWED_KEYS:
+            raise ValueError("personalization key is not editable")
         self.repository.delete_personalization(owner_id, key)
         await self._audit(owner_id, "personalization.updated", {"key": key, "action": "reset"})
         await self._emit("personalization.updated", owner_id, {"key": key, "action": "reset"}, EventState.COMPLETED)

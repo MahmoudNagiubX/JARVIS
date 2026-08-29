@@ -120,13 +120,13 @@ class PhaseThreeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         thread.start()
         base = f"http://{server.address[0]}:{server.address[1]}"
 
-        def request(method: str, path: str, payload: dict[str, object] | None = None) -> tuple[int, dict[str, object]]:
+        def request(method: str, path: str, payload: dict[str, object] | None = None, headers: dict[str, str] | None = None) -> tuple[int, dict[str, object]]:
             encoded = json.dumps(payload).encode("utf-8") if payload is not None else None
             request_object = Request(
                 base + path,
                 data=encoded,
                 method=method,
-                headers={"Content-Type": "application/json"} if encoded else {},
+                headers={"Content-Type": "application/json", **(headers or {})} if encoded else (headers or {}),
             )
             with urlopen(request_object) as response:
                 body = response.read().decode("utf-8")
@@ -137,17 +137,18 @@ class PhaseThreeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "device_id": principal.device.device_id,
             "identity_id": principal.identity.identity_id,
         }
+        auth_headers = {"Authorization": f"Bearer {auth['credential']}", "X-JARVIS-Device-ID": auth["device_id"], "X-JARVIS-Identity-ID": auth["identity_id"]}
         try:
             status, created = request("POST", "/v1/memory", {**auth, "content": "Use local tests.", "category": "preference"})
             self.assertEqual(status, 201)
             self.assertEqual(created["category"], "preference")
-            status, listed = request("GET", f"/v1/memory?owner_id={self.identity.owner_id}")
+            status, listed = request("GET", f"/v1/memory?owner_id={self.identity.owner_id}", headers=auth_headers)
             self.assertEqual(status, 200)
             self.assertTrue(listed["memories"])
             status, goal = request("POST", "/v1/goals", {**auth, "title": "API goal", "description": "Exercise the API"})
             self.assertEqual(status, 201)
             self.assertEqual(goal["status"], "draft")
-            status, profile = request("GET", f"/v1/personalization/profile?owner_id={self.identity.owner_id}")
+            status, profile = request("GET", f"/v1/personalization/profile?owner_id={self.identity.owner_id}", headers=auth_headers)
             self.assertEqual(status, 200)
             self.assertEqual(profile["values"]["assistant_name"], "JARVIS")
         finally:

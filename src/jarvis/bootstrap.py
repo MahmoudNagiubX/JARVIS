@@ -1,4 +1,4 @@
-"""Dependency composition and lifecycle for the Phase 03 core runtime."""
+"""Dependency composition and lifecycle for the product-owned JARVIS runtime."""
 
 from __future__ import annotations
 
@@ -281,11 +281,11 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     skills = SkillRegistry(repository)
     for builtin in builtin_skills():
         skills.register(builtin)
-    skill_executor = SkillExecutor(skills, SkillPolicy(permission), event_bus, repository, tools=tool_service)
+    skill_executor = SkillExecutor(skills, SkillPolicy(permission, registry), event_bus, repository, tools=tool_service, approvals=approval, audit=audit)
     workspace_intelligence = WorkspaceIntelligenceService(repository, event_bus, workspace_context)
     event_intelligence = EventIntelligenceService(repository, event_bus)
     briefings = BriefingService(repository, event_bus)
-    automation = AutomationService(repository, event_bus, skill_executor=skill_executor, missions=missions, briefings=briefings)
+    automation = AutomationService(repository, event_bus, skill_executor=skill_executor, missions=missions, briefings=briefings, online_checker=lambda: offline.state.online)
     automation.notifications = notifications
     communications_intelligence = CommunicationIntelligenceService(repository, event_bus)
     worker_coordinator = WorkerCoordinator(repository, event_bus, developer_gateway=None, permission=permission)
@@ -383,6 +383,12 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         destination = str(values.get("destination", "")).strip()
         if not destination:
             raise ValueError("backup destination is required")
+        target = Path(destination).expanduser().resolve(strict=False)
+        roots = [Path.cwd().resolve()]
+        if database.path != ":memory:":
+            roots.append(Path(database.path).expanduser().resolve(strict=False).parent)
+        if not any(target == root or root in target.parents for root in roots):
+            raise PermissionError("backup_destination_out_of_scope")
         return backup_service.create(destination)
 
     skill_executor.handlers.update({"system.health": skill_system_health, "workspace.project_status": skill_project_status, "briefing.generate": skill_briefing, "research.start": skill_research, "backup.create": skill_backup})

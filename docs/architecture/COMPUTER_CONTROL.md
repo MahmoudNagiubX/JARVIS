@@ -1,6 +1,6 @@
 # Computer control
 
-Phase 04 exposes computer actions through `ComputerActionService` and the
+The runtime exposes computer actions through `ComputerActionService` and the
 typed `ComputerAction`/`ComputerResult` contracts. Every request carries an
 authenticated identity, device, scope, capability set, session, and
 correlation id. Permission, approval, audit, and normalized computer events

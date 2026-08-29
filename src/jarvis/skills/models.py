@@ -14,6 +14,15 @@ class SkillStatus(StrEnum):
     DISABLED = "disabled"
 
 
+class SkillExecutionStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    DENIED = "denied"
+
+
 @dataclass(frozen=True, slots=True)
 class SkillStep:
     step_id: str
@@ -64,6 +73,30 @@ class SkillOutput:
     results: tuple[Mapping[str, object], ...] = ()
     error_code: str | None = None
     evidence: tuple[str, ...] = ()
+    execution_id: str | None = None
+    approval_id: str | None = None
+    current_step: int = 0
+    correlation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SkillExecution:
+    execution_id: str
+    skill_id: str
+    owner_id: str
+    identity_id: str
+    device_id: str
+    current_step: int
+    status: SkillExecutionStatus
+    approval_id: str | None = None
+    correlation_id: str = ""
+    values: Mapping[str, object] = field(default_factory=dict)
+    results: tuple[Mapping[str, object], ...] = ()
+    evidence: tuple[str, ...] = ()
+    error_code: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    completed_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

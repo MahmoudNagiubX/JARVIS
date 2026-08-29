@@ -1,10 +1,9 @@
 [project]
-name = "jarvis-foundation"
-version = "0.1.0"
-description = "Product-owned JARVIS foundation contracts and lifecycle"
+name = "jarvis-personal-ai-os"
+version = "0.8.0.dev0"
+description = "Product-owned JARVIS Personal AI OS runtime for private local evaluation"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
 authors = [{ name = "JARVIS project" }]
 dependencies = []
 

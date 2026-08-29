@@ -1,8 +1,8 @@
-# Phase 06 production checklist
+# Production checklist
 
 | Area | Status | Evidence / boundary |
 |---|---|---|
-| Regression baseline | PASS | Phase 05 exact base, 34/34 before changes |
+| Regression baseline | PASS | Published base retained; current suite is reported by the remediation audit |
 | Durable research ledger | PASS | SQLite ledger, restart reconciliation, acceptance tests |
 | SQLite backup/restore | PASS | Online backup, integrity verification, explicit CLI |
 | PostgreSQL | PARTIAL | Injected adapter and reconnect health; no local listener/client |

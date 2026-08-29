@@ -387,14 +387,29 @@ class RuntimeRepository:
             )
             return int(cursor.lastrowid)
 
-    def events(self, correlation_id: str | None = None) -> list[dict[str, Any]]:
+    def events(self, correlation_id: str | None = None, owner_id: str | None = None) -> list[dict[str, Any]]:
         if correlation_id is None:
             rows = self.database.connection.execute("SELECT * FROM events ORDER BY sequence").fetchall()
         else:
             rows = self.database.connection.execute(
                 "SELECT * FROM events WHERE correlation_id = ? ORDER BY sequence", (correlation_id,)
             ).fetchall()
-        return [dict(row) for row in rows]
+        values = [dict(row) for row in rows]
+        if owner_id is None:
+            return values
+        return [row for row in values if self._event_owner(row) == owner_id]
+
+    @staticmethod
+    def _event_owner(row: Mapping[str, Any]) -> str | None:
+        try:
+            payload = json.loads(str(row.get("payload_json", "{}")))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        owner = payload.get("owner_id") if isinstance(payload, Mapping) else None
+        if isinstance(owner, str):
+            return owner
+        actor = row.get("actor_id")
+        return actor if isinstance(actor, str) and actor.startswith("owner-") else None
 
     def event_count(self) -> int:
         row = self.database.connection.execute("SELECT COUNT(*) AS count FROM events").fetchone()
@@ -495,6 +510,38 @@ class RuntimeRepository:
                 "UPDATE tool_calls SET status = ?, output_json = ?, completed_at = ? WHERE id = ?",
                 (status, json_text(output) if output is not None else None, iso(utc_now()), tool_call_id),
             )
+
+    # Durable skill execution state ------------------------------------
+    def insert_skill_execution(self, execution: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO skill_executions(id, skill_id, owner_id, identity_id, device_id, current_step, status, approval_id, correlation_id, values_json, results_json, evidence_json, error_code, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (execution.execution_id, execution.skill_id, execution.owner_id, execution.identity_id, execution.device_id,
+                 execution.current_step, execution.status.value if hasattr(execution.status, "value") else execution.status,
+                 execution.approval_id, execution.correlation_id, json_text(dict(execution.values)), json_text(list(execution.results)),
+                 json_text(list(execution.evidence)), execution.error_code, iso(execution.created_at), iso(execution.updated_at), iso(execution.completed_at)),
+            )
+
+    def skill_execution(self, execution_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM skill_executions WHERE id = ?", (execution_id,)).fetchone()
+        return dict(row) if row else None
+
+    def update_skill_execution(self, execution_id: str, **fields: object) -> dict[str, Any]:
+        allowed = {"current_step", "status", "approval_id", "values_json", "results_json", "evidence_json", "error_code", "updated_at", "completed_at"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"unsupported skill execution fields: {sorted(unknown)}")
+        values = dict(fields)
+        values.setdefault("updated_at", utc_now())
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        encoded = [json_text(value) if key.endswith("_json") and not isinstance(value, str) else value for key, value in values.items()]
+        encoded = [iso(value) if isinstance(value, datetime) else value for value in encoded]
+        with self.database.transaction() as db:
+            db.execute(f"UPDATE skill_executions SET {assignments} WHERE id = ?", (*encoded, execution_id))
+        result = self.skill_execution(execution_id)
+        if result is None:
+            raise KeyError(execution_id)
+        return result
 
     # Phase 03 memory -----------------------------------------------------
     def insert_memory(self, record: Any) -> None:
@@ -984,6 +1031,28 @@ class RuntimeRepository:
     def automation_runs(self, rule_id: str) -> list[dict[str, Any]]:
         rows = self.database.connection.execute("SELECT * FROM automation_runs WHERE rule_id = ? ORDER BY started_at DESC", (rule_id,)).fetchall()
         return [dict(row) for row in rows]
+
+    def insert_automation_binding(self, binding: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO automation_bindings(id, rule_id, owner_id, identity_id, device_id, service_principal, scopes_json, capabilities_json, created_by, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (binding.binding_id, binding.rule_id, binding.owner_id, binding.identity_id, binding.device_id,
+                 binding.service_principal, json_text(list(binding.scopes)), json_text(list(binding.capabilities)),
+                 binding.created_by, int(binding.enabled), iso(binding.created_at), iso(binding.updated_at)),
+            )
+
+    def automation_binding(self, rule_id: str, owner_id: str | None = None) -> dict[str, Any] | None:
+        query = "SELECT * FROM automation_bindings WHERE rule_id = ?"
+        values: list[object] = [rule_id]
+        if owner_id is not None:
+            query += " AND owner_id = ?"
+            values.append(owner_id)
+        row = self.database.connection.execute(query, tuple(values)).fetchone()
+        return dict(row) if row else None
+
+    def update_automation_binding(self, binding_id: str, *, enabled: bool, updated_at: datetime | None = None) -> None:
+        with self.database.transaction() as db:
+            db.execute("UPDATE automation_bindings SET enabled = ?, updated_at = ? WHERE id = ?", (int(enabled), iso(updated_at or utc_now()), binding_id))
 
     def insert_evaluation_run(self, run: Any) -> None:
         with self.database.transaction() as db:

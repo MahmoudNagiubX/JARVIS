@@ -163,16 +163,17 @@ class PhaseFourIntegrationTests(unittest.IsolatedAsyncioTestCase):
         thread.start()
         base = f"http://{server.address[0]}:{server.address[1]}"
 
-        def request(method: str, path: str, payload: dict[str, object] | None = None) -> tuple[int, dict[str, object]]:
+        def request(method: str, path: str, payload: dict[str, object] | None = None, headers: dict[str, str] | None = None) -> tuple[int, dict[str, object]]:
             encoded = json.dumps(payload).encode() if payload is not None else None
-            request_object = Request(base + path, data=encoded, method=method, headers={"Content-Type": "application/json"} if encoded else {})
+            request_object = Request(base + path, data=encoded, method=method, headers={"Content-Type": "application/json", **(headers or {})} if encoded else (headers or {}))
             with urlopen(request_object) as response:
                 decoded = response.read().decode("utf-8")
                 return response.status, json.loads(decoded) if decoded else {}
 
         auth = {"credential": principal.credential, "device_id": principal.device.device_id, "identity_id": principal.identity.identity_id}
+        auth_headers = {"Authorization": f"Bearer {auth['credential']}", "X-JARVIS-Device-ID": auth["device_id"], "X-JARVIS-Identity-ID": auth["identity_id"]}
         try:
-            status, devices = request("GET", f"/v1/devices?owner_id={principal.identity.owner_id}")
+            status, devices = request("GET", f"/v1/devices?owner_id={principal.identity.owner_id}", headers=auth_headers)
             self.assertEqual(status, 200)
             self.assertTrue(devices["devices"])
             status, action = request("POST", "/v1/computer/actions", {**auth, "action": "list_processes", "dry_run": True})

@@ -37,3 +37,16 @@ class CapabilityRegistry:
         if device_id is not None:
             values = (item for item in values if item.device_id in {None, device_id})
         return tuple(sorted(values, key=lambda item: item.capability_id))
+
+    def consistency(self) -> tuple[dict[str, object], ...]:
+        """Return an inspectable truth table for capability advertisements."""
+        return tuple({
+            "capability_id": item.capability_id,
+            "provider": item.provider,
+            "available": item.available,
+            "risk": item.risk,
+            "requires_internet": item.requires_internet,
+            "requires_local_network": item.requires_local_network,
+            "requires_device_online": item.requires_device_online,
+            "reason": item.metadata.get("reason") if isinstance(item.metadata, dict) else None,
+        } for item in self.list(available_only=False))

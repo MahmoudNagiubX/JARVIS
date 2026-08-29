@@ -136,7 +136,7 @@ class PhaseSevenIntegrationTests(unittest.IsolatedAsyncioTestCase):
             with urlopen(request) as response:
                 mission = json.loads(response.read().decode())
             self.assertEqual(mission["status"], "ready")
-            with urlopen(f"{base}/v1/experience/state?owner_id={self.identity.owner_id}&credential={issued.raw}&device_id={issued.device_id}&identity_id={self.identity.identity_id}") as response:
+            with urlopen(Request(f"{base}/v1/experience/state?owner_id={self.identity.owner_id}", headers={"Authorization": f"Bearer {issued.raw}", "X-JARVIS-Device-ID": issued.device_id, "X-JARVIS-Identity-ID": self.identity.identity_id})) as response:
                 state = json.loads(response.read().decode())
             self.assertIn("missions", state)
             self.assertIn("skills", state)

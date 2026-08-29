@@ -1,7 +1,7 @@
 # JARVIS production architecture
 
-Phase 06 hardens the existing Phase 05 authority architecture. The product
-spine remains `EventBus -> AgentRuntime -> PermissionEngine -> ApprovalEngine
+The production runtime uses the authority architecture. The product spine
+remains `EventBus -> AgentRuntime -> PermissionEngine -> ApprovalEngine
 -> Audit -> Memory/WorldState/Goals -> Capabilities/Device/Experience`.
 
 SQLite is the zero-install local adapter and remains the automated-test path.

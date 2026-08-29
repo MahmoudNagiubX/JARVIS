@@ -60,6 +60,10 @@ class PolicyPermissionEngine:
             PermissionRule("engineering.", PermissionEffect.ALLOW, "bounded_engineering"),
             PermissionRule("research.", PermissionEffect.ALLOW, "bounded_research"),
             PermissionRule("perception.", PermissionEffect.ALLOW, "on_demand_perception"),
+            PermissionRule("system.", PermissionEffect.ALLOW, "bounded_system_read"),
+            PermissionRule("workspace.", PermissionEffect.ALLOW, "bounded_workspace_action"),
+            PermissionRule("briefing.", PermissionEffect.ALLOW, "bounded_briefing_action"),
+            PermissionRule("backup.", PermissionEffect.ALLOW, "scoped_backup_action"),
             PermissionRule("tool.", PermissionEffect.REQUIRE_APPROVAL, "tool_policy_requires_approval"),
             PermissionRule("computer.", PermissionEffect.REQUIRE_APPROVAL, "computer_action_requires_approval"),
         )
@@ -83,6 +87,8 @@ class PolicyPermissionEngine:
         if any(capability not in device.capabilities for capability in required_capabilities):
             return PermissionDecision(PermissionEffect.DENY, "device_capability_missing")
         risk = str(resource.get("risk_level", "read"))
+        if risk not in {"read", "safe", "reversible", "consequential", "critical", "forbidden_autonomous"}:
+            return PermissionDecision(PermissionEffect.DENY, "unknown_risk_level")
         if risk in {"critical", "forbidden_autonomous"}:
             return PermissionDecision(PermissionEffect.DENY, "risk_forbidden_by_default")
         if bool(resource.get("requires_approval", False)) or risk == "consequential":

@@ -257,7 +257,7 @@ class AgentRuntime:
                 "function": {
                     "name": spec.name,
                     "description": spec.description,
-                    "parameters": {"type": "object"},
+                    "parameters": spec.json_schema(),
                 },
             }
             for spec in self.tools.registry.list()

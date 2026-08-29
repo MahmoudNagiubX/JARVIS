@@ -22,6 +22,7 @@ from ..contracts import (
 from ..events import Event, EventCategory, EventState
 from ..persistence.repositories import RuntimeRepository
 from .policy import MemoryPolicy
+from .extractors import DeterministicMemoryExtractor, MemoryCandidateExtractor
 from .retrieval import EmbeddingProvider, KeywordMemoryRetriever
 
 
@@ -35,12 +36,14 @@ class DurableMemoryService:
         audit: DurableAuditService | None = None,
         policy: MemoryPolicy | None = None,
         embedding_provider: EmbeddingProvider | None = None,
+        extractor: MemoryCandidateExtractor | None = None,
     ) -> None:
         self.repository = repository
         self.event_bus = event_bus
         self.audit = audit
         self.policy = policy or MemoryPolicy()
         self.embedding_provider = embedding_provider
+        self.extractor = extractor or DeterministicMemoryExtractor()
 
     async def create(self, candidate: MemoryCandidate) -> MemoryRecord | None:
         decision = self.policy.evaluate(candidate)
@@ -209,7 +212,7 @@ class DurableMemoryService:
 
     async def remember_from_conversation(self, owner_id: str, text: str, source_reference: str | None = None) -> tuple[MemoryRecord, ...]:
         records: list[MemoryRecord] = []
-        for candidate in self.extract_candidates(owner_id, text, source_reference):
+        for candidate in await self.extractor.extract(owner_id, text, source_reference):
             record = await self.create(candidate)
             if record is not None:
                 records.append(record)

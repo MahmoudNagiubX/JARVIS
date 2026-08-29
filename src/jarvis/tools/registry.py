@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import subprocess
 import sys
@@ -29,6 +29,10 @@ class ToolSpec:
     requires_approval: bool = False
     enabled: bool = True
     autonomy_level: int = 1
+    parameters_schema: Mapping[str, object] = field(default_factory=lambda: {"type": "object", "additionalProperties": False})
+
+    def json_schema(self) -> dict[str, object]:
+        return dict(self.parameters_schema)
 
     def validate_arguments(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(arguments, Mapping):
@@ -52,6 +56,16 @@ class ToolSpec:
             test_file = normalized.get("test_file")
             if test_file is not None and (not isinstance(test_file, str) or len(test_file) > 300 or ".." in Path(test_file).parts):
                 raise ValueError("test_file_invalid")
+        properties = self.parameters_schema.get("properties", {})
+        required = self.parameters_schema.get("required", ())
+        if isinstance(properties, Mapping) and self.parameters_schema.get("additionalProperties") is False:
+            unknown = set(normalized) - set(properties)
+            if unknown:
+                raise ValueError(f"unknown_arguments:{sorted(unknown)}")
+        if isinstance(required, (list, tuple)):
+            missing = [key for key in required if key not in normalized]
+            if missing:
+                raise ValueError(f"missing_arguments:{sorted(missing)}")
         return normalized
 
 
@@ -120,18 +134,22 @@ def default_registry() -> ToolRegistry:
             ToolSpec(
                 "tool-status-read-v1", "status.read", "1", "Read bounded JARVIS status.",
                 "read", "tool.request", frozenset(), 5.0, True, _status,
+                parameters_schema={"type": "object", "properties": {}, "additionalProperties": False},
             ),
             ToolSpec(
                 "tool-echo-reversible-v1", "echo.reversible", "1", "Return a bounded reversible test value.",
                 "reversible", "tool.request", frozenset(), 5.0, True, _echo,
+                parameters_schema={"type": "object", "properties": {"message": {"type": "string", "maxLength": 2000}}, "required": ["message"], "additionalProperties": False},
             ),
             ToolSpec(
                 "tool-echo-consequential-v1", "echo.consequential", "1", "Return a consequential approval fixture.",
                 "consequential", "tool.request", frozenset(), 5.0, True, _echo, True,
+                parameters_schema={"type": "object", "properties": {"message": {"type": "string", "maxLength": 2000}}, "required": ["message"], "additionalProperties": False},
             ),
             ToolSpec(
                 "tool-project-tests-run-v1", "project.tests.run", "1", "Run bounded local unittest discovery.",
                 "safe", "tool.request", frozenset(), 35.0, False, _run_tests, False, True, 1,
+                parameters_schema={"type": "object", "properties": {"project_path": {"type": "string", "maxLength": 1000}, "test_file": {"type": "string", "maxLength": 300}}, "required": ["project_path"], "additionalProperties": False},
             ),
         )
     )

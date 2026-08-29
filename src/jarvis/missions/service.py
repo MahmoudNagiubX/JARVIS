@@ -132,10 +132,10 @@ class MissionService:
         self._check_budget(current)
         step = current.plan.steps[current.current_step]
         if step.approval_required:
-            approval_id = None
-            if self.approvals is not None:
-                approval_id = f"approval-{uuid4()}"
-                await self.approvals.request(ApprovalRequest(approval_id, f"mission.{mission_id}.{step.step_id}", owner_id, None, step.title, datetime.now(UTC), datetime.now(UTC) + timedelta(minutes=10), {"mission_id": mission_id, "step_id": step.step_id}))
+            if self.approvals is None:
+                return await self.fail(owner_id, mission_id, "approval_engine_unavailable")
+            approval_id = f"approval-{uuid4()}"
+            await self.approvals.request(ApprovalRequest(approval_id, f"mission.{mission_id}.{step.step_id}", owner_id, None, step.title, datetime.now(UTC), datetime.now(UTC) + timedelta(minutes=10), {"mission_id": mission_id, "step_id": step.step_id, "step_index": current.current_step}))
             updated = replace(current, status=MissionStatus.WAITING_APPROVAL, approval_id=approval_id, blocked_reason="step_approval_required", updated_at=datetime.now(UTC))
             self._save(updated)
             await self._emit("mission.waiting_approval", updated, EventState.ACCEPTED)
@@ -170,12 +170,21 @@ class MissionService:
     async def resume(self, owner_id: str, mission_id: str, *, approval_granted: bool = False) -> Mission:
         current = await self._required(owner_id, mission_id)
         if current.status is MissionStatus.WAITING_APPROVAL:
-            if not approval_granted:
+            del approval_granted
+            if self.approvals is None or not current.approval_id:
+                return await self.fail(owner_id, mission_id, "approval_engine_unavailable")
+            row = self.repository.approval(current.approval_id)
+            if row is None or row.get("requester_id") != owner_id:
+                raise PermissionError("mission_approval_owner_mismatch")
+            preview = json.loads(str(row.get("preview_json", "{}")))
+            step_id = current.plan.steps[current.current_step].step_id if current.plan and current.current_step < len(current.plan.steps) else None
+            if preview.get("mission_id") != mission_id or preview.get("step_id") != step_id or preview.get("step_index") != current.current_step:
+                raise PermissionError("mission_approval_step_mismatch")
+            decision = await self.approvals.get(current.approval_id)
+            if decision is None or decision.status.value == "pending":
                 return current
-            if current.approval_id and self.approvals is not None:
-                decision = await self.approvals.get(current.approval_id)
-                if decision is None or decision.status.value != "approved":
-                    raise PermissionError("mission_approval_not_granted")
+            if decision.status.value != "approved":
+                return await self.fail(owner_id, mission_id, "mission_approval_not_granted")
         return await self._transition(owner_id, mission_id, MissionStatus.RUNNING, {MissionStatus.PAUSED, MissionStatus.WAITING, MissionStatus.WAITING_APPROVAL})
 
     async def cancel(self, owner_id: str, mission_id: str) -> Mission:

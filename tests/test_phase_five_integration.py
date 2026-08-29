@@ -7,7 +7,6 @@ import unittest
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
-from urllib.parse import urlencode
 
 from jarvis.api.core import CoreApplication
 from jarvis.api.http import CoreHttpServer
@@ -89,10 +88,10 @@ class PhaseFiveIntegrationTests(unittest.IsolatedAsyncioTestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = f"http://{server.address[0]}:{server.address[1]}"
-        auth = urlencode({"credential": issued.raw, "device_id": issued.device_id, "identity_id": self.identity.identity_id})
+        auth_headers = {"Authorization": f"Bearer {issued.raw}", "X-JARVIS-Device-ID": issued.device_id, "X-JARVIS-Identity-ID": self.identity.identity_id}
         try:
             try:
-                with urlopen(f"{base}/v1/experience/state?{auth}") as response:
+                with urlopen(Request(f"{base}/v1/experience/state?owner_id={self.identity.owner_id}", headers=auth_headers)) as response:
                     state = json.loads(response.read().decode())
             except HTTPError as exc:
                 self.fail(exc.read().decode())

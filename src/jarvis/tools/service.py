@@ -131,6 +131,9 @@ class ToolExecutionService:
     async def decide_and_resume(
         self, approval_id: str, approved: bool, decided_by: str, context: ToolContext
     ) -> ToolCallResult:
+        approval_row = self.repository.approval(approval_id)
+        if approval_row is None or (context.identity is not None and approval_row.get("requester_id") != context.identity.owner_id):
+            raise PermissionError("approval_owner_mismatch")
         decision = await self.approvals.decide(approval_id, approved, decided_by)
         row = self.repository.tool_call_by_approval(approval_id)
         if row is None:
