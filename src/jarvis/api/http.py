@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from typing import Any
 
 from .core import CoreApplication
+from ..experience.projections import ExperienceProjection
+from ..experience.websocket import accept_key, close_frame, ping_frame, text_frame
 
 
 class CoreHttpServer:
@@ -63,6 +67,8 @@ class CoreHttpServer:
                     elif route == "/experience/events":
                         principal = self._authenticated({key: items[0] for key, items in query.items() if items})
                         self._stream([asyncio.run(application.experience_state(principal.identity.owner_id))])
+                    elif route == "/experience/events/ws":
+                        self._websocket(query)
                     elif route == "/experience/clients":
                         values = {key: items[0] for key, items in query.items() if items}
                         self._respond(HTTPStatus.OK, {"clients": application.list_clients(self._authenticated(values).identity.owner_id)})
@@ -453,6 +459,87 @@ class CoreHttpServer:
             def _route(path: str) -> str:
                 route = path.removeprefix("/v1")
                 return route.rstrip("/") or "/"
+
+            def _websocket(self, query: dict[str, list[str]]) -> None:
+                """Serve a bounded authenticated local fan-out connection.
+
+                The stdlib HTTP server has no WebSocket dependency. This keeps
+                the protocol boundary useful for local clients while applying
+                explicit limits; deployment hosts may replace this transport
+                with a full ASGI adapter without changing the experience API.
+                """
+
+                values = {key: items[0] for key, items in query.items() if items}
+                if "credential" not in values:
+                    authorization = self.headers.get("Authorization", "")
+                    if authorization.casefold().startswith("bearer "):
+                        values["credential"] = authorization[7:].strip()
+                principal = self._authenticated(values)
+                key = self.headers.get("Sec-WebSocket-Key", "")
+                if self.headers.get("Upgrade", "").casefold() != "websocket":
+                    raise ValueError("WebSocket Upgrade header is required")
+                if "upgrade" not in self.headers.get("Connection", "").casefold():
+                    raise ValueError("WebSocket Connection header is required")
+                accepted = accept_key(key)
+                topics = tuple(query.get("topic", ())) or ("system_health",)
+                if len(topics) > 12:
+                    raise ValueError("WebSocket subscription limit exceeded")
+                session = asyncio.run(application.connect_client(principal.identity, principal.device, {"subscriptions": topics, "ui_profile": "websocket"}))
+                outbound: queue.Queue[dict[str, object]] = queue.Queue(maxsize=128)
+
+                def on_event(event: Any) -> None:
+                    owner = event.payload.get("owner_id")
+                    if owner != principal.identity.owner_id:
+                        return
+                    topic = event.category.value
+                    if topic not in topics and not (topic == "system" and "system_health" in topics):
+                        return
+                    item = {"type": "event", "event": ExperienceProjection._event_item(event)}
+                    try:
+                        outbound.put_nowait(item)
+                    except queue.Full:
+                        try:
+                            outbound.get_nowait()
+                        except queue.Empty:
+                            pass
+                        try:
+                            outbound.put_nowait({"type": "control", "error": "backpressure"})
+                        except queue.Full:
+                            pass
+
+                subscription = application.runtime.event_bus.subscribe("*", on_event)
+                self.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
+                self.send_header("Upgrade", "websocket")
+                self.send_header("Connection", "Upgrade")
+                self.send_header("Sec-WebSocket-Accept", accepted)
+                self.end_headers()
+                self.close_connection = True
+                try:
+                    try:
+                        self.connection.sendall(text_frame({"type": "state", "data": asyncio.run(application.experience_state(principal.identity.owner_id))}))
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        return
+                    deadline = time.monotonic() + 30.0
+                    next_ping = time.monotonic() + 10.0
+                    while time.monotonic() < deadline:
+                        try:
+                            self.connection.sendall(text_frame(outbound.get(timeout=0.25)))
+                        except queue.Empty:
+                            if time.monotonic() >= next_ping:
+                                self.connection.sendall(ping_frame())
+                                next_ping = time.monotonic() + 10.0
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            break
+                    try:
+                        self.connection.sendall(close_frame())
+                    except OSError:
+                        pass
+                finally:
+                    application.runtime.event_bus.unsubscribe(subscription)
+                    try:
+                        asyncio.run(application.disconnect_client(principal.identity, session["client_session_id"]))
+                    except Exception:
+                        pass
 
             def _owner(self, query: dict[str, list[str]]) -> str:
                 row = application.runtime.repository.first_owner()

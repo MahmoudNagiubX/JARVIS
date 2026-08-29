@@ -25,6 +25,7 @@ from ..contracts import (
     VoiceProjection,
 )
 from ..events import Event, EventCategory, EventState
+from ..security import redact
 
 
 StateLoader = Callable[[str], Awaitable[Mapping[str, object]] | Mapping[str, object]]
@@ -226,12 +227,7 @@ class ExperienceProjection:
 
     @classmethod
     def _redact(cls, value: object) -> object:
-        secret_names = {"credential", "token", "secret", "password", "raw_audio", "raw_frame", "api_key", "authorization"}
-        if isinstance(value, Mapping):
-            return {str(key): "[redacted]" if str(key).casefold() in secret_names else cls._redact(item) for key, item in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [cls._redact(item) for item in value]
-        return value
+        return redact(value)
 
     async def state(self, owner_id: str) -> HudState:
         if not owner_id.strip():

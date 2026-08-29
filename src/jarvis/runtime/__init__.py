@@ -17,6 +17,7 @@ from .noop import (
     NoOpSpeechToText,
     NoOpTextToSpeech,
 )
+from .lifecycle import LifecycleSnapshot, RuntimeLifecycle
 
 __all__ = [
     "EmptyToolRegistry",
@@ -34,4 +35,6 @@ __all__ = [
     "NoOpRealtimeVoiceSession",
     "NoOpSpeechToText",
     "NoOpTextToSpeech",
+    "LifecycleSnapshot",
+    "RuntimeLifecycle",
 ]

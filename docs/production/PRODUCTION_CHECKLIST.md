@@ -1,0 +1,30 @@
+# Phase 06 production checklist
+
+| Area | Status | Evidence / boundary |
+|---|---|---|
+| Regression baseline | PASS | Phase 05 exact base, 34/34 before changes |
+| Durable research ledger | PASS | SQLite ledger, restart reconciliation, acceptance tests |
+| SQLite backup/restore | PASS | Online backup, integrity verification, explicit CLI |
+| PostgreSQL | PARTIAL | Injected adapter and reconnect health; no local listener/client |
+| pgvector | DEFERRED | No PostgreSQL deployment or extension available |
+| Ollama/Qwen live | PARTIAL | Opt-in probe exists; no local Ollama/listener |
+| Physical voice | DEFERRED | No physical voice session run; NoOp defaults |
+| Windows satellite | DEFERRED | Typed in-process registry only |
+| Computer control | PARTIAL | Windows-safe/dry-run boundaries tested; no physical destructive actions |
+| Browser/Playwright | PARTIAL | Deterministic controller tested; no Node/Playwright |
+| Authenticated WebSocket | PARTIAL | Loopback handshake, auth, topic allowlist, bounded queue/lifetime; no full client-frame adapter |
+| Jupyter/KiCad | DEFERRED | Adapter boundaries only |
+| OCR/local vision | DEFERRED | No local capability available |
+| Venom | DEFERRED | No valid local transport endpoint |
+| Home Assistant/MQTT | DEFERRED | Restricted seam only; no listener |
+| Email/Telegram/Discord | DEFERRED | No credentials; no real send |
+| Startup/autostart | PARTIAL | Explicit lifecycle and host strategy; no task installed |
+| Crash recovery | PASS | Core and research transient reconciliation |
+| Security hardening | PASS | Loopback, scopes, limits, redaction, untrusted evidence |
+| Performance profiling | PASS | Standard-library profiler and observability counters |
+
+Paid runtime APIs: NONE. Models downloaded/copied: NONE. Donor repositories
+modified: NONE. Legacy BMO repositories modified: NONE.
+
+Before a live deployment, attach physical evidence for each deferred/partial
+row and run the commands in the development acceptance documents.

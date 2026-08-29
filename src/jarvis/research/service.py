@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -22,9 +23,9 @@ from ..contracts import (
     ResearchReport,
     ResearchRequest,
     ResearchRun,
-    ResearchSource,
     ResearchStep,
     CitationRecord,
+    ResearchSource,
 )
 from ..events import Event, EventCategory, EventState
 from ..persistence.repositories import RuntimeRepository
@@ -52,6 +53,7 @@ class ResearchService:
         self.browser = browser
         self._runs: dict[str, ResearchRun] = {}
         self._tasks: dict[str, asyncio.Task[ResearchRun]] = {}
+        self.repository.reconcile_research_runs()
 
     def plan(self, query: str, max_steps: int) -> ResearchPlan:
         bounded = min(max(1, max_steps), 32)
@@ -66,6 +68,7 @@ class ResearchService:
         plan = self.plan(request.query, request.max_steps)
         run = ResearchRun(f"research-{uuid4()}", request, plan, "queued", tuple(ResearchStep(f"step-{i}", title) for i, title in enumerate(plan.steps, 1)), created_at=datetime.now(UTC))
         self._runs[run.run_id] = run
+        self.repository.insert_research_run(run)
         await self._emit("research.run.created", identity, device, {"owner_id": identity.owner_id, "research_run_id": run.run_id, "query": request.query})
         # The stdlib HTTP adapter creates a short-lived event loop per request.
         # Execute in that bounded loop so a queued task cannot outlive its owner
@@ -83,9 +86,16 @@ class ResearchService:
             await self._emit("research.searching", identity, device, {"owner_id": identity.owner_id, "research_run_id": run_id, "query": initial.request.query})
             sources = list(self.local.search(initial.request.query, initial.request.max_sources))
             if self.browser is not None and len(sources) < initial.request.max_sources and self.browser.available:
-                sources.extend(await self.browser.search(initial.request.query, initial.request.max_sources - len(sources)))
+                remaining = self._remaining_seconds(started, initial.request.max_seconds)
+                if remaining <= 0:
+                    raise TimeoutError("research_time_budget_exceeded")
+                sources.extend(await asyncio.wait_for(
+                    self.browser.search(initial.request.query, initial.request.max_sources - len(sources)),
+                    timeout=remaining,
+                ))
             sources = self._dedupe_sources(sources)[:initial.request.max_sources]
             for source in sources:
+                self.repository.insert_research_source(run_id, source)
                 await self._emit("research.source.found", identity, device, {"owner_id": identity.owner_id, "research_run_id": run_id, "source_id": source.source_id, "locator": source.locator, "source_type": source.source_type})
             evidence: list[EvidenceItem] = []
             await self._set_status(self._runs[run_id], "reading", identity, device)
@@ -93,7 +103,15 @@ class ResearchService:
                 if datetime.now(UTC).timestamp() - started.timestamp() > initial.request.max_seconds:
                     raise TimeoutError("research_time_budget_exceeded")
                 try:
-                    text = self.local.read(source) if source.source_type == "local" else await self.browser.read(source) if self.browser else ""
+                    if source.source_type == "local":
+                        text = self.local.read(source)
+                    elif self.browser:
+                        text = await asyncio.wait_for(
+                            self.browser.read(source),
+                            timeout=self._remaining_seconds(started, initial.request.max_seconds),
+                        )
+                    else:
+                        text = ""
                 except Exception:
                     continue
                 await self._emit("research.source.read", identity, device, {"owner_id": identity.owner_id, "research_run_id": run_id, "source_id": source.source_id})
@@ -105,22 +123,26 @@ class ResearchService:
                     continue
                 item = EvidenceItem(f"evidence-{uuid4()}", source.source_id, excerpt, source.locator, fingerprint, True)
                 evidence.append(item)
+                self.repository.insert_research_evidence(run_id, item)
                 await self._emit("research.evidence.added", identity, device, {"owner_id": identity.owner_id, "research_run_id": run_id, "source_id": source.source_id, "evidence_id": item.evidence_id, "evidence_count": len(evidence)})
             await self._set_status(self._runs[run_id], "synthesizing", identity, device)
             report = self._report(initial.request.query, sources, evidence)
             completed = ResearchRun(run_id, initial.request, initial.plan, "completed", initial.steps, tuple(sources), tuple(evidence), report, created_at=initial.created_at, completed_at=datetime.now(UTC))
             self._runs[run_id] = completed
+            self.repository.update_research_run(completed)
             await self._emit("research.run.completed", identity, device, {"owner_id": identity.owner_id, "research_run_id": run_id, "evidence_count": len(evidence)}, EventState.COMPLETED)
             await self.audit.record(AuditRecord(f"audit-{uuid4()}", "research.completed", datetime.now(UTC), identity.identity_id, device.device_id, run_id, "completed", None, {"source_count": len(sources), "evidence_count": len(evidence)}))
             return completed
         except asyncio.CancelledError:
             current = self._runs[run_id]
             self._runs[run_id] = ResearchRun(run_id, current.request, current.plan, "cancelled", current.steps, current.sources, current.evidence, current.report, "cancelled", current.created_at, datetime.now(UTC))
+            self.repository.update_research_run(self._runs[run_id])
             await self._emit("research.run.cancelled", identity, device, {"owner_id": identity.owner_id, "research_run_id": run_id}, EventState.COMPLETED)
             return self._runs[run_id]
         except Exception as exc:
             current = self._runs[run_id]
             self._runs[run_id] = ResearchRun(run_id, current.request, current.plan, "failed", current.steps, current.sources, current.evidence, current.report, exc.args[0] if exc.args and isinstance(exc.args[0], str) else exc.__class__.__name__, current.created_at, datetime.now(UTC))
+            self.repository.update_research_run(self._runs[run_id])
             await self._emit("research.run.failed", identity, device, {"owner_id": identity.owner_id, "research_run_id": run_id, "error_code": self._runs[run_id].error_code}, EventState.FAILED)
             return self._runs[run_id]
         finally:
@@ -138,17 +160,53 @@ class ResearchService:
 
     def get(self, run_id: str, owner_id: str) -> ResearchRun | None:
         run = self._runs.get(run_id)
-        return run if run and run.request.owner_id == owner_id else None
+        if run is not None:
+            return run if run.request.owner_id == owner_id else None
+        row = self.repository.research_run(owner_id, run_id)
+        if row is None:
+            return None
+        return self._hydrate(row)
 
     def list(self, owner_id: str) -> tuple[ResearchRun, ...]:
+        for row in self.repository.research_runs(owner_id):
+            if str(row["id"]) not in self._runs:
+                self._hydrate(row)
         return tuple(run for run in self._runs.values() if run.request.owner_id == owner_id)
 
     def evidence(self, run_id: str, owner_id: str) -> tuple[EvidenceItem, ...]:
         run = self.get(run_id, owner_id)
         return run.evidence if run else ()
 
+    def _hydrate(self, row: dict[str, object]) -> ResearchRun:
+        run_id = str(row["id"])
+        request = ResearchRequest(
+            str(row["query"]), str(row["owner_id"]), str(row["device_id"]),
+            len(json.loads(str(row["steps_json"]))), 8, 30.0, json.loads(str(row["context_json"])),
+        )
+        plan = ResearchPlan(tuple(json.loads(str(row["plan_json"]))), ("local", "browser"))
+        steps = tuple(ResearchStep(str(item["step_id"]), str(item["title"]), str(item["status"]), item.get("detail")) for item in json.loads(str(row["steps_json"])))
+        sources = tuple(ResearchSource(str(item["id"]), str(item["locator"]), str(item["title"]), str(item["source_type"]), datetime.fromisoformat(str(item["retrieved_at"])) if item["retrieved_at"] else None, item["fingerprint"], str(item["trust"])) for item in self.repository.research_sources(run_id))
+        evidence = tuple(EvidenceItem(str(item["id"]), str(item["source_id"]), str(item["excerpt"]), str(item["locator"]), str(item["fingerprint"]), bool(item["untrusted_content"])) for item in self.repository.research_evidence(run_id))
+        report = self._hydrate_report(row.get("report_json"))
+        run = ResearchRun(run_id, request, plan, str(row["status"]), steps, sources, evidence, report, row.get("error_code"), datetime.fromisoformat(str(row["created_at"])) if row["created_at"] else None, datetime.fromisoformat(str(row["completed_at"])) if row["completed_at"] else None)
+        self._runs[run_id] = run
+        return run
+
+    @staticmethod
+    def _hydrate_report(value: object) -> ResearchReport | None:
+        if not value:
+            return None
+        data = json.loads(str(value))
+        return ResearchReport(
+            str(data["title"]), str(data["summary"]),
+            tuple(ResearchFinding(str(item["finding_id"]), str(item["statement"]), tuple(item["evidence_ids"]), float(item["confidence"])) for item in data.get("findings", ())),
+            tuple(CitationRecord(str(item["citation_id"]), str(item["evidence_id"]), str(item["label"]), bool(item["valid"])) for item in data.get("citations", ())),
+            tuple(str(item) for item in data.get("limitations", ())),
+        )
+
     async def _set_status(self, run: ResearchRun, status: str, identity: Identity, device: DeviceIdentity) -> None:
         self._runs[run.run_id] = ResearchRun(run.run_id, run.request, run.plan, status, run.steps, run.sources, run.evidence, run.report, run.error_code, run.created_at, run.completed_at)
+        self.repository.update_research_run(self._runs[run.run_id])
         await self._emit(f"research.{status}", identity, device, {"owner_id": identity.owner_id, "research_run_id": run.run_id, "query": run.request.query, "evidence_count": len(run.evidence)})
 
     def _report(self, query: str, sources: list[ResearchSource], evidence: list[EvidenceItem]) -> ResearchReport:
@@ -189,6 +247,11 @@ class ResearchService:
         if run is None:
             raise KeyError(run_id)
         return run
+
+    @staticmethod
+    def _remaining_seconds(started: datetime, budget: float) -> float:
+        remaining = budget - (datetime.now(UTC) - started).total_seconds()
+        return max(0.001, remaining)
 
     async def _emit(self, event_type: str, identity: Identity, device: DeviceIdentity, payload: dict[str, object], state: EventState = EventState.EMITTED) -> None:
         event = Event.create(event_type, EventCategory.RESEARCH, correlation_id=str(payload.get("research_run_id", uuid4())), actor_id=identity.identity_id, payload=payload, state=state)

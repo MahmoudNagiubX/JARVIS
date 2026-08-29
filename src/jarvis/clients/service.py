@@ -19,6 +19,7 @@ class ClientSessionService:
         self.repository = repository
         self.event_bus = event_bus
         self._sessions: dict[str, ClientSession] = {}
+        self.max_sessions = 64
 
     async def connect(
         self,
@@ -32,6 +33,9 @@ class ClientSessionService:
         unknown = topics - ALLOWED_CLIENT_TOPICS
         if unknown:
             raise ValueError(f"unsupported client topics: {sorted(unknown)}")
+        active = sum(1 for item in self._sessions.values() if item.connection == "connected")
+        if active >= self.max_sessions:
+            raise ValueError("client session limit reached")
         if device is not None and device.owner_id != identity.owner_id:
             raise PermissionError("owner_binding_mismatch")
         session = ClientSession(

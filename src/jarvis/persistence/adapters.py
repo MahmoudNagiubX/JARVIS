@@ -75,6 +75,23 @@ class PostgresDatabase:
             return DatabaseHealth(self.backend, False, now, exc.__class__.__name__)
         return DatabaseHealth(self.backend, True, now, "ready")
 
+    def reconnect(self) -> DatabaseHealth:
+        """Replace a broken connection using the deployment-owned factory."""
+
+        with self._lock:
+            old = self.connection
+            try:
+                replacement = self._connection_factory()
+            except Exception as exc:
+                return DatabaseHealth(self.backend, False, datetime.now(UTC), f"reconnect:{exc.__class__.__name__}")
+            self.connection = replacement
+            self._closed = False
+            try:
+                old.close()
+            except Exception:
+                pass
+        return self.health()
+
     def close(self) -> None:
         if not self._closed:
             with self._lock:

@@ -7,8 +7,9 @@ bounded event timeline. It is disposable: identity, devices, permissions,
 approvals, audit, memory, world state, goals, agent runtime, model gateway,
 capabilities, and tools remain authoritative in their existing services.
 
-The gateway exposes `GET /v1/experience/state`, `/system`, `/timeline`, and an
-authenticated `/v1/experience/events` Server-Sent Events snapshot stream. The
+The gateway exposes `GET /v1/experience/state`, `/system`, `/timeline`, an
+authenticated `/v1/experience/events` Server-Sent Events snapshot stream, and
+a bounded `/v1/experience/events/ws` WebSocket fan-out. The
 stdlib transport has no WebSocket dependency; a future WebSocket adapter must
 preserve the same event envelope and authentication binding.
 

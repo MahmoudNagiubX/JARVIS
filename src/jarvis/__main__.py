@@ -5,12 +5,17 @@ from __future__ import annotations
 import asyncio
 import argparse
 import json
+from pathlib import Path
 
 from .api.core import CoreApplication
 from .api.http import CoreHttpServer
 from .bootstrap import running_runtime
+from .config import JarvisConfig
 from .contracts import LLMMessage, LLMRequest, LLMRole
 from .models.routing import ModelRoute
+from .models.probes import LocalModelCapabilityProbe
+from .persistence.backup import SQLiteBackupService
+from .persistence.db import SQLiteDatabase
 
 
 async def _main(args: argparse.Namespace) -> None:
@@ -37,6 +42,21 @@ async def _main(args: argparse.Namespace) -> None:
                     )
                     response = await runtime.models.generate(request, ModelRoute.GENERAL_REASONING)
                     print(f"MODEL SMOKE: PASS ({response.model})")
+        if args.model_probe:
+            result = await LocalModelCapabilityProbe(runtime.models).run(
+                ModelRoute.GENERAL_REASONING,
+                exercise_generation=args.model_exercise,
+            )
+            print(json.dumps(result.as_dict(), ensure_ascii=False))
+        if args.status:
+            print(json.dumps({
+                "runtime": runtime.state.value,
+                "database": runtime.config.database_path,
+                "model_provider": runtime.config.model_provider,
+                "model_primary": runtime.config.primary_model,
+                "offline": runtime.offline.state.online is False,
+                "event_count": runtime.repository.event_count(),
+            }, ensure_ascii=False))
         if args.serve:
             server = CoreHttpServer(application, port=args.port)
             print(f"JARVIS HTTP API listening on http://127.0.0.1:{server.address[1]}")
@@ -50,9 +70,41 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the local JARVIS core runtime")
     parser.add_argument("--text", help="send one text message through the full runtime")
     parser.add_argument("--model-smoke", action="store_true", help="probe an already-running loopback model provider")
+    parser.add_argument("--model-probe", action="store_true", help="inspect model health/capabilities without downloading")
+    parser.add_argument("--model-exercise", action="store_true", help="send one bounded generation during --model-probe")
+    parser.add_argument("--status", action="store_true", help="print runtime status")
     parser.add_argument("--serve", action="store_true", help="serve the loopback HTTP API")
     parser.add_argument("--port", type=int, default=8787, help="loopback HTTP port")
-    asyncio.run(_main(parser.parse_args()))
+    parser.add_argument("--backup", metavar="PATH", help="create an explicit SQLite backup")
+    parser.add_argument("--verify-backup", metavar="PATH", help="verify an SQLite backup")
+    parser.add_argument("--restore-backup", metavar="SOURCE", help="restore SOURCE to --restore-target")
+    parser.add_argument("--restore-target", metavar="PATH", help="destination used with --restore-backup")
+    parser.add_argument("--overwrite-restore", action="store_true", help="allow an explicit existing restore destination")
+    args = parser.parse_args()
+    maintenance = [bool(args.backup), bool(args.verify_backup), bool(args.restore_backup)]
+    if sum(maintenance) > 1:
+        parser.error("--backup, --verify-backup, and --restore-backup are mutually exclusive")
+    if args.restore_target and not args.restore_backup:
+        parser.error("--restore-target requires --restore-backup")
+    if args.overwrite_restore and not args.restore_backup:
+        parser.error("--overwrite-restore requires --restore-backup")
+    if args.backup or args.verify_backup or args.restore_backup:
+        config = JarvisConfig.from_env()
+        if args.backup:
+            source = Path(config.database_path).expanduser().resolve(strict=True)
+            database = SQLiteDatabase(str(source))
+            try:
+                print(json.dumps(SQLiteBackupService(database).create(args.backup), ensure_ascii=False))
+            finally:
+                database.close()
+        elif args.verify_backup:
+            print(json.dumps(SQLiteBackupService.verify(args.verify_backup), ensure_ascii=False))
+        else:
+            if not args.restore_target:
+                parser.error("--restore-backup requires --restore-target")
+            print(json.dumps(SQLiteBackupService.restore(args.restore_backup, args.restore_target, overwrite=args.overwrite_restore), ensure_ascii=False))
+        return
+    asyncio.run(_main(args))
 
 
 if __name__ == "__main__":

@@ -19,7 +19,10 @@ reads, device fabric heartbeats/revocation, home safety boundaries, restricted
 MQTT, communications approval, notification deduplication, room voice
 handoff, capability registration, and the new loopback endpoints.
 
-Tests use deterministic providers and adapters. They do not prove a real
+Phase 06 adds durable research restart reconciliation, backup/restore,
+injected PostgreSQL reconnect health, local model probing, lifecycle,
+redaction, retention, and WebSocket framing tests. Tests use deterministic
+providers and adapters. They do not prove a real
 PostgreSQL/pgvector deployment, GPU inference, physical voice acceptance,
 external Windows satellite transport, Playwright browser control, Home
 Assistant/MQTT hardware, OS notification delivery, or external communication

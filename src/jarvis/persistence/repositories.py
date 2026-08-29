@@ -367,6 +367,15 @@ class RuntimeRepository:
             raise KeyError(run_id)
         return result
 
+    def reconcile_active_runs(self) -> int:
+        """Fail only process-owned transient runs after an unclean restart."""
+        with self.database.transaction() as db:
+            cursor = db.execute(
+                "UPDATE runs SET status = 'failed', completed_at = ?, failure_code = 'process_restarted' WHERE status IN ('queued', 'running', 'cancel_requested')",
+                (iso(utc_now()),),
+            )
+            return int(cursor.rowcount)
+
     def append_event(self, event: Event) -> int:
         with self.database.transaction() as db:
             cursor = db.execute(
@@ -385,6 +394,30 @@ class RuntimeRepository:
                 "SELECT * FROM events WHERE correlation_id = ? ORDER BY sequence", (correlation_id,)
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def event_count(self) -> int:
+        row = self.database.connection.execute("SELECT COUNT(*) AS count FROM events").fetchone()
+        return int(row["count"])
+
+    def prune_events(self, before: datetime, *, dry_run: bool = True) -> dict[str, object]:
+        """Prune only the operational event log; authority records stay intact.
+
+        The default is a dry run so retention cannot silently remove evidence.
+        Memories, conversations, goals, identities, and audit_records are never
+        touched by this method.
+        """
+
+        cutoff = iso(before)
+        row = self.database.connection.execute(
+            "SELECT COUNT(*) AS count FROM events WHERE timestamp < ?", (cutoff,)
+        ).fetchone()
+        matched = int(row["count"])
+        deleted = 0
+        if not dry_run and matched:
+            with self.database.transaction() as db:
+                cursor = db.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
+                deleted = int(cursor.rowcount)
+        return {"before": cutoff, "matched": matched, "deleted": deleted, "dry_run": dry_run}
 
     def insert_approval(self, request: Any, status: str) -> None:
         with self.database.transaction() as db:
@@ -686,6 +719,79 @@ class RuntimeRepository:
         if result is None:
             raise KeyError(goal_id)
         return result
+
+    # Phase 06 durable research jobs -------------------------------------
+    def insert_research_run(self, run: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO research_runs(id, owner_id, device_id, query, status, plan_json, steps_json, context_json, created_at, completed_at, error_code, report_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (run.run_id, run.request.owner_id, run.request.device_id, run.request.query, run.status,
+                 json_text(list(run.plan.steps)), json_text([self._research_step(item) for item in run.steps]),
+                 json_text(dict(run.request.context)), iso(run.created_at), iso(run.completed_at), run.error_code,
+                 self._research_report_json(run.report)),
+            )
+
+    def update_research_run(self, run: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "UPDATE research_runs SET status = ?, plan_json = ?, steps_json = ?, context_json = ?, completed_at = ?, error_code = ?, report_json = ? WHERE id = ? AND owner_id = ?",
+                (run.status, json_text(list(run.plan.steps)), json_text([self._research_step(item) for item in run.steps]),
+                 json_text(dict(run.request.context)), iso(run.completed_at), run.error_code,
+                 self._research_report_json(run.report), run.run_id, run.request.owner_id),
+            )
+
+    def insert_research_source(self, run_id: str, source: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO research_sources(id, run_id, locator, title, source_type, retrieved_at, fingerprint, trust) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (source.source_id, run_id, source.locator, source.title, source.source_type, iso(source.retrieved_at), source.fingerprint, source.trust),
+            )
+
+    def insert_research_evidence(self, run_id: str, evidence: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO research_evidence(id, run_id, source_id, excerpt, locator, fingerprint, untrusted_content) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (evidence.evidence_id, run_id, evidence.source_id, evidence.excerpt, evidence.locator, evidence.fingerprint, int(evidence.untrusted_content)),
+            )
+
+    def research_run(self, owner_id: str, run_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM research_runs WHERE owner_id = ? AND id = ?", (owner_id, run_id)).fetchone()
+        return dict(row) if row else None
+
+    def research_runs(self, owner_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM research_runs WHERE owner_id = ? ORDER BY created_at DESC", (owner_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def research_sources(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM research_sources WHERE run_id = ? ORDER BY retrieved_at, id", (run_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def research_evidence(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM research_evidence WHERE run_id = ? ORDER BY id", (run_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def reconcile_research_runs(self) -> int:
+        with self.database.transaction() as db:
+            cursor = db.execute(
+                "UPDATE research_runs SET status = 'failed', completed_at = ?, error_code = 'process_restarted' WHERE status IN ('queued', 'running', 'planning', 'searching', 'reading', 'synthesizing')",
+                (iso(utc_now()),),
+            )
+            return int(cursor.rowcount)
+
+    @staticmethod
+    def _research_step(step: Any) -> dict[str, object]:
+        return {"step_id": step.step_id, "title": step.title, "status": step.status, "detail": step.detail}
+
+    @staticmethod
+    def _research_report_json(report: Any) -> str | None:
+        if report is None:
+            return None
+        return json.dumps({
+            "title": report.title, "summary": report.summary,
+            "findings": [{"finding_id": item.finding_id, "statement": item.statement, "evidence_ids": list(item.evidence_ids), "confidence": item.confidence} for item in report.findings],
+            "citations": [{"citation_id": item.citation_id, "evidence_id": item.evidence_id, "label": item.label, "valid": item.valid} for item in report.citations],
+            "limitations": list(report.limitations),
+        }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
     # Phase 03 proactive and personalization ----------------------------
     def insert_finding(self, finding: Any) -> None:

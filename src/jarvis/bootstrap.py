@@ -145,6 +145,15 @@ class JarvisRuntime:
         if self.state is not RuntimeState.CREATED:
             raise RuntimeError(f"cannot start runtime from {self.state.value}")
         self.state = RuntimeState.STARTING
+        reconciled = self.repository.reconcile_active_runs()
+        if reconciled:
+            recovery = Event.create(
+                "system.runtime.reconciled", EventCategory.SYSTEM,
+                correlation_id=self.runtime_id, state=EventState.COMPLETED,
+                payload={"reconciled_runs": reconciled},
+            )
+            self.repository.append_event(recovery)
+            await self.event_bus.publish(recovery)
         await self.scheduler.start()
         correlation_id = self.runtime_id
         started = Event.create(
