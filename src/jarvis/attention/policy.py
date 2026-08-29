@@ -26,6 +26,7 @@ class AttentionContext:
     duplicate: bool = False
     quiet_hours: tuple[str, str] | None = None
     voice_announcement_level: str = "important"
+    timezone_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +60,7 @@ class AttentionPolicy:
             return AttentionDecision(False, False, False, False, False, True, False, presence.active_device_id, presence.voice_endpoint_id, "duplicate_cooldown")
         if context.mode in {"sleep", "do_not_disturb", "away"} and level not in {AttentionLevel.URGENT, AttentionLevel.CRITICAL}:
             return AttentionDecision(False, True, True, False, False, False, False, presence.active_device_id, None, f"mode_{context.mode}")
-        if context.quiet_hours and self._in_window(context.quiet_hours, now or datetime.now(UTC)) and level not in {AttentionLevel.URGENT, AttentionLevel.CRITICAL}:
+        if context.quiet_hours and in_time_window(context.quiet_hours[0], context.quiet_hours[1], now=now or datetime.now(UTC), timezone_name=context.timezone_name) and level not in {AttentionLevel.URGENT, AttentionLevel.CRITICAL}:
             return AttentionDecision(False, True, True, False, False, False, False, presence.active_device_id, None, "quiet_hours")
         if context.mode in {"focus", "study", "meeting"} and level == AttentionLevel.INFO:
             return AttentionDecision(False, True, True, False, False, False, False, presence.active_device_id, None, f"mode_{context.mode}")

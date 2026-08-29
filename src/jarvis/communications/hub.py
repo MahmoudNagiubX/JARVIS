@@ -68,7 +68,9 @@ class CommunicationsHub:
         self._messages.setdefault(owner_id, [])
         self._messages[owner_id] = [item for item in self._messages[owner_id] if item.channel != channel_name] + normalized
         for message in normalized:
-            await self._emit("communication.received", owner_id, {"message_id": message.message_id, "channel": channel_name})
+            payload = {"message_id": message.message_id, "channel": channel_name}
+            if isinstance(message.metadata.get("thread_id"), str): payload["thread_id"] = message.metadata["thread_id"]
+            await self._emit("communication.received", owner_id, payload)
         return tuple(normalized)
 
     async def list_messages(self, owner_id: str, channel: str | None = None, query: str | None = None) -> tuple[CommunicationMessage, ...]:
@@ -183,7 +185,9 @@ class CommunicationsHub:
             await self.audit.record(AuditRecord(f"audit-{uuid4()}", "communication.failed", datetime.now(UTC), message.sender_id, None, f"communication-{owner_id}", "failed", error, {"channel": message.channel}))
             return CommunicationSendResult("failed", message.message_id, error_code=error or "channel_send_failed")
         self._messages.setdefault(owner_id, []).append(message)
-        await self._emit("communication.sent", owner_id, {"message_id": message.message_id, "channel": message.channel}, EventState.COMPLETED)
+        payload = {"message_id": message.message_id, "channel": message.channel}
+        if isinstance(message.metadata.get("thread_id"), str): payload["thread_id"] = message.metadata["thread_id"]
+        await self._emit("communication.sent", owner_id, payload, EventState.COMPLETED)
         await self.audit.record(AuditRecord(f"audit-{uuid4()}", "communication.sent", datetime.now(UTC), message.sender_id, None, f"communication-{owner_id}", "sent", None, {"channel": message.channel, "session_id": session_id}))
         return CommunicationSendResult("sent", message.message_id)
 

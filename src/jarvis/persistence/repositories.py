@@ -6,7 +6,7 @@ import json
 import sqlite3
 from dataclasses import asdict
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -1292,3 +1292,21 @@ class RuntimeRepository:
     def routine_runs(self, owner_id: str, limit: int = 20) -> list[dict[str, Any]]:
         rows = self.database.connection.execute("SELECT * FROM routine_runs WHERE owner_id = ? ORDER BY started_at DESC LIMIT ?", (owner_id, limit)).fetchall()
         return [dict(row) for row in rows]
+
+    def cleanup_phase08_operational_state(self, owner_id: str, *, now: datetime) -> dict[str, int]:
+        cut30, cut90 = iso(now - timedelta(days=30)), iso(now - timedelta(days=90))
+        counts: dict[str, int] = {}
+        with self.database.transaction() as db:
+            for key, table, column, cutoff, condition in (
+                ("delivery_attempts", "notification_delivery_attempts", "attempted_at", cut30, ""),
+                ("auto_send_attempts", "communication_auto_send_attempts", "attempted_at", cut30, ""),
+                ("routine_runs", "routine_runs", "started_at", cut90, ""),
+                ("focus_sessions", "focus_sessions", "started_at", cut90, " AND status != 'active'"),
+                ("resolved_followups", "communication_followups", "resolved_at", cut90, " AND status = 'resolved'"),
+            ):
+                cursor = db.execute(f"DELETE FROM {table} WHERE owner_id = ? AND {column} < ?{condition}", (owner_id, cutoff)); counts[key] = cursor.rowcount
+            latest = db.execute("SELECT id FROM personal_modes WHERE owner_id = ? ORDER BY started_at DESC LIMIT 1", (owner_id,)).fetchone()
+            if latest:
+                counts["personal_modes"] = db.execute("DELETE FROM personal_modes WHERE owner_id = ? AND started_at < ? AND id != ?", (owner_id, cut90, latest[0])).rowcount
+            else: counts["personal_modes"] = 0
+        return counts

@@ -301,7 +301,9 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     automation = AutomationService(repository, event_bus, skill_executor=skill_executor, missions=missions, briefings=briefings, offline=offline, capabilities=capabilities)
     automation.notifications = notifications
     communications_intelligence = CommunicationIntelligenceService(repository, event_bus)
-    communication_followups = CommunicationFollowUpService(repository, event_bus, communications_intelligence, communications)
+    communication_followups = CommunicationFollowUpService(repository, event_bus, communications_intelligence, communications, personalization)
+    event_bus.subscribe("communication.received", communication_followups.handle_communication_event)
+    event_bus.subscribe("communication.sent", communication_followups.handle_communication_event)
     worker_coordinator = WorkerCoordinator(repository, event_bus, developer_gateway=None, permission=permission)
     evaluations = EvaluationService(repository, event_bus)
     evaluations.register_default_suites()
@@ -310,7 +312,14 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     presence = PresenceService(world_state, voice_routing, clients, device_fabric, repository, event_bus)
     attention = AttentionPolicy()
     operations = PersonalOperationsService(repository, event_bus, world_state, personalization, goals=goals, missions=missions, briefings=briefings, notifications=notifications, automation=automation, offline=offline)
-    notification_delivery = NotificationDeliveryCoordinator(notifications, attention, presence, voice_routing, repository, event_bus, personalization=personalization, operations=operations)
+    voice = VoiceCore(agent, event_bus, stt, tts)
+    notification_delivery = NotificationDeliveryCoordinator(notifications, attention, presence, voice_routing, repository, event_bus, personalization=personalization, operations=operations, voice_core=voice)
+    async def _attention_queue_trigger(event: Event) -> None:
+        owner_id = event.payload.get("owner_id")
+        if isinstance(owner_id, str): await notification_delivery.reevaluate_queued(owner_id)
+    event_bus.subscribe("focus.ended", _attention_queue_trigger)
+    event_bus.subscribe("focus.interrupted", _attention_queue_trigger)
+    event_bus.subscribe("attention.mode_changed", _attention_queue_trigger)
     home_context = HomeContextService(home, world_state, repository, event_bus)
     home_routines = HomeRoutineService(home_context, home, repository, event_bus)
     operations.home_routines = home_routines
@@ -451,6 +460,13 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         owner_id = await maintenance_owner()
         return len(await communication_followups.due(owner_id)) if owner_id else 0
 
+    async def reevaluate_notification_queue() -> int:
+        owner_id = await maintenance_owner()
+        return len(await notification_delivery.reevaluate_queued(owner_id)) if owner_id else 0
+    async def retain_phase08() -> dict[str, int]:
+        owner_id = await maintenance_owner()
+        return repository.cleanup_phase08_operational_state(owner_id, now=datetime.now(UTC)) if owner_id else {}
+
     async def detect_proactive() -> int:
         owner_id = await maintenance_owner()
         return len(await proactive.detect(owner_id)) if owner_id else 0
@@ -472,6 +488,8 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     scheduler.add("world-state-expiry", 60, expire_world_state)
     scheduler.add("presence-expiry", 60, expire_presence)
     scheduler.add("communication-followups", 60, detect_followups)
+    scheduler.add("notification-queue-check", 60, reevaluate_notification_queue)
+    scheduler.add("phase08-operational-retention", 21600, retain_phase08)
     scheduler.add("goal-proactive-check", 60, detect_proactive)
     scheduler.add("event-intelligence-check", 60, detect_event_intelligence)
     scheduler.add("automation-check", 60, run_automation_tick)
@@ -503,7 +521,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         venom=VenomNode(),
         computer=WindowsComputerController(satellite),
         browser=browser_controller,
-        voice=VoiceCore(agent, event_bus, stt, tts),
+        voice=voice,
         stt=stt,
         tts=tts,
         communication=local_channel,

@@ -76,6 +76,7 @@ class NotificationDeliveryCoordinator:
         self.personalization = personalization
         self.operations = operations
         self.voice_core = voice_core
+        self._queued: dict[str, set[str]] = {}
 
     async def deliver(
         self,
@@ -101,8 +102,10 @@ class NotificationDeliveryCoordinator:
                 quiet_hours = (str(configured_quiet[0]), str(configured_quiet[1]))
             announcement = str(profile.values.get("voice_announcement_level", "important"))
             cooldown = float(profile.values.get("voice_dedup_seconds", cooldown))
+            timezone_name = profile.values.get("timezone") if isinstance(profile.values.get("timezone"), str) else None
         else:
             announcement = "important"
+            timezone_name = None
         duplicate = any(
             row.get("fingerprint") == fingerprint and row.get("channel") == "voice" and row.get("status") == "delivered"
             and datetime.fromisoformat(str(row["attempted_at"])) >= current - timedelta(seconds=max(0.0, cooldown))
@@ -112,7 +115,7 @@ class NotificationDeliveryCoordinator:
             mode = (await self.operations.mode(owner_id)).mode
         if self.voice_core is not None:
             active_voice = getattr(getattr(self.voice_core, "state", None), "value", None) in {"listening", "thinking", "speaking", "follow_up"}
-        decision = self.attention.decide(item, presence, AttentionContext(mode, active_voice, duplicate, quiet_hours, announcement), now=current)
+        decision = self.attention.decide(item, presence, AttentionContext(mode, active_voice, duplicate, quiet_hours, announcement, timezone_name), now=current)
         await self._emit("notification.delivery_started", owner_id, item.notification_id, {"reason": decision.reason})
         if decision.suppress_duplicate:
             attempt = await self._attempt(owner_id, item, "voice", decision.target_voice_endpoint, "suppressed", decision.reason, fingerprint)
@@ -145,6 +148,11 @@ class NotificationDeliveryCoordinator:
                     channels.append("voice")
         if decision.queue:
             status, reason = "queued", decision.reason
+            queued = self._queued.setdefault(owner_id, set())
+            if item.notification_id not in queued:
+                queued.add(item.notification_id)
+                attempts.append(await self._attempt(owner_id, item, "queue", None, "queued", reason, fingerprint))
+                await self._emit("notification.delivery_queued", owner_id, item.notification_id, {"reason": reason})
         elif any(item.status == "delivered" for item in attempts):
             status, reason = "delivered", None
         elif attempts:
@@ -162,6 +170,21 @@ class NotificationDeliveryCoordinator:
         elif status == "unavailable":
             await self._emit("notification.delivery_failed", owner_id, item.notification_id, {"reason": reason}, EventState.FAILED)
         return DeliveryResult(item.notification_id, status, tuple(channels), decision.target_device, decision.target_voice_endpoint, reason, tuple(attempts))
+
+    async def reevaluate_queued(self, owner_id: str, *, now: datetime | None = None) -> tuple[DeliveryResult, ...]:
+        results: list[DeliveryResult] = []
+        queued = self._queued.get(owner_id, set())
+        for notification_id in tuple(queued):
+            item = await self._find(owner_id, notification_id)
+            current = now or datetime.now(UTC)
+            if item is None or item.dismissed_at is not None or item.expires_at is not None and item.expires_at <= current or item.delivered_at is not None:
+                queued.discard(notification_id)
+                continue
+            result = await self.deliver(owner_id, item, now=current)
+            results.append(result)
+            if result.status != "queued":
+                queued.discard(notification_id)
+        return tuple(results)
 
     async def _find(self, owner_id: str, notification_id: str) -> Notification | None:
         for item in await self.notifications.list(owner_id):

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+import os
 import subprocess
 import sys
 from typing import Any
@@ -105,6 +106,12 @@ def _run_tests(arguments: Mapping[str, Any], __: ToolContext) -> ToolResult:
     if not test_file and (path / "tests" / "test_bootstrap.py").is_file():
         test_file = "test_bootstrap.py"
     command = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-q"]
+    environment = os.environ.copy()
+    source_path = path / "src"
+    if source_path.is_dir():
+        environment["PYTHONPATH"] = os.pathsep.join(
+            item for item in (str(source_path), environment.get("PYTHONPATH", "")) if item
+        )
     if test_file:
         target = (path / "tests" / test_file).resolve()
         if path not in target.parents or not target.is_file():
@@ -114,6 +121,7 @@ def _run_tests(arguments: Mapping[str, Any], __: ToolContext) -> ToolResult:
         result = subprocess.run(
             command,
             cwd=path,
+            env=environment,
             capture_output=True,
             text=True,
             timeout=30,

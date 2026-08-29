@@ -698,8 +698,7 @@ class CoreApplication:
         return asdict(await self.runtime.notifications.dismiss(owner_id, notification_id))
 
     async def deliver_notification(self, owner_id: str, notification_id: str, values: dict[str, object] | None = None) -> dict[str, Any]:
-        values = values or {}
-        result = await self.runtime.notification_delivery.deliver(owner_id, notification_id, mode=str(values.get("mode", "normal")), active_voice=bool(values.get("active_voice", False)))
+        result = await self.runtime.notification_delivery.deliver(owner_id, notification_id)
         return asdict(result)
 
     def capabilities(self, device_id: str | None = None) -> list[dict[str, Any]]:

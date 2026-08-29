@@ -160,11 +160,12 @@ class AutoSendRule:
 class CommunicationFollowUpService:
     """Follow-up metadata and scoped send policy; message content stays in CommunicationsHub."""
 
-    def __init__(self, repository: RuntimeRepository, event_bus: InMemoryEventBus, intelligence: CommunicationIntelligenceService | None = None, communications: Any | None = None) -> None:
+    def __init__(self, repository: RuntimeRepository, event_bus: InMemoryEventBus, intelligence: CommunicationIntelligenceService | None = None, communications: Any | None = None, personalization: Any | None = None) -> None:
         self.repository = repository
         self.event_bus = event_bus
         self.intelligence = intelligence
         self.communications = communications
+        self.personalization = personalization
         self._sent: dict[tuple[str, str, str], list[datetime]] = {}
 
     async def create(self, owner_id: str, thread_id: str, *, message_id: str | None = None, direction: str = "awaiting_other_party", summary: str = "Awaiting reply", due_at: datetime | None = None, delay_seconds: float = 86400.0, related_goal_id: str | None = None, related_mission_id: str | None = None, metadata: Mapping[str, object] | None = None) -> CommunicationFollowUp:
@@ -189,6 +190,18 @@ class CommunicationFollowUpService:
         self.repository.insert_communication_followup(updated)
         await self._emit("communication.followup_resolved", updated, EventState.COMPLETED)
         return updated
+
+    async def handle_communication_event(self, event: Event) -> int:
+        if event.event_type not in {"communication.received", "communication.sent"}:
+            return 0
+        owner_id, thread_id = event.payload.get("owner_id"), event.payload.get("thread_id")
+        if not isinstance(owner_id, str) or not isinstance(thread_id, str): return 0
+        direction = "awaiting_other_party" if event.event_type == "communication.received" else "awaiting_user"
+        count = 0
+        for item in await self.list(owner_id, active_only=True):
+            if item.thread_id == thread_id and item.direction == direction:
+                await self.acknowledge(owner_id, item.followup_id); count += 1
+        return count
 
     async def create_follow_up(self, owner_id: str, thread_id: str, **kwargs: object) -> CommunicationFollowUp:
         return await self.create(owner_id, thread_id, **kwargs)  # type: ignore[arg-type]
@@ -244,7 +257,7 @@ class CommunicationFollowUpService:
         self.repository.insert_auto_send_rule(updated)
         return updated
 
-    def can_auto_send_scoped(self, owner_id: str, channel: str, recipient: str, content: str, *, message_class: str = "normal", context: Mapping[str, object] | None = None, now: datetime | None = None) -> tuple[bool, str]:
+    def can_auto_send_scoped(self, owner_id: str, channel: str, recipient: str, content: str, *, message_class: str = "normal", context: Mapping[str, object] | None = None, now: datetime | None = None, timezone_name: str | None = None) -> tuple[bool, str]:
         current = now or datetime.now(UTC)
         if not content.strip():
             return False, "empty_message"
@@ -257,7 +270,7 @@ class CommunicationFollowUpService:
                 return False, "confirmation_required"
             if any((context or {}).get(key) != value for key, value in rule.allowed_context.items()):
                 continue
-            if not in_time_window(rule.allowed_time_start, rule.allowed_time_end, now=current):
+            if not in_time_window(rule.allowed_time_start, rule.allowed_time_end, now=current, timezone_name=timezone_name):
                 continue
             fingerprint = hashlib.sha256(f"{channel}|{recipient}|{content.strip()}".encode()).hexdigest()
             attempts = self.repository.auto_send_attempts(owner_id, rule.rule_id, recipient, fingerprint, current - timedelta(seconds=rule.window_seconds))
@@ -273,14 +286,16 @@ class CommunicationFollowUpService:
         fingerprint = hashlib.sha256(f"{channel}|{recipient}|{content.strip()}".encode()).hexdigest()
         self.repository.insert_auto_send_attempt({"id": f"autosend-attempt-{uuid4()}", "owner_id": owner_id, "rule_id": rule_id, "channel": channel, "recipient": recipient, "fingerprint": fingerprint, "status": status, "message_id": message_id, "attempted_at": now or datetime.now(UTC), "error_code": error_code})
 
-    async def execute_scoped_auto_send(self, owner_id: str, rule_id: str, channel: str, recipient: str, content: str, identity: Any, device: Any, *, message_class: str = "normal", context: Mapping[str, object] | None = None) -> Any:
+    async def execute_scoped_auto_send(self, owner_id: str, rule_id: str, channel: str, recipient: str, content: str, identity: Any, device: Any, *, message_class: str = "normal", context: Mapping[str, object] | None = None, now: datetime | None = None) -> Any:
         if self.communications is None:
             raise RuntimeError("communications_hub_unavailable")
         row = self.repository.auto_send_rule(owner_id, rule_id)
         if row is None:
             raise KeyError(rule_id)
         rule = self._rule_from_row(row)
-        allowed, reason = self.can_auto_send_scoped(owner_id, channel, recipient, content, message_class=message_class, context=context)
+        profile = await self.personalization.get(owner_id) if self.personalization is not None else None
+        timezone_name = profile.values.get("timezone") if profile and isinstance(profile.values.get("timezone"), str) else None
+        allowed, reason = self.can_auto_send_scoped(owner_id, channel, recipient, content, message_class=message_class, context=context, timezone_name=timezone_name, now=now)
         if not allowed or not rule.enabled or rule.channel != channel or rule.message_class != message_class or recipient not in rule.recipient_allowlist:
             await self.record_auto_send_attempt(owner_id, rule_id, channel, recipient, content, status="denied", error_code=reason)
             raise PermissionError(reason)
