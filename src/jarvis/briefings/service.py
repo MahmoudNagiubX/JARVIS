@@ -40,16 +40,16 @@ class BriefingService:
     async def generate(self, owner_id: str, briefing_type: str = "morning", *, project_id: str | None = None) -> Briefing | None:
         if briefing_type not in self.TYPES:
             raise ValueError("unsupported briefing type")
-        lines: list[str] = []
-        evidence: list[str] = []
+        candidates: list[tuple[int, str, str]] = []
+        def add(priority: int, line: str, evidence_id: str) -> None:
+            if evidence_id not in {item[2] for item in candidates}:
+                candidates.append((priority, line, evidence_id))
         goals = [row for row in self.repository.goals(owner_id) if str(row.get("status")) not in {"completed", "cancelled"}]
         for goal in goals[:5]:
-            lines.append(f"Goal: {str(goal.get('title') or goal.get('description') or goal.get('id'))[:160]}")
-            evidence.append(f"goal:{goal['id']}")
+            add(70 if str(goal.get("status")) == "blocked" else 40, f"Goal: {str(goal.get('title') or goal.get('description') or goal.get('id'))[:160]}", f"goal:{goal['id']}")
         missions = [row for row in self.repository.missions(owner_id) if str(row.get("status")) not in {"completed", "cancelled"}]
         for mission in missions[:5]:
-            lines.append(f"Mission {mission['status']}: {str(mission['title'])[:140]}")
-            evidence.append(f"mission:{mission['id']}")
+            add(80 if str(mission["status"]) == "blocked" else 50, f"Mission {mission['status']}: {str(mission['title'])[:140]}", f"mission:{mission['id']}")
         projects = self.repository.workspace_projects(owner_id)
         if project_id:
             projects = [item for item in projects if str(item.get("id")) == project_id]
@@ -57,20 +57,20 @@ class BriefingService:
             metadata = self._json(project.get("metadata_json"))
             status = str(metadata.get("git_status", project.get("project_type", "unknown")))
             changed = len(metadata.get("recent_files", ())) if isinstance(metadata.get("recent_files"), list) else 0
-            lines.append(f"Project {project['id']}: {status}; {changed} recent changed file(s)")
-            evidence.append(f"project:{project['id']}")
+            add(20, f"Project {project['id']}: {status}; {changed} recent changed file(s)", f"project:{project['id']}")
         findings = self.repository.intelligence_findings(owner_id, True)
         for finding in findings[:5]:
-            lines.append(f"Finding ({finding['severity']}): {str(finding['recommended_action'])[:160]}")
-            evidence.append(f"finding:{finding['id']}")
+            action = finding.get("recommended_action") or finding.get("finding_type") or "review evidence"
+            add(100 if str(finding["severity"]) in {"critical", "urgent"} else 60, f"Finding ({finding['severity']}): {str(action)[:160]}", f"finding:{finding['id']}")
         approvals = self.repository.pending_approvals(owner_id)
         if approvals:
-            lines.append(f"Pending approvals: {len(approvals)}")
-            evidence.extend(f"approval:{item['id']}" for item in approvals[:5])
+            add(90, f"Pending approvals: {len(approvals)}", f"approval:{approvals[0]['id']}")
         followups = getattr(self.repository, "communication_followups", lambda *_args: [])(owner_id, ("open", "due"))
         for followup in followups[:3]:
-            lines.append(f"Communication follow-up: {str(followup.get('summary', followup.get('thread_id', 'reply')))[:160]}")
-            evidence.append(f"communication:{followup['thread_id']}")
+            add(65 if followup.get("status") == "due" else 30, f"Communication follow-up: {str(followup.get('summary', followup.get('thread_id', 'reply')))[:160]}", f"communication:{followup['thread_id']}")
+        candidates.sort(key=lambda item: (-item[0], item[2]))
+        lines = [item[1] for item in candidates[:7]]
+        evidence = [item[2] for item in candidates[:7]]
         if not lines:
             return None
         dedup_key = f"{owner_id}:{briefing_type}:{project_id or 'all'}:" + "|".join(evidence)

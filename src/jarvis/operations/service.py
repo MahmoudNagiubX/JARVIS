@@ -81,7 +81,7 @@ class PersonalOperationsService:
 
     MODES = frozenset({"normal", "work", "study", "focus", "meeting", "sleep", "do_not_disturb", "away"})
 
-    def __init__(self, repository: RuntimeRepository, event_bus: InMemoryEventBus, world_state: DurableWorldStateService, personalization: Any, *, goals: Any = None, missions: Any = None, briefings: Any = None, notifications: Any = None, automation: Any = None, offline: Any = None) -> None:
+    def __init__(self, repository: RuntimeRepository, event_bus: InMemoryEventBus, world_state: DurableWorldStateService, personalization: Any, *, goals: Any = None, missions: Any = None, briefings: Any = None, notifications: Any = None, automation: Any = None, offline: Any = None, home_routines: Any = None) -> None:
         self.repository = repository
         self.event_bus = event_bus
         self.world_state = world_state
@@ -92,6 +92,7 @@ class PersonalOperationsService:
         self.notifications = notifications
         self.automation = automation
         self.offline = offline
+        self.home_routines = home_routines
         self._modes: dict[str, ModeState] = {}
         self._focus: dict[str, FocusSession] = {}
 
@@ -146,7 +147,10 @@ class PersonalOperationsService:
         ended = replace(session, status="interrupted" if reason else "completed", ended_at=datetime.now(UTC), interruption_reason=reason)
         self._focus[owner_id] = ended
         self.repository.insert_focus_session(ended)
-        await self.set_mode(owner_id, "normal", source="focus_end")
+        # Expiry must not clobber a newer explicit user mode.
+        current_mode = await self.mode(owner_id)
+        if current_mode.source == "focus":
+            await self.set_mode(owner_id, "normal", source="focus_end")
         await self._emit("focus.interrupted" if reason else "focus.ended", owner_id, {"focus_id": ended.focus_id, "reason": reason}, EventState.COMPLETED)
         return ended
 
@@ -161,7 +165,10 @@ class PersonalOperationsService:
             return None
         item = self._focus_from_row(row)
         self._focus[owner_id] = item
-        return item
+        if item.ends_at and item.ends_at <= datetime.now(UTC) and item.status == "active":
+            await self.end_focus(owner_id, reason="duration_elapsed")
+            return None
+        return item if item.status == "active" else None
 
     async def run(self, owner_id: str, operation: str, *, identity: Identity | None = None, device: DeviceIdentity | None = None, values: dict[str, object] | None = None) -> PersonalOperationResult:
         if identity is not None and identity.owner_id != owner_id:
@@ -179,6 +186,7 @@ class PersonalOperationsService:
         steps: list[OperationStep] = []
         evidence: list[str] = []
         failed_optional: list[str] = []
+        failed_required: list[str] = []
 
         async def step(name: str, action: Any, *, optional: bool = False) -> None:
             try:
@@ -192,7 +200,7 @@ class PersonalOperationsService:
                 if optional:
                     failed_optional.append(name)
                 else:
-                    raise
+                    failed_required.append(name)
 
         if kind is OperationKind.WORK_START:
             await step("mode", lambda: self._mode_output(awaitable=self.set_mode(owner_id, "work", source="operation")))
@@ -200,22 +208,28 @@ class PersonalOperationsService:
             await step("active_goals_missions", lambda: self._goal_mission_check(owner_id), optional=True)
             await step("briefing", lambda: self._briefing(owner_id, "work_start"), optional=True)
             await step("system_check", lambda: self._system_check(), optional=True)
+            await step("home_routine", lambda: self._home_routine("work_start_scene", identity, device), optional=True)
         elif kind is OperationKind.STUDY_START:
             await step("mode", lambda: self._mode_output(awaitable=self.set_mode(owner_id, "study", source="operation", metadata={"goal_id": values.get("goal_id")})))
             await step("learning_context", lambda: self._goal_mission_check(owner_id, goal_id=values.get("goal_id") if isinstance(values.get("goal_id"), str) else None), optional=True)
             await step("briefing", lambda: self._briefing(owner_id, "study_start"), optional=True)
             await step("study_preferences", lambda: self._preference_output(owner_id, "study_mode_preferences"), optional=True)
+            await step("home_routine", lambda: self._home_routine("study_lighting", identity, device), optional=True)
         elif kind is OperationKind.FOCUS_SESSION:
             if str(values.get("action", "start")) == "end":
                 await step("focus_end", lambda: self._focus_output(awaitable=self.end_focus(owner_id)))
             else:
                 await step("focus_start", lambda: self._focus_output(awaitable=self.start_focus(owner_id, duration_seconds=float(values["duration_seconds"]) if values.get("duration_seconds") is not None else None, goal_id=values.get("goal_id") if isinstance(values.get("goal_id"), str) else None, mission_id=values.get("mission_id") if isinstance(values.get("mission_id"), str) else None)))
+                await step("home_routine", lambda: self._home_routine("focus_lighting", identity, device), optional=True)
         elif kind is OperationKind.LEAVE_MODE:
             await step("mode", lambda: self._mode_output(awaitable=self.set_mode(owner_id, "away", source="operation")))
+            await step("home_routine", lambda: self._home_routine("leave_safe_scene", identity, device), optional=True)
         elif kind is OperationKind.RETURN_MODE:
             await step("mode", lambda: self._mode_output(awaitable=self.set_mode(owner_id, "normal", source="operation")))
+            await step("home_routine", lambda: self._home_routine("return_scene", identity, device), optional=True)
         elif kind is OperationKind.SLEEP_MODE:
             await step("mode", lambda: self._mode_output(awaitable=self.set_mode(owner_id, "sleep", ttl_seconds=float(values["ttl_seconds"]) if values.get("ttl_seconds") else None, source="operation")))
+            await step("home_routine", lambda: self._home_routine("sleep_scene", identity, device), optional=True)
         elif kind is OperationKind.END_OF_DAY:
             await step("briefing", lambda: self._briefing(owner_id, "end_of_day"))
             await step("mode", lambda: self._mode_output(awaitable=self.set_mode(owner_id, "normal", source="operation")))
@@ -225,9 +239,10 @@ class PersonalOperationsService:
             await step("projects", lambda: self._project_check(owner_id))
         elif kind is OperationKind.SYSTEM_CHECK:
             await step("system_check", lambda: self._system_check())
-        status = "partial" if failed_optional else "completed"
+        status = "failed" if failed_required else "partial" if failed_optional else "completed"
         result = PersonalOperationResult(operation_id, owner_id, kind.value, status, tuple(steps), tuple(dict.fromkeys(evidence)), tuple(failed_optional), started, datetime.now(UTC))
-        await self._emit("personal_operation.partial" if status == "partial" else "personal_operation.completed", owner_id, {"operation_id": operation_id, "operation": kind.value, "failed_optional_steps": failed_optional}, EventState.COMPLETED)
+        event_type = "personal_operation.failed" if status == "failed" else "personal_operation.partial" if status == "partial" else "personal_operation.completed"
+        await self._emit(event_type, owner_id, {"operation_id": operation_id, "operation": kind.value, "failed_optional_steps": failed_optional, "failed_required_steps": failed_required}, EventState.FAILED if status == "failed" else EventState.COMPLETED)
         return result
 
     async def execute(self, owner_id: str, operation: str, *, identity: Identity | None = None, device: DeviceIdentity | None = None, values: dict[str, object] | None = None) -> PersonalOperationResult:
@@ -250,6 +265,14 @@ class PersonalOperationsService:
 
     async def _system_check(self) -> dict[str, object]:
         return {"offline": bool(self.offline and not self.offline.state.online), "evidence": ["runtime"]}
+
+    async def _home_routine(self, routine_id: str, identity: Identity | None, device: DeviceIdentity | None) -> dict[str, object]:
+        if self.home_routines is None or identity is None or device is None:
+            return {"routine_id": routine_id, "skipped": "identity_or_device_unavailable"}
+        result = await self.home_routines.run(routine_id, identity, device, dry_run=False)
+        if result.status != "completed":
+            raise RuntimeError(f"home_routine_{result.status}")
+        return {"routine_id": routine_id, "evidence": [f"routine:{result.run_id}"]}
 
     async def _preference_output(self, owner_id: str, key: str) -> dict[str, object]:
         profile = await self.personalization.get(owner_id)

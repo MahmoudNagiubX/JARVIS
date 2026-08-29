@@ -14,6 +14,7 @@ from ...bus import InMemoryEventBus
 from ...contracts import CommunicationMessage
 from ...events import Event, EventCategory, EventState
 from ...persistence.repositories import RuntimeRepository
+from ...time_windows import in_time_window
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,10 +160,11 @@ class AutoSendRule:
 class CommunicationFollowUpService:
     """Follow-up metadata and scoped send policy; message content stays in CommunicationsHub."""
 
-    def __init__(self, repository: RuntimeRepository, event_bus: InMemoryEventBus, intelligence: CommunicationIntelligenceService | None = None) -> None:
+    def __init__(self, repository: RuntimeRepository, event_bus: InMemoryEventBus, intelligence: CommunicationIntelligenceService | None = None, communications: Any | None = None) -> None:
         self.repository = repository
         self.event_bus = event_bus
         self.intelligence = intelligence
+        self.communications = communications
         self._sent: dict[tuple[str, str, str], list[datetime]] = {}
 
     async def create(self, owner_id: str, thread_id: str, *, message_id: str | None = None, direction: str = "awaiting_other_party", summary: str = "Awaiting reply", due_at: datetime | None = None, delay_seconds: float = 86400.0, related_goal_id: str | None = None, related_mission_id: str | None = None, metadata: Mapping[str, object] | None = None) -> CommunicationFollowUp:
@@ -213,12 +215,9 @@ class CommunicationFollowUpService:
         now = datetime.now(UTC)
         rule = AutoSendRule(
             str(values.get("rule_id", f"autosend-{uuid4()}")), owner_id, str(values.get("channel", "")), tuple(str(item) for item in recipients), str(values.get("message_class", "normal")),
-            dict(values.get("allowed_context", {})) if isinstance(values.get("allowed_context"), dict) else {}, max(1, int(values.get("max_frequency", 1))), max(1.0, float(values.get("window_seconds", 86400))), values.get("allowed_time_start") if isinstance(values.get("allowed_time_start"), str) else None, values.get("allowed_time_end") if isinstance(values.get("allowed_time_end"), str) else None, str(values.get("sensitivity", "normal")), str(values.get("approval_requirement", "always")), bool(values.get("enabled", True)), now, now,
+            dict(values.get("allowed_context", {})) if isinstance(values.get("allowed_context"), dict) else {}, int(values.get("max_frequency", 1)), float(values.get("window_seconds", 86400)), values.get("allowed_time_start") if isinstance(values.get("allowed_time_start"), str) else None, values.get("allowed_time_end") if isinstance(values.get("allowed_time_end"), str) else None, str(values.get("sensitivity", "normal")), str(values.get("approval_requirement", "always")), bool(values.get("enabled", True)), now, now,
         )
-        if not rule.channel.strip():
-            raise ValueError("auto-send channel is required")
-        if rule.message_class == "bulk" or rule.sensitivity in {"financial", "sensitive"} and rule.approval_requirement == "none":
-            raise ValueError("unsafe auto-send rule")
+        self._validate_rule(rule)
         self.repository.insert_auto_send_rule(rule)
         return rule
 
@@ -236,11 +235,12 @@ class CommunicationFollowUpService:
         if row is None:
             raise KeyError(rule_id)
         current = self._rule_from_row(row)
-        allowed = {"enabled", "max_frequency", "allowed_time_start", "allowed_time_end", "approval_requirement"}
+        allowed = {"enabled", "max_frequency", "window_seconds", "allowed_time_start", "allowed_time_end", "approval_requirement", "allowed_context", "recipient_allowlist", "message_class", "sensitivity"}
         if set(values) - allowed:
             raise ValueError("unsupported auto-send rule fields")
         data = {**asdict(current), **dict(values), "updated_at": datetime.now(UTC)}
         updated = AutoSendRule(**{key: data[key] for key in AutoSendRule.__dataclass_fields__})
+        self._validate_rule(updated)
         self.repository.insert_auto_send_rule(updated)
         return updated
 
@@ -257,16 +257,57 @@ class CommunicationFollowUpService:
                 return False, "confirmation_required"
             if any((context or {}).get(key) != value for key, value in rule.allowed_context.items()):
                 continue
-            if not self._in_window(rule.allowed_time_start, rule.allowed_time_end, current):
+            if not in_time_window(rule.allowed_time_start, rule.allowed_time_end, now=current):
                 continue
             fingerprint = hashlib.sha256(f"{channel}|{recipient}|{content.strip()}".encode()).hexdigest()
-            key = (owner_id, recipient, fingerprint)
-            sent = [item for item in self._sent.get(key, ()) if current - item <= timedelta(seconds=rule.window_seconds)]
-            if len(sent) >= rule.max_frequency:
+            attempts = self.repository.auto_send_attempts(owner_id, rule.rule_id, recipient, fingerprint, current - timedelta(seconds=rule.window_seconds))
+            if len(attempts) >= rule.max_frequency:
                 return False, "rate_limited"
-            self._sent[key] = [*sent, current]
             return True, "explicit_scoped_policy"
         return False, "no_scoped_auto_send_policy"
+
+    async def record_auto_send_attempt(self, owner_id: str, rule_id: str, channel: str, recipient: str, content: str, *, status: str, message_id: str | None = None, error_code: str | None = None, now: datetime | None = None) -> None:
+        rule = self.repository.auto_send_rule(owner_id, rule_id)
+        if rule is None:
+            raise KeyError(rule_id)
+        fingerprint = hashlib.sha256(f"{channel}|{recipient}|{content.strip()}".encode()).hexdigest()
+        self.repository.insert_auto_send_attempt({"id": f"autosend-attempt-{uuid4()}", "owner_id": owner_id, "rule_id": rule_id, "channel": channel, "recipient": recipient, "fingerprint": fingerprint, "status": status, "message_id": message_id, "attempted_at": now or datetime.now(UTC), "error_code": error_code})
+
+    async def execute_scoped_auto_send(self, owner_id: str, rule_id: str, channel: str, recipient: str, content: str, identity: Any, device: Any, *, message_class: str = "normal", context: Mapping[str, object] | None = None) -> Any:
+        if self.communications is None:
+            raise RuntimeError("communications_hub_unavailable")
+        row = self.repository.auto_send_rule(owner_id, rule_id)
+        if row is None:
+            raise KeyError(rule_id)
+        rule = self._rule_from_row(row)
+        allowed, reason = self.can_auto_send_scoped(owner_id, channel, recipient, content, message_class=message_class, context=context)
+        if not allowed or not rule.enabled or rule.channel != channel or rule.message_class != message_class or recipient not in rule.recipient_allowlist:
+            await self.record_auto_send_attempt(owner_id, rule_id, channel, recipient, content, status="denied", error_code=reason)
+            raise PermissionError(reason)
+        result = await self.communications._send_scoped_auto_verified(owner_id, channel, recipient, content, identity, device, rule_id=rule_id)
+        await self.record_auto_send_attempt(owner_id, rule_id, channel, recipient, content, status=result.status, message_id=result.message_id, error_code=result.error_code)
+        return result
+
+    @staticmethod
+    def _validate_rule(rule: AutoSendRule) -> None:
+        if not rule.channel.strip() or not rule.recipient_allowlist:
+            raise ValueError("auto-send channel and recipient allowlist are required")
+        if rule.max_frequency <= 0 or rule.window_seconds <= 0:
+            raise ValueError("auto-send frequency and window must be positive")
+        if rule.approval_requirement not in {"always", "none"}:
+            raise ValueError("unsupported auto-send approval requirement")
+        if rule.message_class in {"bulk", "important", "urgent", "sensitive", "financial"}:
+            raise ValueError("unsafe auto-send message class")
+        if rule.sensitivity in {"financial", "sensitive"}:
+            raise ValueError("unsafe auto-send sensitivity")
+        if (rule.allowed_time_start is None) != (rule.allowed_time_end is None):
+            raise ValueError("auto-send time window requires both endpoints")
+        if rule.allowed_time_start:
+            try:
+                time.fromisoformat(rule.allowed_time_start or "")
+                time.fromisoformat(rule.allowed_time_end or "")
+            except ValueError as exc:
+                raise ValueError("invalid auto-send time window") from exc
 
     async def _emit(self, event_type: str, item: CommunicationFollowUp, state: EventState = EventState.EMITTED) -> None:
         event = Event.create(event_type, EventCategory.COMMUNICATION, correlation_id=item.followup_id, actor_id=item.owner_id, payload={"owner_id": item.owner_id, "followup_id": item.followup_id, "thread_id": item.thread_id, "status": item.status}, state=state)

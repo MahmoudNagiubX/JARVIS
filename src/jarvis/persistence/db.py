@@ -615,6 +615,19 @@ CREATE TABLE IF NOT EXISTS auto_send_rules (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_auto_send_rules_owner ON auto_send_rules(owner_id, enabled);
+CREATE TABLE IF NOT EXISTS communication_auto_send_attempts (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    rule_id TEXT NOT NULL REFERENCES auto_send_rules(id),
+    channel TEXT NOT NULL,
+    recipient TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message_id TEXT,
+    attempted_at TEXT NOT NULL,
+    error_code TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_auto_send_attempts_rate ON communication_auto_send_attempts(owner_id, rule_id, recipient, fingerprint, attempted_at);
 CREATE TABLE IF NOT EXISTS notification_delivery_attempts (
     id TEXT PRIMARY KEY,
     owner_id TEXT NOT NULL REFERENCES owners(id),

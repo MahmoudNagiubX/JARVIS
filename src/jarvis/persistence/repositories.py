@@ -1253,6 +1253,20 @@ class RuntimeRepository:
         row = self.database.connection.execute("SELECT * FROM auto_send_rules WHERE owner_id = ? AND id = ?", (owner_id, rule_id)).fetchone()
         return dict(row) if row else None
 
+    def insert_auto_send_attempt(self, attempt: Mapping[str, object]) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO communication_auto_send_attempts(id, owner_id, rule_id, channel, recipient, fingerprint, status, message_id, attempted_at, error_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (attempt["id"], attempt["owner_id"], attempt["rule_id"], attempt["channel"], attempt["recipient"], attempt["fingerprint"], attempt["status"], attempt.get("message_id"), iso(attempt["attempted_at"]), attempt.get("error_code")),
+            )
+
+    def auto_send_attempts(self, owner_id: str, rule_id: str, recipient: str, fingerprint: str, since: datetime) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute(
+            "SELECT * FROM communication_auto_send_attempts WHERE owner_id = ? AND rule_id = ? AND recipient = ? AND fingerprint = ? AND attempted_at >= ? ORDER BY attempted_at DESC",
+            (owner_id, rule_id, recipient, fingerprint, iso(since)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def insert_delivery_attempt(self, attempt: Any) -> None:
         with self.database.transaction() as db:
             db.execute(

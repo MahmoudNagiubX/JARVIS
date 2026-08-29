@@ -66,9 +66,11 @@ class HomeContextService:
             return await self._unavailable(identity.owner_id, exc.__class__.__name__)
         if self.home.transport is None:
             return await self._unavailable(identity.owner_id, "home_service_unavailable")
+        # Home Assistant is external context.  Nothing enters World State until
+        # the owner has explicitly configured the exact entity identifier.
         projected = []
         for entity in entities:
-            if self.configured_entities and entity.entity_id not in self.configured_entities:
+            if entity.entity_id not in self.configured_entities:
                 continue
             if entity.domain == "person" and entity.entity_id not in self.configured_entities:
                 continue
@@ -104,15 +106,16 @@ class HomeRoutineService:
         HomeRoutine("study_lighting", "Study lighting", "Apply configured study lights", ({"domain": "light", "action": "turn_on"},)),
         HomeRoutine("work_start_scene", "Work start scene", "Turn on configured work lights", ({"domain": "light", "action": "turn_on"},)),
         HomeRoutine("sleep_scene", "Sleep scene", "Turn off configured lights", ({"domain": "light", "action": "turn_off"},)),
-        HomeRoutine("leave_safe_scene", "Leave safe scene", "Turn off configured lights and switches", ({"domain": "light", "action": "turn_off"}, {"domain": "switch", "action": "turn_off"})),
+        HomeRoutine("leave_safe_scene", "Leave safe scene", "Turn off explicitly bound lights", ({"domain": "light", "action": "turn_off"},)),
         HomeRoutine("return_scene", "Return scene", "Turn on configured return lights", ({"domain": "light", "action": "turn_on"},)),
     )
 
-    def __init__(self, context: HomeContextService, home: HomeActionService, repository: RuntimeRepository, event_bus: InMemoryEventBus) -> None:
+    def __init__(self, context: HomeContextService, home: HomeActionService, repository: RuntimeRepository, event_bus: InMemoryEventBus, *, bindings: dict[str, tuple[str, ...]] | None = None) -> None:
         self.context = context
         self.home = home
         self.repository = repository
         self.event_bus = event_bus
+        self.bindings = {key: tuple(values) for key, values in (bindings or {}).items()}
 
     def list(self) -> tuple[HomeRoutine, ...]:
         return self.ROUTINES
@@ -125,7 +128,8 @@ class HomeRoutineService:
         await self._emit("home.routine_started", identity.owner_id, routine_id, EventState.ACCEPTED)
         snapshot = await self.context.refresh(identity, device)
         results: list[dict[str, object]] = []
-        entities = [item for item in snapshot.entities if isinstance(item, dict)]
+        bound = set(self.bindings.get(routine_id, ()))
+        entities = [item for item in snapshot.entities if isinstance(item, dict) and item.get("entity_id") in bound]
         for template in routine.actions:
             for entity in entities:
                 if entity.get("domain") != template["domain"]:

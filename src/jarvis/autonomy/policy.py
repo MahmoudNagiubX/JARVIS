@@ -35,6 +35,7 @@ class AutonomyPolicy:
             AutonomyRule("communication.read", AutonomyLevel.OBSERVE, "read configured communications"),
             AutonomyRule("computer.observe", AutonomyLevel.OBSERVE, "observation only"),
             AutonomyRule("computer.input", AutonomyLevel.APPROVAL_REQUIRED, "computer input changes state"),
+            AutonomyRule("message.send.scoped_auto", AutonomyLevel.AUTO_NOTIFY, "verified persisted scoped communication policy"),
             AutonomyRule("message.send", AutonomyLevel.APPROVAL_REQUIRED, "external communication requires approval"),
             AutonomyRule("files.delete", AutonomyLevel.BLOCKED, "destructive file operation"),
             AutonomyRule("account.", AutonomyLevel.BLOCKED, "account/security operation"),

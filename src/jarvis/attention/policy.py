@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Mapping
 
 from ..contracts import Notification
 from ..presence.service import PresenceSnapshot
+from ..time_windows import in_time_window
 
 
 class AttentionLevel(StrEnum):
@@ -72,9 +73,4 @@ class AttentionPolicy:
 
     @staticmethod
     def _in_window(window: tuple[str, str], current: datetime) -> bool:
-        try:
-            start, end = time.fromisoformat(window[0]), time.fromisoformat(window[1])
-        except (TypeError, ValueError):
-            return False
-        value = current.time()
-        return start <= value <= end if start <= end else value >= start or value <= end
+        return in_time_window(window[0], window[1], now=current)

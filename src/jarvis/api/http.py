@@ -382,11 +382,6 @@ class CoreHttpServer:
                             principal = self._authenticated(body)
                             self._respond(HTTPStatus.OK, asyncio.run(application.set_automation_enabled(principal.identity.owner_id, parts[1], parts[2] == "enable")))
                             return
-                    if route.startswith("/communications/auto-send-rules/"):
-                        rule_id = route.strip("/").split("/")[-1]
-                        values = {key: value for key, value in body.items() if key not in {"credential", "device_id", "identity_id"}}
-                        self._respond(HTTPStatus.OK, asyncio.run(application.update_communication_auto_send_rule(owner_id, rule_id, values)))
-                        return
                     if route == "/evaluations/run":
                         principal = self._authenticated(body)
                         self._respond(HTTPStatus.OK, asyncio.run(application.run_evaluation(str(body["suite"]), principal.identity.owner_id)))
@@ -612,6 +607,12 @@ class CoreHttpServer:
                         if not isinstance(values, dict):
                             raise ValueError("personalization values must be an object")
                         result = asyncio.run(application.update_personalization(owner_id, values, str(body.get("source", "user"))))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route.startswith("/communications/auto-send-rules/"):
+                        rule_id = route.strip("/").split("/")[-1]
+                        values = {key: value for key, value in body.items() if key not in {"credential", "device_id", "identity_id"}}
+                        result = asyncio.run(application.update_communication_auto_send_rule(owner_id, rule_id, values))
                         self._respond(HTTPStatus.OK, result)
                         return
                     if route.startswith("/automations/"):

@@ -27,7 +27,7 @@ class PhaseEightIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.identity = await self.runtime.identity.bootstrap_owner("Phase Eight Owner")
         enrollment = await self.runtime.identity.create_enrollment(EnrollmentGrant(
             self.identity.owner_id, "Phase Eight Device", "desktop", "windows", ("tool.request",),
-            ("home.read", "home.control", "computer.observe"),
+            ("home.read", "home.control", "computer.observe", "communication.send"),
         ))
         issued = await self.runtime.identity.redeem_enrollment(enrollment.code)
         self.device = await self.runtime.identity.authenticate(issued.raw, issued.device_id)
@@ -80,13 +80,31 @@ class PhaseEightIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "approval_requirement": "none", "max_frequency": 1,
         })
         allowed, _ = self.runtime.communication_followups.can_auto_send_scoped(self.identity.owner_id, "local", "owner", "hello")
+        repeated, _ = self.runtime.communication_followups.can_auto_send_scoped(self.identity.owner_id, "local", "owner", "hello")
+        rule = (await self.runtime.communication_followups.rules(self.identity.owner_id))[0]
+        await self.runtime.communication_followups.record_auto_send_attempt(self.identity.owner_id, rule.rule_id, "local", "owner", "hello", status="sent")
         blocked, reason = self.runtime.communication_followups.can_auto_send_scoped(self.identity.owner_id, "local", "owner", "hello")
         self.assertTrue(allowed)
+        self.assertTrue(repeated)
         self.assertFalse(blocked)
         self.assertEqual(reason, "rate_limited")
 
+    async def test_verified_scoped_auto_send_uses_the_communications_hub(self) -> None:
+        rule = await self.runtime.communication_followups.create_rule(self.identity.owner_id, {
+            "channel": "local", "recipient_allowlist": ["owner"], "message_class": "normal",
+            "approval_requirement": "none", "max_frequency": 1,
+        })
+        result = await self.runtime.communication_followups.execute_scoped_auto_send(
+            self.identity.owner_id, rule.rule_id, "local", "owner", "bounded reply", self.identity, self.device,
+        )
+        self.assertEqual(result.status, "sent")
+        ordinary = await self.runtime.communications.send(self.identity.owner_id, "local", "owner", "ordinary reply", self.identity, self.device)
+        self.assertEqual(ordinary.status, "approval_required")
+
     async def test_home_context_and_safe_routine_delegate_to_home_authority(self) -> None:
         self.runtime.home.transport = InMemoryHomeTransport((HomeEntity("light.office", "Office", "light", "off", {}, "office"),))
+        self.runtime.home_context.configured_entities = frozenset({"light.office"})
+        self.runtime.home_routines.bindings["focus_lighting"] = ("light.office",)
         context = await self.runtime.home_context.refresh(self.identity, self.device)
         self.assertTrue(context.available)
         self.assertEqual(len(context.entities), 1)

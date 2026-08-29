@@ -27,6 +27,12 @@ CREATE TABLE IF NOT EXISTS auto_send_rules (
     approval_requirement TEXT NOT NULL, enabled INTEGER NOT NULL,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS communication_auto_send_attempts (
+    id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, rule_id TEXT NOT NULL,
+    channel TEXT NOT NULL, recipient TEXT NOT NULL, fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL, message_id TEXT, attempted_at TEXT NOT NULL,
+    error_code TEXT
+);
 CREATE TABLE IF NOT EXISTS notification_delivery_attempts (
     id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, notification_id TEXT NOT NULL,
     channel TEXT NOT NULL, target TEXT, status TEXT NOT NULL, reason TEXT,

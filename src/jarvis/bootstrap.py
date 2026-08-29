@@ -301,7 +301,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     automation = AutomationService(repository, event_bus, skill_executor=skill_executor, missions=missions, briefings=briefings, offline=offline, capabilities=capabilities)
     automation.notifications = notifications
     communications_intelligence = CommunicationIntelligenceService(repository, event_bus)
-    communication_followups = CommunicationFollowUpService(repository, event_bus, communications_intelligence)
+    communication_followups = CommunicationFollowUpService(repository, event_bus, communications_intelligence, communications)
     worker_coordinator = WorkerCoordinator(repository, event_bus, developer_gateway=None, permission=permission)
     evaluations = EvaluationService(repository, event_bus)
     evaluations.register_default_suites()
@@ -309,10 +309,11 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     clients = ClientSessionService(repository, event_bus)
     presence = PresenceService(world_state, voice_routing, clients, device_fabric, repository, event_bus)
     attention = AttentionPolicy()
-    notification_delivery = NotificationDeliveryCoordinator(notifications, attention, presence, voice_routing, repository, event_bus, personalization=personalization)
     operations = PersonalOperationsService(repository, event_bus, world_state, personalization, goals=goals, missions=missions, briefings=briefings, notifications=notifications, automation=automation, offline=offline)
+    notification_delivery = NotificationDeliveryCoordinator(notifications, attention, presence, voice_routing, repository, event_bus, personalization=personalization, operations=operations)
     home_context = HomeContextService(home, world_state, repository, event_bus)
     home_routines = HomeRoutineService(home_context, home, repository, event_bus)
+    operations.home_routines = home_routines
 
     async def experience_state(owner_id: str) -> dict[str, object]:
         devices = tuple(

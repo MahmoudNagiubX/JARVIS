@@ -22,9 +22,10 @@ class PresenceService:
 
     _priority = {
         PresenceSource.ORIGINATING_DEVICE.value: 5,
-        PresenceSource.VOICE_ENDPOINT.value: 4,
-        PresenceSource.CLIENT_SESSION.value: 3,
-        PresenceSource.DEVICE_HEARTBEAT.value: 2,
+        PresenceSource.CLIENT_SESSION.value: 4,
+        PresenceSource.DEVICE_HEARTBEAT.value: 3,
+        # An online microphone is availability evidence, not proof of room presence.
+        PresenceSource.VOICE_ENDPOINT.value: 2,
         PresenceSource.EXPLICIT_ROOM.value: 1,
     }
 
@@ -52,7 +53,10 @@ class PresenceService:
             raise ValueError("unsupported presence source")
         if not 0.0 <= observation.confidence <= 1.0:
             raise ValueError("presence confidence must be between 0 and 1")
-        self._observations.setdefault(observation.owner_id, {})[observation.observation_id] = observation
+        existing = self._observations.setdefault(observation.owner_id, {}).get(observation.observation_id)
+        if existing is not None and self._materially_equal(existing, observation):
+            return await self.snapshot(observation.owner_id, now=observation.observed_at)
+        self._observations[observation.owner_id][observation.observation_id] = observation
         await self.world_state.observe(Observation(
             observation.observation_id,
             "presence",
@@ -81,7 +85,7 @@ class PresenceService:
                 await self.observe(PresenceObservation(
                     f"voice-{endpoint.endpoint_id}", owner_id, PresenceSource.VOICE_ENDPOINT.value,
                     endpoint.last_seen or datetime.now(UTC), endpoint.device_id, endpoint.room_id,
-                    endpoint.endpoint_id, 0.9, 120.0,
+                    endpoint.endpoint_id, 0.35, 120.0,
                 ))
         for session in self.clients.list(owner_id):
             if session.connection == "connected" and session.device_id:
@@ -152,3 +156,15 @@ class PresenceService:
         event = Event.create(event_type, EventCategory.EXPERIENCE, correlation_id=f"presence-{owner_id}", actor_id=owner_id, payload={"owner_id": owner_id, **payload}, state=state)
         self.repository.append_event(event)
         await self.event_bus.publish(event)
+
+    @staticmethod
+    def _materially_equal(left: PresenceObservation, right: PresenceObservation) -> bool:
+        return (
+            left.source == right.source
+            and left.device_id == right.device_id
+            and left.room_id == right.room_id
+            and left.voice_endpoint_id == right.voice_endpoint_id
+            and left.confidence == right.confidence
+            and left.observed_at == right.observed_at
+            and left.freshness_seconds == right.freshness_seconds
+        )

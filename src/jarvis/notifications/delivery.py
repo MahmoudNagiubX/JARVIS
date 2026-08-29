@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
@@ -62,6 +62,8 @@ class NotificationDeliveryCoordinator:
         desktop: Presentation | None = None,
         voice: Presentation | None = None,
         personalization: Any | None = None,
+        operations: Any | None = None,
+        voice_core: Any | None = None,
     ) -> None:
         self.notifications = notifications
         self.attention = attention
@@ -72,6 +74,8 @@ class NotificationDeliveryCoordinator:
         self.desktop = desktop
         self.voice = voice
         self.personalization = personalization
+        self.operations = operations
+        self.voice_core = voice_core
 
     async def deliver(
         self,
@@ -89,15 +93,25 @@ class NotificationDeliveryCoordinator:
         current = now or datetime.now(UTC)
         presence = await self.presence.refresh(owner_id) if hasattr(self.presence, "refresh") else await self.presence.snapshot(owner_id, now=current)
         fingerprint = self._fingerprint(item)
-        duplicate = any(row.get("fingerprint") == fingerprint and row.get("channel") == "voice" and row.get("status") == "delivered" for row in self.repository.delivery_attempts(owner_id, limit=100))
+        cooldown = 300.0
         if self.personalization is not None:
             profile = await self.personalization.get(owner_id)
             configured_quiet = profile.values.get("quiet_hours")
             if quiet_hours is None and isinstance(configured_quiet, (list, tuple)) and len(configured_quiet) == 2:
                 quiet_hours = (str(configured_quiet[0]), str(configured_quiet[1]))
             announcement = str(profile.values.get("voice_announcement_level", "important"))
+            cooldown = float(profile.values.get("voice_dedup_seconds", cooldown))
         else:
             announcement = "important"
+        duplicate = any(
+            row.get("fingerprint") == fingerprint and row.get("channel") == "voice" and row.get("status") == "delivered"
+            and datetime.fromisoformat(str(row["attempted_at"])) >= current - timedelta(seconds=max(0.0, cooldown))
+            for row in self.repository.delivery_attempts(owner_id, limit=100)
+        )
+        if self.operations is not None:
+            mode = (await self.operations.mode(owner_id)).mode
+        if self.voice_core is not None:
+            active_voice = getattr(getattr(self.voice_core, "state", None), "value", None) in {"listening", "thinking", "speaking", "follow_up"}
         decision = self.attention.decide(item, presence, AttentionContext(mode, active_voice, duplicate, quiet_hours, announcement), now=current)
         await self._emit("notification.delivery_started", owner_id, item.notification_id, {"reason": decision.reason})
         if decision.suppress_duplicate:
@@ -114,7 +128,7 @@ class NotificationDeliveryCoordinator:
             attempts.append(await self._attempt(owner_id, item, "hud", None, "delivered", None, fingerprint))
             channels.append("hud")
             if self.desktop is None:
-                attempts.append(await self._attempt(owner_id, item, "hud", decision.target_device, "unavailable", "desktop_adapter_unavailable", fingerprint))
+                attempts.append(await self._attempt(owner_id, item, "desktop", decision.target_device, "unavailable", "desktop_adapter_unavailable", fingerprint))
             else:
                 attempts.append(await self._present(owner_id, item, "desktop", decision.target_device, self.desktop, fingerprint))
                 if attempts[-1].status == "delivered":

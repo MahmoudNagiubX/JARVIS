@@ -145,6 +145,18 @@ class CommunicationsHub:
             return CommunicationSendResult("approval_required", message.message_id, approval_id)
         return await self._deliver(owner_id, provider, message, session_id)
 
+    async def _send_scoped_auto_verified(self, owner_id: str, channel: str, recipient: str, content: str, identity: Identity, device: DeviceIdentity, *, rule_id: str, session_id: str = "communication-auto") -> CommunicationSendResult:
+        """Internal-only delivery reached after persisted-rule validation."""
+        provider = self.channels.get(channel)
+        if provider is None:
+            return CommunicationSendResult("failed", error_code="communication_channel_unavailable")
+        permission = await self.permission.evaluate(identity, device, "communication.send", {"required_scope": "tool.request", "required_capabilities": frozenset({"communication.send"}), "risk_level": "consequential"})
+        autonomy = self.autonomy.decide("message.send.scoped_auto")
+        if permission.effect.value == "deny" or not autonomy.allowed or autonomy.requires_approval:
+            return CommunicationSendResult("denied", error_code=permission.reason_code if permission.effect.value == "deny" else "scoped_auto_denied")
+        message = CommunicationMessage(f"message-{uuid4()}", channel, identity.identity_id, recipient.strip(), content.strip(), datetime.now(UTC), {"scoped_auto_rule_id": rule_id}, owner_id)
+        return await self._deliver(owner_id, provider, message, session_id)
+
     async def decide_send(self, owner_id: str, approval_id: str, approved: bool, decided_by: str) -> CommunicationSendResult:
         pending = self._pending.get(approval_id)
         if pending is None or pending[0] != owner_id:

@@ -32,6 +32,8 @@ class DurablePersonalizationService:
         "focus_interruption_threshold": "urgent",
         "preferred_notification_device": None,
         "preferred_voice_endpoint": None,
+        "voice_dedup_seconds": 300,
+        "timezone": None,
         "follow_up_delay": 30,
         "work_mode_preferences": {},
         "study_mode_preferences": {},
