@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import AsyncIterator
 from uuid import uuid4
@@ -48,6 +48,7 @@ from .events import Event, EventCategory, EventState
 from .models.gateway import ModelGateway
 from .models.routing import ModelRoute
 from .persistence.db import SQLiteDatabase
+from .persistence.backup import SQLiteBackupService
 from .persistence.repositories import RuntimeRepository
 from .memory.service import DurableMemoryService
 from .nodes.venom import VenomNode
@@ -75,6 +76,18 @@ from .observability.service import ObservabilityService
 from .perception.service import PerceptionService
 from .research.providers import LocalDocumentProvider
 from .research.service import ResearchService
+from .missions.service import MissionService
+from .skills.registry import SkillRegistry, builtin_skills
+from .skills.executor import SkillExecutor
+from .skills.policy import SkillPolicy
+from .workspace.service import WorkspaceIntelligenceService
+from .intelligence.events.service import EventIntelligenceService
+from .briefings.service import BriefingService
+from .automation.service import AutomationService
+from .communications.intelligence.service import CommunicationIntelligenceService
+from .agents.workers.coordination import WorkerCoordinator
+from .evaluation.service import EvaluationService
+from .evaluation.improvement import ControlledImprovementPolicy
 
 
 class RuntimeState(StrEnum):
@@ -136,6 +149,18 @@ class JarvisRuntime:
     research: ResearchService
     perception: PerceptionService
     developer_workers: DeveloperWorkerGateway
+    missions: MissionService
+    skills: SkillRegistry
+    skill_executor: SkillExecutor
+    workspace_intelligence: WorkspaceIntelligenceService
+    event_intelligence: EventIntelligenceService
+    briefings: BriefingService
+    automation: AutomationService
+    communications_intelligence: CommunicationIntelligenceService
+    worker_coordinator: WorkerCoordinator
+    evaluations: EvaluationService
+    improvement_policy: ControlledImprovementPolicy
+    backup: SQLiteBackupService
     runtime_id: str
     state: RuntimeState = RuntimeState.CREATED
 
@@ -215,6 +240,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     effective_config = config or JarvisConfig.from_env()
     database_path = ":memory:" if effective_config.environment in {"test", "offline-test"} else effective_config.database_path
     database = SQLiteDatabase(database_path)
+    backup_service = SQLiteBackupService(database)
     repository = RuntimeRepository(database)
     event_bus = InMemoryEventBus()
     permission = PolicyPermissionEngine()
@@ -250,6 +276,22 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     agent = AgentRuntime(repository, event_bus, models, tool_service, max_steps=effective_config.max_agent_steps, context_assembler=context)
     scheduler = BackgroundScheduler()
     runtime_ref: dict[str, JarvisRuntime] = {}
+    workspace_context = WorkspaceContextService(world_state)
+    missions = MissionService(repository, event_bus, permission=permission, approvals=approval, audit=audit)
+    skills = SkillRegistry(repository)
+    for builtin in builtin_skills():
+        skills.register(builtin)
+    skill_executor = SkillExecutor(skills, SkillPolicy(permission), event_bus, repository, tools=tool_service)
+    workspace_intelligence = WorkspaceIntelligenceService(repository, event_bus, workspace_context)
+    event_intelligence = EventIntelligenceService(repository, event_bus)
+    briefings = BriefingService(repository, event_bus)
+    automation = AutomationService(repository, event_bus, skill_executor=skill_executor, missions=missions, briefings=briefings)
+    automation.notifications = notifications
+    communications_intelligence = CommunicationIntelligenceService(repository, event_bus)
+    worker_coordinator = WorkerCoordinator(repository, event_bus, developer_gateway=None, permission=permission)
+    evaluations = EvaluationService(repository, event_bus)
+    evaluations.register_default_suites()
+    improvement_policy = ControlledImprovementPolicy()
 
     async def experience_state(owner_id: str) -> dict[str, object]:
         devices = tuple(
@@ -268,6 +310,14 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
             ApprovalProjection(str(row["id"]), str(row["action"]), str(row["status"]), row.get("decision_reason"))
             for row in repository.pending_approvals(owner_id)
         )
+        missions_view = tuple(asdict(item) for item in await missions.list(owner_id))
+        skills_view = tuple(asdict(item) for item in skills.list(include_disabled=True))
+        automation_view = tuple(asdict(item) for item in await automation.list(owner_id))
+        briefing_view = tuple(asdict(item) for item in await briefings.list(owner_id))
+        intelligence_view = tuple(asdict(item) for item in await event_intelligence.list(owner_id, active_only=True))
+        workspace_view = tuple(asdict(item) for item in await workspace_intelligence.list(owner_id))
+        worker_view = tuple(asdict(item) for item in await worker_coordinator.list(owner_id))
+        evaluation_view = tuple(evaluations.list(owner_id))
         model = await models.health(ModelRoute.GENERAL_REASONING)
         current = runtime_ref.get("runtime")
         return {
@@ -281,6 +331,14 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
             "goals": goals_view,
             "notifications": notifications_view,
             "approvals": approvals_view,
+            "missions": missions_view,
+            "skills": skills_view,
+            "automations": automation_view,
+            "briefings": briefing_view,
+            "intelligence": intelligence_view,
+            "workspace": workspace_view,
+            "worker_delegations": worker_view,
+            "evaluations": evaluation_view,
         }
 
     experience_projection = ExperienceProjection(event_bus, experience_state, repository=repository)
@@ -294,6 +352,40 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     research = ResearchService(repository, event_bus, permission, audit, local=LocalDocumentProvider((str(Path.cwd()),)))
     perception = PerceptionService(repository, event_bus, permission, audit)
     developer_workers = DeveloperWorkerGateway()
+    worker_coordinator.developer_gateway = developer_workers
+
+    async def skill_system_health(skill: object, values: dict[str, object], identity: object, device: object) -> dict[str, object]:
+        del skill, values, identity, device
+        health = await models.health(ModelRoute.GENERAL_REASONING)
+        current = runtime_ref.get("runtime")
+        return {"runtime_state": current.state.value if current else "created", "model_provider": health.provider, "model_available": health.available, "offline": not offline.state.online}
+
+    async def skill_project_status(skill: object, values: dict[str, object], identity: object, device: object) -> dict[str, object]:
+        del skill, device
+        project_id = values.get("project_id")
+        if isinstance(project_id, str):
+            item = await workspace_intelligence.get(identity.owner_id, project_id)
+            return {"project": asdict(item) if item else None}
+        return {"projects": [asdict(item) for item in await workspace_intelligence.list(identity.owner_id)]}
+
+    async def skill_briefing(skill: object, values: dict[str, object], identity: object, device: object) -> dict[str, object]:
+        del skill, device
+        item = await briefings.generate(identity.owner_id, str(values.get("briefing_type", "morning")))
+        return {"briefing": asdict(item) if item else None}
+
+    async def skill_research(skill: object, values: dict[str, object], identity: object, device: object) -> dict[str, object]:
+        del skill
+        request = ResearchRequest(str(values.get("query", "")), identity.owner_id, device.device_id, 8, 8, 30.0, {})
+        return asdict(await research.start(request, identity, device))
+
+    def skill_backup(skill: object, values: dict[str, object], identity: object, device: object) -> dict[str, object]:
+        del skill, identity, device
+        destination = str(values.get("destination", "")).strip()
+        if not destination:
+            raise ValueError("backup destination is required")
+        return backup_service.create(destination)
+
+    skill_executor.handlers.update({"system.health": skill_system_health, "workspace.project_status": skill_project_status, "briefing.generate": skill_briefing, "research.start": skill_research, "backup.create": skill_backup})
     for provider in developer_workers.providers():
         capabilities.register(CapabilityDescriptor(
             f"developer.{provider.name}", "developer-worker-gateway", None, provider.available, "bounded",
@@ -316,6 +408,14 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         owner_id = await maintenance_owner()
         return len(await proactive.detect(owner_id)) if owner_id else 0
 
+    async def detect_event_intelligence() -> int:
+        owner_id = await maintenance_owner()
+        return len(await event_intelligence.detect(owner_id)) if owner_id else 0
+
+    async def run_automation_tick() -> int:
+        owner_id = await maintenance_owner()
+        return len(await automation.run_schedule(owner_id)) if owner_id else 0
+
     async def refresh_health() -> dict[str, object]:
         await offline.refresh()
         model_health = await models.health(ModelRoute.GENERAL_REASONING)
@@ -324,6 +424,8 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     scheduler.add("memory-maintenance", 300, maintain_memory)
     scheduler.add("world-state-expiry", 60, expire_world_state)
     scheduler.add("goal-proactive-check", 60, detect_proactive)
+    scheduler.add("event-intelligence-check", 60, detect_event_intelligence)
+    scheduler.add("automation-check", 60, run_automation_tick)
     scheduler.add("health-check", 120, refresh_health)
     runtime = JarvisRuntime(
         config=effective_config,
@@ -347,7 +449,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         context=context,
         autonomy=autonomy,
         offline=offline,
-        workspace=WorkspaceContextService(world_state),
+        workspace=workspace_context,
         scheduler=scheduler,
         venom=VenomNode(),
         computer=WindowsComputerController(satellite),
@@ -373,6 +475,18 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         research=research,
         perception=perception,
         developer_workers=developer_workers,
+        missions=missions,
+        skills=skills,
+        skill_executor=skill_executor,
+        workspace_intelligence=workspace_intelligence,
+        event_intelligence=event_intelligence,
+        briefings=briefings,
+        automation=automation,
+        communications_intelligence=communications_intelligence,
+        worker_coordinator=worker_coordinator,
+        evaluations=evaluations,
+        improvement_policy=improvement_policy,
+        backup=backup_service,
         runtime_id=f"runtime-{uuid4()}",
     )
     runtime_ref["runtime"] = runtime
@@ -395,6 +509,7 @@ def _register_capabilities(capabilities: CapabilityRegistry) -> None:
         capabilities.register(CapabilityDescriptor(capability, "local-browser", None, True, "read", requires_internet=capability != "browser.tabs"))
     capabilities.register(CapabilityDescriptor("communication.local.draft", "local-channel", None, True, "safe"))
     capabilities.register(CapabilityDescriptor("notification.create", "local-notification", None, True, "safe"))
+    capabilities.register(CapabilityDescriptor("backup.create", "sqlite-backup", None, True, "safe", permission="tool.request"))
     capabilities.register(CapabilityDescriptor(
         "device.venom.health", "venom", "venom", False, "read",
         metadata={"reason": "not_probed", "network": "unknown-until-deployment"},

@@ -57,6 +57,7 @@ from .memory import (
     MemorySource,
     MemoryStore,
 )
+from .missions import Mission, MissionBudget, MissionCheckpoint, MissionDependency, MissionEvidence, MissionPlan, MissionResult, MissionStatus, MissionStep
 from .model import LLMMessage, LLMProvider, LLMRequest, LLMResponse, LLMRole, LLMRouter
 from .nodes import NodeDescriptor, NodeHealth, NodeRole, VenomNodePlan
 from .notifications import Notification
@@ -186,6 +187,7 @@ __all__ = [
     "MemoryQuery",
     "MemoryRetention",
     "MemorySensitivity",
+    "Mission", "MissionBudget", "MissionCheckpoint", "MissionDependency", "MissionEvidence", "MissionPlan", "MissionResult", "MissionStatus", "MissionStep",
     "MemoryService",
     "MemorySource",
     "MemoryStore",

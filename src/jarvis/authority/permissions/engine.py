@@ -23,6 +23,8 @@ class PolicyPermissionEngine:
             PermissionRule("tool.status.read", PermissionEffect.ALLOW, "safe_read_tool"),
             PermissionRule("tool.echo.reversible", PermissionEffect.ALLOW, "reversible_tool"),
             PermissionRule("tool.project.tests.run", PermissionEffect.ALLOW, "safe_test_runner"),
+            PermissionRule("mission.start", PermissionEffect.ALLOW, "bounded_mission_start"),
+            PermissionRule("skill.", PermissionEffect.ALLOW, "registered_skill_execution"),
             PermissionRule("computer.open_application", PermissionEffect.ALLOW, "safe_application_open"),
             PermissionRule("computer.change_volume", PermissionEffect.ALLOW, "safe_volume_change"),
             PermissionRule("computer.mute", PermissionEffect.ALLOW, "safe_audio_control"),

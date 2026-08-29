@@ -1,6 +1,6 @@
 # Third-party inventory
 
-This is the Phase 05 inventory for source references and declared dependency
+This is the Phase 07 inventory for source references and declared dependency
 surfaces. It is not a final distribution notice.
 
 | Source/component | Local evidence | License/status | Phase 03 treatment |
@@ -22,6 +22,7 @@ surfaces. It is not a final distribution notice.
 | OpenClaw | `C:\Jarivs\07_communications\openclaw\LICENSE`, `README.md` | MIT donor; broad gateway/channel surface | Multi-device and ACP reference only; no source or dependency copied |
 | Linux Voice Assistant | `C:\Jarivs\06_voice_room\linux-voice-assistant\LICENSE.md`, `README.md` | Apache-2.0 donor | Voice/satellite reference only; no source or dependency copied |
 | OCR/local vision/OmniParser/UI-TARS | No runtime package selected | Deferred/reference-only | Capability/provider boundaries only; no models downloaded or copied |
+| Phase 07 evaluation/anomaly helpers | No runtime package selected | Not introduced | Stdlib deterministic baselines only; no model or cloud grader |
 
 ## Declared dependency surfaces reviewed
 
@@ -46,5 +47,6 @@ review trademarks and contributor terms, and record the result in an updated
 inventory. A package license does not automatically license its provider SDKs,
 models, or bundled assets. Microsoft UFO is an adapter boundary only and is
 not merged. Playwright, Home Assistant, MQTT, email, Telegram, and Discord are
-optional adapter surfaces only; none is a runtime dependency. No Phase 05 donor
-repository was modified.
+optional adapter surfaces only; none is a runtime dependency. Phase 07 adds no
+runtime dependency, downloads no models, and modifies no donor or BMO
+repository.

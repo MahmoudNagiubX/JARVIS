@@ -132,6 +132,10 @@ class CoreHttpServer:
                         self._respond(HTTPStatus.OK, {"messages": asyncio.run(application.communication_messages(
                             self._owner(query), channel=query.get("channel", [None])[0], query=query.get("q", [None])[0]
                         ))})
+                    elif route.startswith("/communications/intelligence/"):
+                        thread_id = route.rsplit("/", 1)[-1]
+                        result = asyncio.run(application.get_communication_intelligence(self._owner(query), thread_id))
+                        self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
                     elif route == "/notifications":
                         self._respond(HTTPStatus.OK, {"notifications": asyncio.run(application.list_notifications(
                             self._owner(query), query.get("active_only", ["false"])[0].casefold() == "true"
@@ -160,6 +164,38 @@ class CoreHttpServer:
                         self._respond(HTTPStatus.OK, application.perception_capabilities())
                     elif route == "/workers/developer/providers":
                         self._respond(HTTPStatus.OK, {"providers": application.developer_providers()})
+                    elif route == "/missions":
+                        self._respond(HTTPStatus.OK, {"missions": asyncio.run(application.list_missions(self._owner(query)))})
+                    elif route.startswith("/missions/"):
+                        parts = route.strip("/").split("/")
+                        if len(parts) == 3 and parts[2] == "evidence":
+                            self._respond(HTTPStatus.OK, {"evidence": asyncio.run(application.mission_evidence(self._owner(query), parts[1]))})
+                        else:
+                            result = asyncio.run(application.get_mission(self._owner(query), parts[1]))
+                            self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
+                    elif route == "/skills":
+                        self._respond(HTTPStatus.OK, {"skills": application.list_skills(include_disabled=True)})
+                    elif route.startswith("/skills/") and route.endswith("/versions"):
+                        self._respond(HTTPStatus.OK, {"versions": application.skill_versions(route.strip("/").split("/")[1])})
+                    elif route.startswith("/skills/"):
+                        result = application.get_skill(route.rsplit("/", 1)[-1], include_disabled=True)
+                        self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
+                    elif route == "/workspace/projects":
+                        self._respond(HTTPStatus.OK, {"projects": asyncio.run(application.workspace_projects(self._owner(query)))})
+                    elif route.startswith("/workspace/projects/"):
+                        parts = route.strip("/").split("/")
+                        if len(parts) == 4 and parts[3] == "inspect":
+                            self._respond(HTTPStatus.OK, asyncio.run(application.workspace_inspect(self._owner(query), parts[2])))
+                        else:
+                            self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                    elif route == "/intelligence/findings":
+                        self._respond(HTTPStatus.OK, {"findings": asyncio.run(application.intelligence_findings(self._owner(query), query.get("active_only", ["false"])[0].casefold() == "true"))})
+                    elif route == "/briefings":
+                        self._respond(HTTPStatus.OK, {"briefings": asyncio.run(application.list_briefings(self._owner(query), query.get("type", [None])[0]))})
+                    elif route == "/automations":
+                        self._respond(HTTPStatus.OK, {"automations": asyncio.run(application.list_automations(self._owner(query)))})
+                    elif route == "/evaluations":
+                        self._respond(HTTPStatus.OK, {"evaluations": asyncio.run(application.list_evaluations(self._owner(query)))})
                     else:
                         self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
                 except PermissionError:
@@ -213,6 +249,61 @@ class CoreHttpServer:
                             return
                         result = asyncio.run(application.cancel(run_id, principal.identity, principal.device))
                         self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
+                        return
+                    if route == "/missions":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.create_mission(principal.identity.owner_id, body))
+                        self._respond(HTTPStatus.CREATED, result)
+                        return
+                    if route.startswith("/missions/"):
+                        parts = route.strip("/").split("/")
+                        if len(parts) == 3 and parts[2] in {"start", "pause", "resume", "cancel"}:
+                            principal = self._authenticated(body)
+                            result = asyncio.run(application.mission_action(principal.identity.owner_id, parts[1], parts[2], principal.identity, principal.device, approval_granted=bool(body.get("approval_granted", False))))
+                            self._respond(HTTPStatus.OK, result)
+                            return
+                    if route.startswith("/skills/"):
+                        parts = route.strip("/").split("/")
+                        if len(parts) == 3 and parts[2] in {"enable", "disable"}:
+                            self._authenticated(body)
+                            self._respond(HTTPStatus.OK, asyncio.run(application.set_skill_enabled(parts[1], parts[2] == "enable")))
+                            return
+                        if len(parts) == 3 and parts[2] == "execute":
+                            principal = self._authenticated(body)
+                            values = body.get("values", body)
+                            self._respond(HTTPStatus.OK, asyncio.run(application.execute_skill(parts[1], values if isinstance(values, dict) else {}, principal.identity, principal.device)))
+                            return
+                    if route == "/workspace/projects":
+                        principal = self._authenticated(body)
+                        self._respond(HTTPStatus.CREATED, asyncio.run(application.workspace_register(principal.identity.owner_id, str(body.get("repo_path", body.get("path", ""))), body.get("project_id") if isinstance(body.get("project_id"), str) else None)))
+                        return
+                    if route == "/briefings/generate":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.generate_briefing(principal.identity.owner_id, str(body.get("type", "morning"))))
+                        self._respond(HTTPStatus.CREATED if result else HTTPStatus.NO_CONTENT, result or {})
+                        return
+                    if route == "/intelligence/detect":
+                        principal = self._authenticated(body)
+                        self._respond(HTTPStatus.OK, {"findings": asyncio.run(application.detect_intelligence(principal.identity.owner_id))})
+                        return
+                    if route.startswith("/intelligence/findings/") and route.endswith("/resolve"):
+                        principal = self._authenticated(body)
+                        finding_id = route.strip("/").split("/")[2]
+                        self._respond(HTTPStatus.OK, asyncio.run(application.resolve_intelligence(principal.identity.owner_id, finding_id)))
+                        return
+                    if route == "/automations":
+                        principal = self._authenticated(body)
+                        self._respond(HTTPStatus.CREATED, asyncio.run(application.create_automation(principal.identity.owner_id, body)))
+                        return
+                    if route.startswith("/automations/"):
+                        parts = route.strip("/").split("/")
+                        if len(parts) == 3 and parts[2] in {"enable", "disable"}:
+                            principal = self._authenticated(body)
+                            self._respond(HTTPStatus.OK, asyncio.run(application.set_automation_enabled(principal.identity.owner_id, parts[1], parts[2] == "enable")))
+                            return
+                    if route == "/evaluations/run":
+                        principal = self._authenticated(body)
+                        self._respond(HTTPStatus.OK, asyncio.run(application.run_evaluation(str(body["suite"]), principal.identity.owner_id)))
                         return
                     if route == "/experience/clients":
                         principal = self._authenticated(body)
@@ -309,6 +400,12 @@ class CoreHttpServer:
                             body.get("reply_to") if isinstance(body.get("reply_to"), str) else None,
                         ))
                         self._respond(HTTPStatus.CREATED, result)
+                        return
+                    if route.startswith("/communications/intelligence/"):
+                        principal = self._authenticated(body)
+                        thread_id = route.rsplit("/", 1)[-1]
+                        ids = tuple(item for item in body.get("message_ids", ()) if isinstance(item, str))
+                        self._respond(HTTPStatus.CREATED, asyncio.run(application.communication_intelligence(principal.identity.owner_id, thread_id, ids)))
                         return
                     if route == "/communications/send/decide":
                         principal = self._authenticated(body)
@@ -425,6 +522,12 @@ class CoreHttpServer:
                         result = asyncio.run(application.update_personalization(owner_id, values, str(body.get("source", "user"))))
                         self._respond(HTTPStatus.OK, result)
                         return
+                    if route.startswith("/automations/"):
+                        rule_id = route.strip("/").split("/")[1]
+                        if "enabled" in body:
+                            result = asyncio.run(application.set_automation_enabled(owner_id, rule_id, bool(body["enabled"])))
+                            self._respond(HTTPStatus.OK, result)
+                            return
                     self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
                 except PermissionError:
                     self._respond(HTTPStatus.UNAUTHORIZED, {"error": "principal_not_found"})

@@ -11,11 +11,12 @@ Clients / UI / Voice / Device transports
                  |
   Authority plane: identity -> permission -> approval -> audit
                  |
-  Runtime plane: conversation -> goals -> workers -> tools
+  Runtime plane: conversation -> goals -> missions -> workers -> tools
                  |
   Capability plane: models | memory | world state | computer | browser | home
                   | devices | communications | notifications | voice routing
                   | engineering | research | perception | developer workers
+                  | intelligence: skills | workspace | findings | briefings | automation | evaluation
                  |
       Infrastructure adapters and durable stores
 ```
@@ -46,6 +47,7 @@ capability directly.
 | UI/transport | Edge adapter | Present state and collect user decisions | Becoming the source of truth for approval or audit |
 | Experience projection | Read model | Project real events into owner-scoped HUD/client state | Mutating authorities or faking lifecycle state |
 | Engineering/research/perception | Product service + injected provider | Bound specialist work, evidence, and on-demand observation | Shell bypass, hidden memory, continuous capture |
+| Mission/skill/intelligence | Product-owned bounded services | Inspectable plans, declarative procedures, findings, briefings, rules, evaluation | New authority, second scheduler/tool registry, autonomous source mutation |
 
 ## Event model
 

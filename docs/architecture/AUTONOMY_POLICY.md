@@ -18,3 +18,8 @@ All executed actions use the existing permission, tool, audit, and event
 boundaries. The policy does not grant shell access, remote deployment, public
 network binding, or permission to bypass approval.
 
+Phase 07 missions, skills, and automations inherit these levels. Mission
+budgets are hard limits; consequential mission and skill steps pause for
+approval. Automation can invoke only registered skills and existing services.
+Learned skills start as drafts, and self-evaluation can report regressions but
+cannot apply source changes or alter policy.

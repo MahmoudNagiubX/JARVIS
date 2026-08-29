@@ -35,6 +35,13 @@ class EventCategory(StrEnum):
     RESEARCH = "research"
     PERCEPTION = "perception"
     DEVELOPER_WORKER = "developer_worker"
+    MISSION = "mission"
+    SKILL = "skill"
+    AUTOMATION = "automation"
+    BRIEFING = "briefing"
+    INTELLIGENCE = "intelligence"
+    EVALUATION = "evaluation"
+    WORKSPACE = "workspace"
 
 
 class EventSeverity(StrEnum):

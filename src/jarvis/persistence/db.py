@@ -354,6 +354,176 @@ CREATE TABLE IF NOT EXISTS research_evidence (
     untrusted_content INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_research_evidence_run ON research_evidence(run_id);
+
+CREATE TABLE IF NOT EXISTS missions (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    goal_id TEXT,
+    request TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    plan_json TEXT,
+    budget_json TEXT NOT NULL,
+    current_step INTEGER NOT NULL,
+    tool_calls INTEGER NOT NULL,
+    worker_runs INTEGER NOT NULL,
+    external_actions INTEGER NOT NULL,
+    replan_count INTEGER NOT NULL,
+    blocked_reason TEXT,
+    approval_id TEXT,
+    result_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_missions_owner_status ON missions(owner_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS mission_checkpoints (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id),
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mission_checkpoints_mission ON mission_checkpoints(mission_id, created_at);
+
+CREATE TABLE IF NOT EXISTS mission_evidence (
+    id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL REFERENCES missions(id),
+    kind TEXT NOT NULL,
+    locator TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mission_evidence_mission ON mission_evidence(mission_id, created_at);
+
+CREATE TABLE IF NOT EXISTS skills (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL,
+    status TEXT NOT NULL,
+    current_version TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS skill_versions (
+    id TEXT PRIMARY KEY,
+    skill_id TEXT NOT NULL REFERENCES skills(id),
+    version TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    source TEXT NOT NULL,
+    change_reason TEXT NOT NULL,
+    previous_version TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(skill_id, version)
+);
+CREATE TABLE IF NOT EXISTS workspace_projects (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    repo_path TEXT NOT NULL,
+    project_type TEXT NOT NULL,
+    approved INTEGER NOT NULL DEFAULT 1,
+    metadata_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(owner_id, repo_path)
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_projects_owner ON workspace_projects(owner_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_skill_versions_skill ON skill_versions(skill_id, created_at);
+CREATE TABLE IF NOT EXISTS intelligence_findings (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    finding_type TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    baseline_json TEXT NOT NULL,
+    current_value_json TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    detected_at TEXT NOT NULL,
+    affected_resource TEXT NOT NULL,
+    recommended_action TEXT NOT NULL,
+    auto_action_allowed INTEGER NOT NULL,
+    cooldown_seconds REAL NOT NULL,
+    status TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_intelligence_findings_owner ON intelligence_findings(owner_id, status, detected_at);
+CREATE TABLE IF NOT EXISTS briefings (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    briefing_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    items_json TEXT NOT NULL,
+    evidence_ids_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    dismissed_at TEXT,
+    dedup_key TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_briefings_owner ON briefings(owner_id, created_at);
+CREATE TABLE IF NOT EXISTS automation_rules (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    trigger_json TEXT NOT NULL,
+    conditions_json TEXT NOT NULL,
+    actions_json TEXT NOT NULL,
+    risk_level TEXT NOT NULL,
+    cooldown_seconds REAL NOT NULL,
+    last_run_at TEXT,
+    next_run_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS automation_runs (
+    id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL REFERENCES automation_rules(id),
+    status TEXT NOT NULL,
+    trigger_event_id TEXT,
+    result_json TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_automation_rules_owner ON automation_rules(owner_id, enabled, updated_at);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_rule ON automation_runs(rule_id, started_at);
+CREATE TABLE IF NOT EXISTS evaluation_runs (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT,
+    suite TEXT NOT NULL,
+    status TEXT NOT NULL,
+    passed INTEGER NOT NULL,
+    regression INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    results_json TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_evaluation_runs_suite ON evaluation_runs(suite, started_at);
+CREATE TABLE IF NOT EXISTS communication_insights (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    thread_id TEXT NOT NULL,
+    insight_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(owner_id, thread_id)
+);
+CREATE TABLE IF NOT EXISTS worker_delegations (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    worker TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    scope TEXT,
+    task TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+);
 """
 
 

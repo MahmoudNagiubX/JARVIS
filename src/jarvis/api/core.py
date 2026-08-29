@@ -29,6 +29,8 @@ from ..contracts import (
     WorldStateQuery,
 )
 from ..models.routing import ModelRoute
+from ..contracts import Mission, MissionBudget, MissionStatus
+from ..automation import AutomationAction, AutomationCondition, AutomationRule, AutomationTrigger
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,6 +331,99 @@ class CoreApplication:
     async def context(self, identity: Identity, device: DeviceIdentity, query: str = "") -> dict[str, Any]:
         return (await self.runtime.context.assemble(identity, device, query)).as_dict()
 
+    # Phase 07 bounded intelligence use cases --------------------------
+    async def list_missions(self, owner_id: str) -> list[dict[str, Any]]:
+        return [asdict(item) for item in await self.runtime.missions.list(owner_id)]
+
+    async def get_mission(self, owner_id: str, mission_id: str) -> dict[str, Any] | None:
+        item = await self.runtime.missions.get(owner_id, mission_id)
+        return asdict(item) if item else None
+
+    async def mission_evidence(self, owner_id: str, mission_id: str) -> list[dict[str, Any]]:
+        item = await self.runtime.missions.get(owner_id, mission_id)
+        if item is None:
+            raise KeyError(mission_id)
+        return [asdict(evidence) for evidence in item.evidence]
+
+    async def create_mission(self, owner_id: str, values: dict[str, object]) -> dict[str, Any]:
+        budget_values = values.get("budget", {})
+        budget = MissionBudget(**{key: int(value) if key != "max_duration" else float(value) for key, value in budget_values.items() if key in {"max_steps", "max_duration", "max_tool_calls", "max_worker_runs", "max_replans", "max_external_actions"}}) if isinstance(budget_values, dict) else MissionBudget()
+        title = str(values.get("title") or values.get("request") or "").strip()
+        request = str(values.get("request") or title).strip()
+        item = await self.runtime.missions.create(Mission(str(values.get("mission_id", "")), owner_id, request, title, MissionStatus.DRAFT, values.get("goal_id") if isinstance(values.get("goal_id"), str) else None, budget=budget))
+        if bool(values.get("plan", True)):
+            item = await self.runtime.missions.plan(owner_id, item.mission_id)
+        return asdict(item)
+
+    async def mission_action(self, owner_id: str, mission_id: str, action: str, identity: Identity | None = None, device: DeviceIdentity | None = None, *, approval_granted: bool = False) -> dict[str, Any]:
+        if action == "start": item = await self.runtime.missions.start(owner_id, mission_id, identity, device)
+        elif action == "pause": item = await self.runtime.missions.pause(owner_id, mission_id)
+        elif action == "resume": item = await self.runtime.missions.resume(owner_id, mission_id, approval_granted=approval_granted)
+        elif action == "cancel": item = await self.runtime.missions.cancel(owner_id, mission_id)
+        else: raise ValueError("unsupported mission action")
+        return asdict(item)
+
+    def list_skills(self, *, include_disabled: bool = True) -> list[dict[str, Any]]:
+        return [asdict(item) for item in self.runtime.skills.list(include_disabled=include_disabled)]
+
+    def get_skill(self, skill_id: str, *, include_disabled: bool = True) -> dict[str, Any] | None:
+        item = self.runtime.skills.get(skill_id, include_disabled=include_disabled)
+        return asdict(item) if item else None
+
+    def skill_versions(self, skill_id: str) -> list[dict[str, Any]]:
+        return [asdict(item) for item in self.runtime.skills.versions(skill_id)]
+
+    async def set_skill_enabled(self, skill_id: str, enabled: bool) -> dict[str, Any]:
+        return asdict(self.runtime.skills.set_enabled(skill_id, enabled).manifest)
+
+    async def execute_skill(self, skill_id: str, values: dict[str, object], identity: Identity, device: DeviceIdentity) -> dict[str, Any]:
+        return asdict(await self.runtime.skill_executor.execute(skill_id, values, identity, device))
+
+    async def workspace_projects(self, owner_id: str) -> list[dict[str, Any]]:
+        return [asdict(item) for item in await self.runtime.workspace_intelligence.list(owner_id)]
+
+    async def workspace_register(self, owner_id: str, path: str, project_id: str | None = None) -> dict[str, Any]:
+        return asdict(await self.runtime.workspace_intelligence.register(owner_id, path, project_id=project_id))
+
+    async def workspace_inspect(self, owner_id: str, project_id: str) -> dict[str, Any]:
+        return asdict(await self.runtime.workspace_intelligence.inspect(owner_id, project_id))
+
+    async def intelligence_findings(self, owner_id: str, active_only: bool = False) -> list[dict[str, Any]]:
+        return [asdict(item) for item in await self.runtime.event_intelligence.list(owner_id, active_only=active_only)]
+
+    async def detect_intelligence(self, owner_id: str) -> list[dict[str, Any]]:
+        return [asdict(item) for item in await self.runtime.event_intelligence.detect(owner_id)]
+
+    async def resolve_intelligence(self, owner_id: str, finding_id: str) -> dict[str, Any]:
+        return asdict(await self.runtime.event_intelligence.resolve(owner_id, finding_id))
+
+    async def list_briefings(self, owner_id: str, briefing_type: str | None = None) -> list[dict[str, Any]]:
+        return [asdict(item) for item in await self.runtime.briefings.list(owner_id, briefing_type)]
+
+    async def generate_briefing(self, owner_id: str, briefing_type: str = "morning") -> dict[str, Any] | None:
+        item = await self.runtime.briefings.generate(owner_id, briefing_type)
+        return asdict(item) if item else None
+
+    async def list_automations(self, owner_id: str) -> list[dict[str, Any]]:
+        return [asdict(item) for item in await self.runtime.automation.list(owner_id)]
+
+    async def create_automation(self, owner_id: str, values: dict[str, object]) -> dict[str, Any]:
+        trigger_values = values.get("trigger", {})
+        trigger = AutomationTrigger(str(trigger_values.get("kind", "event")), str(trigger_values.get("value", ""))) if isinstance(trigger_values, dict) else AutomationTrigger("event", "")
+        conditions = tuple(AutomationCondition(str(item.get("key")), str(item.get("operator", "equals")), item.get("value", True)) for item in values.get("conditions", ()) if isinstance(item, dict))
+        actions = tuple(AutomationAction(str(item.get("kind")), str(item.get("target")), item.get("arguments", {})) for item in values.get("actions", ()) if isinstance(item, dict))
+        item = await self.runtime.automation.create(AutomationRule(str(values.get("rule_id", "")), owner_id, str(values.get("name", "")), trigger, conditions, actions, str(values.get("risk_level", "safe")), float(values.get("cooldown_seconds", 300)), bool(values.get("enabled", True))))
+        return asdict(item)
+
+    async def set_automation_enabled(self, owner_id: str, rule_id: str, enabled: bool) -> dict[str, Any]:
+        return asdict(await self.runtime.automation.set_enabled(owner_id, rule_id, enabled))
+
+    async def list_evaluations(self, owner_id: str | None = None) -> list[dict[str, Any]]:
+        return self.runtime.evaluations.list(owner_id)
+
+    async def run_evaluation(self, suite: str, owner_id: str | None = None) -> dict[str, Any]:
+        return asdict(await self.runtime.evaluations.run(suite, owner_id=owner_id))
+
     # Phase 05 experience and specialist use cases --------------------
     async def experience_state(self, owner_id: str) -> dict[str, Any]:
         return await self.runtime.experience.state(owner_id)
@@ -504,6 +599,16 @@ class CoreApplication:
         important: bool = False,
     ) -> dict[str, Any]:
         return asdict(await self.runtime.communications.send(identity.owner_id, channel, recipient, content, identity, device, important=important))
+
+    async def communication_intelligence(self, owner_id: str, thread_id: str, message_ids: tuple[str, ...] = ()) -> dict[str, Any]:
+        messages = await self.runtime.communications.list_messages(owner_id)
+        selected = tuple(item for item in messages if not message_ids or item.message_id in message_ids)
+        insight = await self.runtime.communications_intelligence.analyze(owner_id, thread_id, selected)
+        return asdict(insight)
+
+    async def get_communication_intelligence(self, owner_id: str, thread_id: str) -> dict[str, Any] | None:
+        insight = await self.runtime.communications_intelligence.get(owner_id, thread_id)
+        return asdict(insight) if insight else None
 
     async def decide_communication_send(self, owner_id: str, approval_id: str, approved: bool, decided_by: str) -> dict[str, Any]:
         return asdict(await self.runtime.communications.decide_send(owner_id, approval_id, approved, decided_by))

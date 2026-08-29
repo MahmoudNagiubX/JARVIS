@@ -71,6 +71,14 @@ class ExperienceProjection:
             "approvals": {},
             "research": {},
             "engineering": {},
+            "missions": {},
+            "skills": {},
+            "automations": {},
+            "briefings": {},
+            "intelligence": {},
+            "workspace": {},
+            "worker_delegations": {},
+            "evaluations": {},
         }
 
     async def on_event(self, event: Event) -> None:
@@ -266,6 +274,14 @@ class ExperienceProjection:
             approvals=tuple(loaded.get("approvals", state["approvals"].values())),
             research=tuple(state["research"].values()),
             engineering=tuple(state["engineering"].values()),
+            missions=tuple(loaded.get("missions", state["missions"].values())),
+            skills=tuple(loaded.get("skills", state["skills"].values())),
+            automations=tuple(loaded.get("automations", state["automations"].values())),
+            briefings=tuple(loaded.get("briefings", state["briefings"].values())),
+            intelligence=tuple(loaded.get("intelligence", state["intelligence"].values())),
+            workspace=tuple(loaded.get("workspace", state["workspace"].values())),
+            worker_delegations=tuple(loaded.get("worker_delegations", state["worker_delegations"].values())),
+            evaluations=tuple(loaded.get("evaluations", state["evaluations"].values())),
             timeline=timeline,
         )
 

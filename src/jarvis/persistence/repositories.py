@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import asdict
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -31,7 +32,7 @@ def new_id(prefix: str) -> str:
 
 
 def json_text(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
 
 
 class RuntimeRepository:
@@ -792,6 +793,224 @@ class RuntimeRepository:
             "citations": [{"citation_id": item.citation_id, "evidence_id": item.evidence_id, "label": item.label, "valid": item.valid} for item in report.citations],
             "limitations": list(report.limitations),
         }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+    # Phase 07 bounded missions -----------------------------------------
+    def insert_mission(self, mission: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO missions(id, owner_id, goal_id, request, title, status, plan_json, budget_json, current_step, tool_calls, worker_runs, external_actions, replan_count, blocked_reason, approval_id, result_json, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                self._mission_values(mission),
+            )
+
+    def update_mission(self, mission: Any) -> None:
+        with self.database.transaction() as db:
+            values = self._mission_values(mission)
+            db.execute(
+                "UPDATE missions SET goal_id = ?, request = ?, title = ?, status = ?, plan_json = ?, budget_json = ?, current_step = ?, tool_calls = ?, worker_runs = ?, external_actions = ?, replan_count = ?, blocked_reason = ?, approval_id = ?, result_json = ?, updated_at = ?, completed_at = ? WHERE id = ? AND owner_id = ?",
+                (values[2], values[3], values[4], values[5], values[6], values[7], values[8], values[9], values[10], values[11], values[12], values[13], values[14], values[15], values[17], values[18], values[0], values[1]),
+            )
+
+    def mission(self, owner_id: str, mission_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM missions WHERE owner_id = ? AND id = ?", (owner_id, mission_id)).fetchone()
+        return dict(row) if row else None
+
+    def missions(self, owner_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM missions WHERE owner_id = ? ORDER BY updated_at DESC, id", (owner_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def insert_mission_checkpoint(self, checkpoint: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO mission_checkpoints(id, mission_id, title, status, evidence_json, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (checkpoint.checkpoint_id, checkpoint.mission_id, checkpoint.title, checkpoint.status, json_text(dict(checkpoint.evidence)), iso(checkpoint.created_at), iso(checkpoint.completed_at)),
+            )
+
+    def mission_checkpoints(self, mission_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM mission_checkpoints WHERE mission_id = ? ORDER BY created_at, id", (mission_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def insert_mission_evidence(self, evidence: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO mission_evidence(id, mission_id, kind, locator, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (evidence.evidence_id, evidence.mission_id, evidence.kind, evidence.locator, json_text(dict(evidence.details)), iso(evidence.created_at)),
+            )
+
+    def mission_evidence(self, mission_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM mission_evidence WHERE mission_id = ? ORDER BY created_at, id", (mission_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def reconcile_missions(self) -> int:
+        with self.database.transaction() as db:
+            cursor = db.execute(
+                "UPDATE missions SET status = 'failed', result_json = ?, updated_at = ?, completed_at = ? WHERE status IN ('running', 'waiting', 'waiting_approval')",
+                (json_text({"status": "failed", "summary": "Mission interrupted by process restart", "evidence_ids": [], "error_code": "process_restarted"}), iso(utc_now()), iso(utc_now())),
+            )
+            return int(cursor.rowcount)
+
+    @staticmethod
+    def _mission_values(mission: Any) -> tuple[object, ...]:
+        plan = mission.plan
+        plan_json = None if plan is None else json_text({
+            "steps": [{"step_id": item.step_id, "title": item.title, "status": item.status, "dependencies": list(item.dependencies), "required_capability": item.required_capability, "risk_level": item.risk_level, "approval_required": item.approval_required, "expected_evidence": list(item.expected_evidence), "detail": item.detail} for item in plan.steps],
+            "dependencies": [{"mission_id": item.mission_id, "required_status": item.required_status} for item in plan.dependencies],
+            "risk_level": plan.risk_level, "expected_evidence": list(plan.expected_evidence), "completion_criteria": list(plan.completion_criteria),
+        })
+        budget = mission.budget
+        budget_json = json_text({"max_steps": budget.max_steps, "max_duration": budget.max_duration, "max_tool_calls": budget.max_tool_calls, "max_worker_runs": budget.max_worker_runs, "max_replans": budget.max_replans, "max_external_actions": budget.max_external_actions})
+        result = mission.result
+        result_json = None if result is None else json_text({"status": result.status, "summary": result.summary, "evidence_ids": list(result.evidence_ids), "error_code": result.error_code})
+        return (mission.mission_id, mission.owner_id, mission.goal_id, mission.request, mission.title, mission.status.value if hasattr(mission.status, "value") else mission.status, plan_json, budget_json, mission.current_step, mission.tool_calls, mission.worker_runs, mission.external_actions, mission.replan_count, mission.blocked_reason, mission.approval_id, result_json, iso(mission.created_at), iso(mission.updated_at), iso(mission.completed_at))
+
+    # Phase 07 product-owned skill metadata -----------------------------
+    def insert_skill(self, skill: Any) -> None:
+        manifest = skill.manifest
+        payload = self._skill_manifest_json(manifest)
+        status = manifest.status.value if hasattr(manifest.status, "value") else str(manifest.status)
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO skills(id, name, description, category, status, current_version, manifest_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, category=excluded.category, status=excluded.status, current_version=excluded.current_version, manifest_json=excluded.manifest_json, updated_at=excluded.updated_at",
+                (manifest.skill_id, manifest.name, manifest.description, manifest.category, status, manifest.version, payload, iso(utc_now()), iso(utc_now())),
+            )
+
+    def update_skill(self, skill: Any) -> None:
+        self.insert_skill(skill)
+
+    def update_skill_status(self, skill_id: str, status: str) -> None:
+        with self.database.transaction() as db:
+            db.execute("UPDATE skills SET status = ?, updated_at = ? WHERE id = ?", (status, iso(utc_now()), skill_id))
+
+    def insert_skill_version(self, version: Any) -> None:
+        manifest = version.manifest
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO skill_versions(id, skill_id, version, manifest_json, source, change_reason, previous_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (version.version_id, version.skill_id, version.version, self._skill_manifest_json(manifest), version.source, version.change_reason, version.previous_version, iso(version.created_at)),
+            )
+
+    def skill(self, skill_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM skills WHERE id = ?", (skill_id,)).fetchone()
+        return dict(row) if row else None
+
+    def skills(self) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM skills ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+    def skill_versions(self, skill_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM skill_versions WHERE skill_id = ? ORDER BY created_at, id", (skill_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _skill_manifest_json(manifest: Any) -> str:
+        return json_text({
+            "skill_id": manifest.skill_id, "name": manifest.name, "description": manifest.description,
+            "version": manifest.version, "category": manifest.category, "inputs": list(manifest.inputs),
+            "outputs": list(manifest.outputs), "required_capabilities": list(manifest.required_capabilities),
+            "risk_level": manifest.risk_level, "autonomy_level": manifest.autonomy_level,
+            "estimated_duration": manifest.estimated_duration, "workspace_scope": manifest.workspace_scope,
+            "network_requirement": manifest.network_requirement, "owner": manifest.owner,
+            "status": manifest.status.value if hasattr(manifest.status, "value") else str(manifest.status),
+        })
+
+    # Phase 07 bounded workspace intelligence ---------------------------
+    def insert_workspace_project(self, project: Any) -> None:
+        payload = asdict(project)
+        for key in ("project_id", "owner_id", "repo_path", "project_type", "approved", "updated_at"):
+            payload.pop(key, None)
+        payload = json_text(payload)
+        with self.database.transaction() as db:
+            db.execute("INSERT INTO workspace_projects(id, owner_id, repo_path, project_type, approved, metadata_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner_id, repo_path) DO UPDATE SET id=excluded.id, project_type=excluded.project_type, approved=excluded.approved, metadata_json=excluded.metadata_json, updated_at=excluded.updated_at", (project.project_id, project.owner_id, project.repo_path, project.project_type, int(project.approved), payload, iso(project.updated_at or utc_now())))
+
+    def update_workspace_project(self, project: Any) -> None:
+        self.insert_workspace_project(project)
+
+    def workspace_project(self, owner_id: str, repo_path: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM workspace_projects WHERE owner_id = ? AND repo_path = ?", (owner_id, repo_path)).fetchone()
+        return dict(row) if row else None
+
+    def workspace_project_by_id(self, owner_id: str, project_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM workspace_projects WHERE owner_id = ? AND id = ?", (owner_id, project_id)).fetchone()
+        return dict(row) if row else None
+
+    def workspace_projects(self, owner_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM workspace_projects WHERE owner_id = ? ORDER BY updated_at DESC, id", (owner_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    # Phase 07 intelligence, briefings, automation, evaluation ------------
+    def insert_intelligence_finding(self, finding: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute("INSERT OR REPLACE INTO intelligence_findings(id, owner_id, finding_type, severity, evidence_json, baseline_json, current_value_json, confidence, detected_at, affected_resource, recommended_action, auto_action_allowed, cooldown_seconds, status, fingerprint, resolved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (finding.finding_id, finding.owner_id, finding.finding_type, finding.severity, json_text(dict(finding.evidence)), json_text(dict(finding.baseline)), json_text(finding.current_value), finding.confidence, iso(finding.detected_at), finding.affected_resource, finding.recommended_action, int(finding.auto_action_allowed), finding.cooldown_seconds, finding.status, finding.fingerprint, iso(finding.resolved_at)))
+
+    def intelligence_finding(self, owner_id: str, finding_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM intelligence_findings WHERE owner_id = ? AND id = ?", (owner_id, finding_id)).fetchone()
+        return dict(row) if row else None
+
+    def intelligence_findings(self, owner_id: str, active_only: bool = False) -> list[dict[str, Any]]:
+        condition = " AND status = 'active'" if active_only else ""
+        rows = self.database.connection.execute(f"SELECT * FROM intelligence_findings WHERE owner_id = ?{condition} ORDER BY detected_at DESC", (owner_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_intelligence_finding(self, owner_id: str, finding_id: str, status: str, resolved_at: datetime | None = None) -> None:
+        with self.database.transaction() as db:
+            db.execute("UPDATE intelligence_findings SET status = ?, resolved_at = ? WHERE owner_id = ? AND id = ?", (status, iso(resolved_at), owner_id, finding_id))
+
+    def insert_briefing(self, briefing: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute("INSERT OR REPLACE INTO briefings(id, owner_id, briefing_type, title, summary, items_json, evidence_ids_json, created_at, delivered_at, dismissed_at, dedup_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (briefing.briefing_id, briefing.owner_id, briefing.briefing_type, briefing.title, briefing.summary, json_text(list(briefing.items)), json_text(list(briefing.evidence_ids)), iso(briefing.created_at), iso(briefing.delivered_at), iso(briefing.dismissed_at), briefing.dedup_key))
+
+    def briefings(self, owner_id: str, briefing_type: str | None = None) -> list[dict[str, Any]]:
+        if briefing_type:
+            rows = self.database.connection.execute("SELECT * FROM briefings WHERE owner_id = ? AND briefing_type = ? ORDER BY created_at DESC", (owner_id, briefing_type)).fetchall()
+        else:
+            rows = self.database.connection.execute("SELECT * FROM briefings WHERE owner_id = ? ORDER BY created_at DESC", (owner_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def insert_automation_rule(self, rule: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute("INSERT OR REPLACE INTO automation_rules(id, owner_id, name, enabled, trigger_json, conditions_json, actions_json, risk_level, cooldown_seconds, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (rule.rule_id, rule.owner_id, rule.name, int(rule.enabled), json_text(asdict(rule.trigger)), json_text([asdict(item) for item in rule.conditions]), json_text([asdict(item) for item in rule.actions]), rule.risk_level, rule.cooldown_seconds, iso(rule.last_run_at), iso(rule.next_run_at), iso(rule.created_at), iso(rule.updated_at)))
+
+    def automation_rules(self, owner_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM automation_rules WHERE owner_id = ? ORDER BY created_at, id", (owner_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def automation_rule(self, owner_id: str, rule_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM automation_rules WHERE owner_id = ? AND id = ?", (owner_id, rule_id)).fetchone()
+        return dict(row) if row else None
+
+    def insert_automation_run(self, run: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute("INSERT OR REPLACE INTO automation_runs(id, rule_id, status, trigger_event_id, result_json, started_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (run.run_id, run.rule_id, run.status, run.trigger_event_id, json_text(dict(run.result)), iso(run.started_at), iso(run.completed_at)))
+
+    def automation_runs(self, rule_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM automation_runs WHERE rule_id = ? ORDER BY started_at DESC", (rule_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def insert_evaluation_run(self, run: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute("INSERT OR REPLACE INTO evaluation_runs(id, owner_id, suite, status, passed, regression, summary, results_json, started_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (run.run_id, run.owner_id, run.suite, run.status, int(run.passed), int(run.regression), run.summary, json_text([asdict(item) if hasattr(item, "__dataclass_fields__") else dict(item) for item in run.results]), iso(run.started_at), iso(run.completed_at)))
+
+    def evaluation_runs(self, owner_id: str | None = None) -> list[dict[str, Any]]:
+        if owner_id:
+            rows = self.database.connection.execute("SELECT * FROM evaluation_runs WHERE owner_id = ? ORDER BY started_at DESC", (owner_id,)).fetchall()
+        else:
+            rows = self.database.connection.execute("SELECT * FROM evaluation_runs ORDER BY started_at DESC").fetchall()
+        return [dict(row) for row in rows]
+
+    def insert_worker_delegation(self, delegation: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute("INSERT OR REPLACE INTO worker_delegations(id, owner_id, worker, reason, scope, task, result_json, started_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (delegation.delegation_id, delegation.owner_id, delegation.worker, delegation.reason, delegation.scope, delegation.task, json_text(dict(delegation.result)), iso(delegation.started_at), iso(delegation.completed_at)))
+
+    def worker_delegations(self, owner_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM worker_delegations WHERE owner_id = ? ORDER BY started_at DESC", (owner_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def insert_communication_insight(self, insight: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute("INSERT OR REPLACE INTO communication_insights(id, owner_id, thread_id, insight_json, created_at) VALUES (?, ?, ?, ?, ?)", (insight.insight_id, insight.owner_id, insight.thread_id, json_text(asdict(insight)), iso(datetime.now(UTC))))
+
+    def communication_insight(self, owner_id: str, thread_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM communication_insights WHERE owner_id = ? AND thread_id = ?", (owner_id, thread_id)).fetchone()
+        return dict(row) if row else None
 
     # Phase 03 proactive and personalization ----------------------------
     def insert_finding(self, finding: Any) -> None:

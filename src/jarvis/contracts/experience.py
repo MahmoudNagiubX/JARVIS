@@ -133,6 +133,14 @@ class HudState:
     approvals: tuple[ApprovalProjection, ...] = ()
     research: tuple[ResearchProjection, ...] = ()
     engineering: tuple[EngineeringProjection, ...] = ()
+    missions: tuple[dict[str, object], ...] = ()
+    skills: tuple[dict[str, object], ...] = ()
+    automations: tuple[dict[str, object], ...] = ()
+    briefings: tuple[dict[str, object], ...] = ()
+    intelligence: tuple[dict[str, object], ...] = ()
+    workspace: tuple[dict[str, object], ...] = ()
+    worker_delegations: tuple[dict[str, object], ...] = ()
+    evaluations: tuple[dict[str, object], ...] = ()
     timeline: tuple[dict[str, object], ...] = ()
 
 
