@@ -25,6 +25,7 @@ class DeviceIdentity:
     capabilities: frozenset[str] = field(default_factory=frozenset)
     scopes: frozenset[str] = field(default_factory=frozenset)
     authenticated_at: datetime | None = None
+    credential_id: str | None = None
 
 
 class IdentityService(Protocol):

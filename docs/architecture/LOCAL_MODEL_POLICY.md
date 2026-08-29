@@ -1,9 +1,11 @@
 # Local model policy
 
-## Phase 01 rule
+## Phase 02 rule
 
 No model is downloaded, copied, loaded, hashed, repaired, or invoked by the
-foundation. `src/jarvis` has no model-runtime or network dependency.
+foundation. `src/jarvis` uses only a provider-neutral gateway and a standard
+library loopback Ollama adapter; no model runtime or provider SDK is a
+dependency.
 
 ## Observed local inventory
 
@@ -11,7 +13,8 @@ Phase 00 found an isolated Ollama-style store under
 `C:\Users\mahmo\BMO\phase-08-5-runtime\ollama-isolated-models` with manifests
 for `bge-m3/567m`, `qwen3.5/4b`, and `qwen3.5-heretic/9b-q4km`. It also found
 large GGUF/blob artifacts and approximately 16.36 GB free on the system drive.
-These are inventory facts only; no artifact was opened or copied in Phase 01.
+These are inventory facts only; no artifact was opened or copied into the
+repository in Phase 02.
 
 ## Required controls before model integration
 
@@ -29,5 +32,6 @@ These are inventory facts only; no artifact was opened or copied in Phase 01.
 - Validate model licensing and redistribution terms before any product
   distribution.
 
-The policy is a guardrail for Mega Phase 02 model integration; it does not
-authorize any model operation during Phase 01.
+The policy is the guardrail for Mega Phase 02 model integration. Optional
+smoke testing may contact an already-running loopback provider, but does not
+authorize model downloads, model-store mutation, or public bindings.

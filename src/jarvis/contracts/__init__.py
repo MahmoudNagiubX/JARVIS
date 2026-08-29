@@ -15,8 +15,12 @@ from .voice import (
     RealtimeVoiceSession,
     SpeechToText,
     TextToSpeech,
+    VoiceActivityDetector,
+    VoiceSessionContext,
     VoiceSessionState,
     VoiceTranscript,
+    VoiceTurnResult,
+    WakeDetector,
 )
 from .world import Observation, WorldState, WorldStateSnapshot
 
@@ -54,6 +58,8 @@ __all__ = [
     "RealtimeVoiceSession",
     "SpeechToText",
     "TextToSpeech",
+    "VoiceActivityDetector",
+    "VoiceSessionContext",
     "Tool",
     "ToolContext",
     "ToolRegistry",
@@ -61,6 +67,8 @@ __all__ = [
     "ToolResultStatus",
     "VoiceSessionState",
     "VoiceTranscript",
+    "VoiceTurnResult",
+    "WakeDetector",
     "WorldState",
     "WorldStateSnapshot",
 ]

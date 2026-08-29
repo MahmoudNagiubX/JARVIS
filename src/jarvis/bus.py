@@ -33,8 +33,9 @@ class EventBus(Protocol):
 class InMemoryEventBus:
     """Typed-by-envelope pub/sub with exact and wildcard subscriptions.
 
-    The bus is deliberately process-local in Phase 01. Durable delivery,
-    retries, and cross-process transport are adapter decisions for a later phase.
+    The bus is deliberately process-local in Phase 02. Durable event rows are
+    written by the runtime repository; delivery retries and cross-process
+    transport remain adapter decisions for a later phase.
     """
 
     def __init__(self) -> None:

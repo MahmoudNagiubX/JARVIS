@@ -1,0 +1,3 @@
+-- The executable Phase 02 schema is kept in persistence.db.SCHEMA so the
+-- zero-install SQLite adapter can initialize without a migration CLI.
+-- This marker documents the first relational migration boundary.

@@ -30,7 +30,7 @@ capability directly.
 | Permission | Core authority | Evaluate action/resource against identity and device context | Executing an action |
 | Approval | Core authority | Create, decide, expire, and consume human approvals | Assuming approval from voice or model text |
 | Audit | Core authority | Append/query security and execution records with correlation | Storing arbitrary secrets or raw unredacted arguments |
-| Event bus | Core runtime | Dispatch normalized events in-process initially | Durable queue guarantees in Phase 01 |
+| Event bus | Core runtime | Dispatch normalized events in-process and persist event rows | Durable queue and retry guarantees |
 | Conversation/agent | Runtime | Plan turns, manage goals, coordinate workers and tool proposals | Owning credentials or bypassing approval |
 | Model gateway | Capability adapter | Route provider-neutral requests and report model identity/health | Authorizing tool calls |
 | Tools | Capability adapter | Validate and execute one capability under a `ToolContext` | Deciding its own authority |
@@ -50,20 +50,22 @@ Every cross-boundary event uses `jarvis.events.Event` with:
 - optional session and actor ids;
 - structured payload, severity, and lifecycle state.
 
-Phase 01 uses `InMemoryEventBus`. Later durable or distributed transports are
+Phase 02 uses `InMemoryEventBus` plus durable event persistence through the
+repository. Later durable delivery, outbox, or distributed transports are
 adapters and must preserve this envelope.
 
 ## Lifecycle
 
 `created -> starting -> ready -> stopping -> stopped` is explicit. Startup
 emits `system.bootstrap.started` and `system.bootstrap.ready`. Shutdown emits
-`system.shutdown.started` and `system.shutdown.completed`. Phase 01 startup
-only composes no-op/in-memory services and performs no model, network, audio,
-database, or device initialization.
+`system.shutdown.started` and `system.shutdown.completed`. Phase 02 startup
+composes local authority, SQLite, model, tool, satellite, and voice
+boundaries, but performs no model load, audio-hardware open, or non-loopback
+network bind.
 
 ## Security ordering
 
-For a consequential capability request, the intended future sequence is:
+For a consequential capability request, the Phase 02 sequence is:
 
 ```text
 authenticate -> authorize -> validate -> request approval -> audit decision

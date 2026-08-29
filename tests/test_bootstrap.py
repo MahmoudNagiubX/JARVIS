@@ -16,7 +16,7 @@ class BootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.state, RuntimeState.READY)
         self.assertEqual(runtime.config.environment, "test")
         self.assertEqual(events, ["system.bootstrap.started", "system.bootstrap.ready"])
-        self.assertEqual((await runtime.models.generate(LLMRequest("r-1", ()))).finish_reason, "not_configured")
+        self.assertEqual((await runtime.models.generate(LLMRequest("r-1", ()))).finish_reason, "stop")
         decision = await runtime.permission.evaluate(None, None, "anything")
         self.assertEqual(decision.effect, PermissionEffect.DENY)
         await runtime.shutdown()
@@ -29,6 +29,6 @@ class BootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.state, RuntimeState.STOPPED)
     async def test_bootstrap_does_not_require_external_services(self) -> None:
         runtime = await bootstrap_runtime(JarvisConfig(environment="offline-test"))
-        self.assertEqual(runtime.tools.list(), ())
+        self.assertGreaterEqual(len(runtime.tools.list()), 3)
         self.assertEqual((await runtime.world_state.snapshot()).observations, ())
         await runtime.shutdown()

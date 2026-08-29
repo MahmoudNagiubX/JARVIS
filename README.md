@@ -1,22 +1,25 @@
-# JARVIS Foundation
+# JARVIS Core Runtime
 
-This repository is the Phase 01 foundation for the JARVIS Personal AI OS.
+This repository is the Phase 02 core runtime for the JARVIS Personal AI OS.
 The selected architectural spine is the local BMO/JARVIS platform: its
 product boundaries, identity/device authority, model gateway, tool approval
 workflow, audit records, and application lifecycle are the closest match for
 an authority-first core.
 
-Phase 01 intentionally contains no downloaded models, network clients, audio
-drivers, or provider SDKs. It provides typed contracts, a normalized event
-envelope, an in-process event bus, safe in-memory implementations, and a
-minimal start/ready/shutdown lifecycle. All real integrations are deferred to
-the migration backlog and must enter through these boundaries.
+Phase 02 keeps those boundaries and adds a dependency-free, durable local
+runtime: owner/device authority, SQLite persistence, model routing, a bounded
+agent loop, approval-controlled tools, typed Windows satellite commands,
+voice orchestration with barge-in cancellation, and loopback HTTP/CLI entry
+points. No model is loaded and no hardware or server is opened at import or
+composition time.
 
-## Run the foundation smoke check
+## Run the local runtime
 
 ```powershell
 $env:PYTHONPATH = "src"
 python -m jarvis
+python -m jarvis --text "hello JARVIS"
+python -m jarvis --serve --port 8787
 ```
 
 ## Run tests without installing dependencies
@@ -26,5 +29,6 @@ $env:PYTHONPATH = "src"
 python -m unittest discover -s tests -v
 ```
 
-The repository is local-only at this phase. No remote is configured and work
-stops before Mega Phase 02.
+See [docs/RUNNING_JARVIS.md](docs/RUNNING_JARVIS.md),
+[docs/TESTING.md](docs/TESTING.md), and the architecture documents for
+operational boundaries and known Phase 03+ work.

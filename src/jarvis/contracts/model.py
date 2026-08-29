@@ -39,6 +39,8 @@ class LLMResponse:
     finish_reason: str
     tool_calls: tuple[Mapping[str, Any], ...] = ()
     usage: Mapping[str, int] = field(default_factory=dict)
+    provider: str | None = None
+    model_digest: str | None = None
 
 
 class LLMProvider(Protocol):
