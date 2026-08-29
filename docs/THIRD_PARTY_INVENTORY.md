@@ -1,6 +1,6 @@
 # Third-party inventory
 
-This is the Phase 03 inventory for source references and declared dependency
+This is the Phase 04 inventory for source references and declared dependency
 surfaces. It is not a final distribution notice.
 
 | Source/component | Local evidence | License/status | Phase 03 treatment |
@@ -8,6 +8,7 @@ surfaces. It is not a final distribution notice.
 | BMO/JARVIS | `C:\Users\mahmo\Desktop\BMO\BMO-Personal-AI-OS\LICENSE`, `pyproject.toml` | Apache-2.0 declared | Architectural reference; no source copied |
 | PersonalJarvis | `C:\Jarivs\01_foundation_candidates\personal-jarvis\LICENSE`, `NOTICE` | Apache-2.0 for current release; NOTICE says releases through 1.6.0 remain MIT | Donor/reference only; code and bundled assets not copied |
 | aceFelix/jarvis | `C:\Jarivs\01_foundation_candidates\acefelix-jarvis\LICENSE`, `pyproject.toml` | MIT | Donor/reference only; code not copied |
+| Microsoft UFO | Local donor/reference only | Not merged; license/runtime surface requires later review | Future Windows UI automation adapter boundary only |
 | Phase 01 foundation | this repository `pyproject.toml` | Apache-2.0 placeholder; final product license not selected | Original product-owned contracts and tests |
 | Python standard library | Python runtime | Python Software Foundation License | SQLite, HTTP, CLI, hashing, and async orchestration |
 | Ollama | Existing local service boundary | No SDK copied | Optional loopback model adapter only; no pull/copy/install/delete |
@@ -27,7 +28,7 @@ surfaces. It is not a final distribution notice.
 - aceFelix/jarvis core declares provider SDKs, Pydantic, terminal UI/config
   dependencies; optional extras add GUI, browser, camera/vision, voice,
   daemon, realtime UI, and channel integrations.
-- Phase 03 foundation declares no runtime dependencies. Pytest is an optional
+- Phase 04 foundation declares no runtime dependencies. Pytest is an optional
   development dependency only; the baseline test command uses the standard
   library `unittest` runner.
 
@@ -38,4 +39,6 @@ retain applicable license/NOTICE text, check bundled model and asset licenses,
 review trademarks and contributor terms, and record the result in an updated
 inventory. A package license does not automatically license its provider SDKs,
 models, or bundled assets. Microsoft UFO is an adapter boundary only and is
-not merged. No Phase 03 donor repository was modified.
+not merged. Playwright, Home Assistant, MQTT, email, Telegram, and Discord are
+optional adapter surfaces only; none is a runtime dependency. No Phase 04 donor
+repository was modified.

@@ -20,6 +20,7 @@ class EventCategory(StrEnum):
     VOICE = "voice"
     DEVICE = "device"
     COMPUTER = "computer"
+    HOME = "home"
     BROWSER = "browser"
     MEMORY = "memory"
     WORLD_STATE = "world_state"

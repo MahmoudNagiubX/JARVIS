@@ -14,8 +14,13 @@ cancellation boundaries, worker handling, typed satellite execution, and
 voice TTS cancellation/barge-in. Phase 03 adds memory extraction/search/edit,
 World State fusion/expiry/conflict handling, bounded goals, proactive cooldown
 and safe action routing, personalization/offline/context behavior, and the
-loopback resource APIs.
+loopback resource APIs. Phase 04 adds typed computer approval, bounded browser
+reads, device fabric heartbeats/revocation, home safety boundaries, restricted
+MQTT, communications approval, notification deduplication, room voice
+handoff, capability registration, and the new loopback endpoints.
 
 Tests use deterministic providers and adapters. They do not prove a real
-PostgreSQL/pgvector deployment, GPU inference, physical voice acceptance, or
-an external Windows satellite transport.
+PostgreSQL/pgvector deployment, GPU inference, physical voice acceptance,
+external Windows satellite transport, Playwright browser control, Home
+Assistant/MQTT hardware, OS notification delivery, or external communication
+accounts.

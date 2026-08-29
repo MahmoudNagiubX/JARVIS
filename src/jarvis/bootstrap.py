@@ -16,7 +16,10 @@ from .authority.identity.service import IdentityService as RuntimeIdentityServic
 from .authority.permissions.engine import PolicyPermissionEngine
 from .agents.runtime.runtime import AgentRuntime
 from .autonomy.policy import AutonomyPolicy
+from .capabilities.registry import CapabilityRegistry
+from .communications.hub import CommunicationsHub, LocalCommunicationChannel
 from .computer.controller import WindowsComputerController
+from .computer.service import ComputerActionService, WindowsNativeComputerController
 from .context.assembler import ContextAssembler
 from .contracts import (
     ApprovalEngine,
@@ -31,8 +34,11 @@ from .contracts import (
     SpeechToText,
     TextToSpeech,
     WorldState,
+    CapabilityDescriptor,
 )
 from .devices.satellite.registry import WindowsSatelliteRegistry
+from .devices.fabric import DeviceFabricService
+from .devices.home.service import HomeActionService, RestrictedMQTTTransport
 from .events import Event, EventCategory, EventState
 from .models.gateway import ModelGateway
 from .models.routing import ModelRoute
@@ -43,16 +49,14 @@ from .nodes.venom import VenomNode
 from .offline.service import OfflineModeService
 from .personalization.service import DurablePersonalizationService
 from .proactive.service import DurableProactiveService
-from .runtime.noop import (
-    NoOpBrowserController,
-    NoOpCommunicationChannel,
-    NoOpSpeechToText,
-    NoOpTextToSpeech,
-)
+from .notifications.service import NotificationService
+from .runtime.noop import NoOpSpeechToText, NoOpTextToSpeech
 from .scheduler.service import BackgroundScheduler
 from .tools.registry import ToolRegistry, default_registry
 from .tools.service import ToolExecutionService
 from .voice.core import VoiceCore
+from .voice.routing.service import VoiceRoutingService
+from .browser.service import BrowserActionService, LocalBrowserController
 from .world_state.service import DurableWorldStateService
 from .world_state.workspace import WorkspaceContextService
 from .goals.engine import DurableGoalEngine
@@ -100,6 +104,14 @@ class JarvisRuntime:
     stt: SpeechToText
     tts: TextToSpeech
     communication: CommunicationChannel
+    device_fabric: DeviceFabricService
+    computer_actions: ComputerActionService
+    browser_actions: BrowserActionService
+    home: HomeActionService
+    communications: CommunicationsHub
+    notifications: NotificationService
+    voice_routing: VoiceRoutingService
+    capabilities: CapabilityRegistry
     runtime_id: str
     state: RuntimeState = RuntimeState.CREATED
 
@@ -186,7 +198,20 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     autonomy = AutonomyPolicy()
     offline = OfflineModeService()
     proactive = DurableProactiveService(repository, event_bus, world_state, goals, tool_service, audit, autonomy)
-    context = ContextAssembler(memory, world_state, goals, proactive, personalization, registry, offline)
+    capabilities = CapabilityRegistry()
+    device_fabric = DeviceFabricService(repository, event_bus, audit)
+    computer_controller = WindowsNativeComputerController()
+    computer_actions = ComputerActionService(computer_controller, repository, event_bus, permission, audit, approval)
+    browser_controller = LocalBrowserController()
+    browser_actions = BrowserActionService(browser_controller, repository, event_bus, permission, audit, approval)
+    home = HomeActionService(None, repository, event_bus, permission, audit, RestrictedMQTTTransport())
+    communications = CommunicationsHub(repository, event_bus, approval, permission, audit, autonomy)
+    local_channel = LocalCommunicationChannel()
+    communications.register_channel(local_channel)
+    notifications = NotificationService(repository, event_bus, audit)
+    voice_routing = VoiceRoutingService(repository, event_bus)
+    _register_capabilities(capabilities)
+    context = ContextAssembler(memory, world_state, goals, proactive, personalization, registry, offline, capabilities)
     agent = AgentRuntime(repository, event_bus, models, tool_service, max_steps=effective_config.max_agent_steps, context_assembler=context)
     scheduler = BackgroundScheduler()
 
@@ -241,13 +266,43 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         scheduler=scheduler,
         venom=VenomNode(),
         computer=WindowsComputerController(satellite),
-        browser=NoOpBrowserController(),
+        browser=browser_controller,
         voice=VoiceCore(agent, event_bus, stt, tts),
         stt=stt,
         tts=tts,
-        communication=NoOpCommunicationChannel(),
+        communication=local_channel,
+        device_fabric=device_fabric,
+        computer_actions=computer_actions,
+        browser_actions=browser_actions,
+        home=home,
+        communications=communications,
+        notifications=notifications,
+        voice_routing=voice_routing,
+        capabilities=capabilities,
         runtime_id=f"runtime-{uuid4()}",
     )
+
+
+def _register_capabilities(capabilities: CapabilityRegistry) -> None:
+    """Register only deterministic local or explicitly available seams."""
+    from platform import system
+
+    windows = system().casefold() == "windows"
+    computer = (
+        "computer.open_application", "computer.open_file", "computer.open_folder",
+        "computer.list_processes", "computer.inspect_file", "computer.search_files",
+        "computer.stop_safe_process",
+    )
+    for capability in computer:
+        capabilities.register(CapabilityDescriptor(capability, "windows-native", None, windows, "safe"))
+    for capability in ("browser.open_url", "browser.navigate", "browser.read_page", "browser.extract_text", "browser.find_element", "browser.inspect_accessibility_tree", "browser.tabs"):
+        capabilities.register(CapabilityDescriptor(capability, "local-browser", None, True, "read", requires_internet=capability != "browser.tabs"))
+    capabilities.register(CapabilityDescriptor("communication.local.draft", "local-channel", None, True, "safe"))
+    capabilities.register(CapabilityDescriptor("notification.create", "local-notification", None, True, "safe"))
+    capabilities.register(CapabilityDescriptor(
+        "device.venom.health", "venom", "venom", False, "read",
+        metadata={"reason": "not_probed", "network": "unknown-until-deployment"},
+    ))
 
 
 async def bootstrap_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:

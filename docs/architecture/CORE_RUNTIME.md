@@ -1,6 +1,6 @@
 # Core runtime
 
-Phase 02 keeps the Phase 01 BMO/JARVIS spine and adds a working text-first
+Phase 04 keeps the Phase 01 BMO/JARVIS spine and adds a working text-first
 runtime:
 
 `Client/API -> Session -> Conversation -> Agent -> Model Gateway -> Tool
@@ -24,3 +24,9 @@ Cancellation is represented in durable run state. Approval pauses are durable
 and must be explicitly resumed. Every capability path carries owner/device,
 session, and correlation identifiers. HTTP mutations authenticate the device
 credential before resolving the owner identity.
+
+Phase 04 composes product-owned computer, browser, device-fabric, home,
+communications, notifications, room-voice, and capability-registry services.
+External transports are injected and optional. The loopback API exposes their
+bounded read/action contracts without adding paid providers, model operations,
+public bindings, or unrestricted shell/UI automation.

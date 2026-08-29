@@ -9,9 +9,13 @@ from typing import Any
 from ..authority.identity.service import EnrollmentGrant
 from ..bootstrap import JarvisRuntime
 from ..contracts import (
+    BrowserAction,
+    ComputerAction,
     DeviceIdentity,
+    DeviceRecord,
     Goal,
     GoalStatus,
+    HomeAction,
     Identity,
     MemoryCandidate,
     MemoryQuery,
@@ -319,6 +323,129 @@ class CoreApplication:
 
     async def context(self, identity: Identity, device: DeviceIdentity, query: str = "") -> dict[str, Any]:
         return (await self.runtime.context.assemble(identity, device, query)).as_dict()
+
+    # Phase 04 computer, browser, device, home, communications, and UI use cases
+    async def list_devices(self, owner_id: str) -> list[dict[str, Any]]:
+        return [self._device_dict(item) for item in await self.runtime.device_fabric.list(owner_id)]
+
+    async def get_device(self, owner_id: str, device_id: str) -> dict[str, Any] | None:
+        device = await self.runtime.device_fabric.get(owner_id, device_id)
+        return self._device_dict(device) if device else None
+
+    async def device_capabilities(self, owner_id: str, device_id: str) -> dict[str, Any]:
+        return {"device_id": device_id, "capabilities": list(await self.runtime.device_fabric.capabilities(owner_id, device_id))}
+
+    async def computer_action(
+        self,
+        identity: Identity,
+        device: DeviceIdentity,
+        action: str,
+        parameters: dict[str, object] | None = None,
+        *,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        result = await self.runtime.computer_actions.execute(
+            ComputerAction(action, parameters or {}, dry_run), identity, device
+        )
+        return asdict(result)
+
+    async def decide_computer_action(self, approval_id: str, approved: bool, decided_by: str) -> dict[str, Any]:
+        return asdict(await self.runtime.computer_actions.decide(approval_id, approved, decided_by))
+
+    async def browser_action(
+        self,
+        identity: Identity,
+        device: DeviceIdentity,
+        action: str,
+        parameters: dict[str, object] | None = None,
+        *,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        result = await self.runtime.browser_actions.execute(
+            BrowserAction(action, parameters or {}, dry_run), identity, device
+        )
+        return asdict(result)
+
+    async def decide_browser_action(self, approval_id: str, approved: bool, decided_by: str) -> dict[str, Any]:
+        return asdict(await self.runtime.browser_actions.decide(approval_id, approved, decided_by))
+
+    async def home_entities(self, identity: Identity, device: DeviceIdentity) -> list[dict[str, Any]]:
+        return [asdict(item) for item in await self.runtime.home.list_entities(identity, device)]
+
+    async def home_action(
+        self,
+        identity: Identity,
+        device: DeviceIdentity,
+        entity_id: str,
+        action: str,
+        parameters: dict[str, object] | None = None,
+        *,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        result = await self.runtime.home.execute(
+            HomeAction(entity_id, action, parameters or {}, dry_run), identity, device
+        )
+        return asdict(result)
+
+    async def communication_channels(self) -> list[dict[str, Any]]:
+        return [{"name": name, "available": True, "local": name == "local"} for name in self.runtime.communications.list_channels()]
+
+    async def communication_messages(self, owner_id: str, *, channel: str | None = None, query: str | None = None) -> list[dict[str, Any]]:
+        channels = (channel,) if channel else self.runtime.communications.list_channels()
+        for name in channels:
+            if name in self.runtime.communications.channels:
+                await self.runtime.communications.sync(owner_id, name)
+        return [asdict(item) for item in await self.runtime.communications.list_messages(owner_id, channel, query)]
+
+    async def communication_draft(self, owner_id: str, channel: str, recipient: str, content: str, reply_to: str | None = None) -> dict[str, Any]:
+        return asdict(await self.runtime.communications.draft(owner_id, channel, recipient, content, reply_to))
+
+    async def communication_send(
+        self,
+        identity: Identity,
+        device: DeviceIdentity,
+        channel: str,
+        recipient: str,
+        content: str,
+        *,
+        important: bool = False,
+    ) -> dict[str, Any]:
+        return asdict(await self.runtime.communications.send(identity.owner_id, channel, recipient, content, identity, device, important=important))
+
+    async def decide_communication_send(self, owner_id: str, approval_id: str, approved: bool, decided_by: str) -> dict[str, Any]:
+        return asdict(await self.runtime.communications.decide_send(owner_id, approval_id, approved, decided_by))
+
+    async def list_notifications(self, owner_id: str, active_only: bool = False) -> list[dict[str, Any]]:
+        return [asdict(item) for item in await self.runtime.notifications.list(owner_id, active_only)]
+
+    async def create_notification(self, owner_id: str, values: dict[str, object]) -> dict[str, Any]:
+        action_options = tuple(item for item in values.get("action_options", ()) if isinstance(item, str))
+        expires_at = self._parse_datetime(values.get("expires_at"))
+        notification = await self.runtime.notifications.create(
+            owner_id,
+            str(values.get("title", "")),
+            str(values.get("message", "")),
+            severity=str(values.get("severity", "info")),
+            source=str(values.get("source", "api")),
+            action_options=action_options,
+            target_device=values.get("target_device") if isinstance(values.get("target_device"), str) else None,
+            expires_at=expires_at,
+            dedup_key=values.get("dedup_key") if isinstance(values.get("dedup_key"), str) else None,
+            metadata=values.get("metadata") if isinstance(values.get("metadata"), dict) else None,
+        )
+        return asdict(notification)
+
+    async def dismiss_notification(self, owner_id: str, notification_id: str) -> dict[str, Any]:
+        return asdict(await self.runtime.notifications.dismiss(owner_id, notification_id))
+
+    def capabilities(self, device_id: str | None = None) -> list[dict[str, Any]]:
+        return [asdict(item) for item in self.runtime.capabilities.list(device_id=device_id)]
+
+    @staticmethod
+    def _device_dict(device: DeviceRecord) -> dict[str, Any]:
+        result = asdict(device)
+        result["capabilities"] = sorted(device.capabilities)
+        return result
 
     @staticmethod
     def _parse_datetime(value: object) -> datetime | None:

@@ -3,11 +3,22 @@
 from .approval import ApprovalDecision, ApprovalEngine, ApprovalRequest, ApprovalStatus
 from .audit import AuditRecord, AuditService
 from .authorization import PermissionDecision, PermissionEffect, PermissionEngine
-from .browser import BrowserAction, BrowserController
-from .communication import CommunicationChannel, CommunicationMessage
+from .browser import BrowserAction, BrowserCapability, BrowserController, BrowserResult, BrowserSession
+from .communication import (
+    CommunicationAction,
+    CommunicationChannel,
+    CommunicationDraft,
+    CommunicationMessage,
+    CommunicationProvider,
+    CommunicationSendResult,
+    CommunicationThread,
+)
+from .capabilities import CapabilityDescriptor
 from .autonomy import AutonomyDecision, AutonomyLevel, AutonomyRule
-from .computer import ComputerAction, ComputerController
+from .computer import ComputerAction, ComputerCapability, ComputerController, ComputerResult
 from .context import AgentContextSnapshot
+from .devices import DeviceHeartbeat, DeviceRecord, DeviceRole, DeviceStatus
+from .home import HomeAction, HomeController, HomeEntity, HomeResult, HomeTransport, MQTTTransport
 from .goals import Goal, GoalCheckpoint, GoalEngine, GoalStatus
 from .identity import DeviceIdentity, Identity, IdentityService
 from .memory import (
@@ -23,6 +34,7 @@ from .memory import (
 )
 from .model import LLMMessage, LLMProvider, LLMRequest, LLMResponse, LLMRole, LLMRouter
 from .nodes import NodeDescriptor, NodeHealth, NodeRole, VenomNodePlan
+from .notifications import Notification
 from .offline import ConnectivityState, OfflineCapabilityDecision
 from .personalization import PersonalizationProfile, PersonalizationUpdate
 from .proactive import FindingStatus, ProactiveFinding, ProactiveFindingType
@@ -32,6 +44,8 @@ from .voice import (
     SpeechToText,
     TextToSpeech,
     VoiceActivityDetector,
+    VoiceEndpoint,
+    VoiceRoute,
     VoiceSessionContext,
     VoiceSessionState,
     VoiceTranscript,
@@ -60,16 +74,36 @@ __all__ = [
     "AutonomyLevel",
     "AutonomyRule",
     "BrowserAction",
+    "BrowserCapability",
     "BrowserController",
+    "BrowserResult",
+    "BrowserSession",
+    "CommunicationAction",
     "CommunicationChannel",
+    "CommunicationDraft",
     "CommunicationMessage",
+    "CommunicationProvider",
+    "CommunicationSendResult",
+    "CommunicationThread",
+    "CapabilityDescriptor",
     "ComputerAction",
+    "ComputerCapability",
     "ComputerController",
+    "ComputerResult",
+    "DeviceHeartbeat",
     "DeviceIdentity",
+    "DeviceRecord",
+    "DeviceRole",
+    "DeviceStatus",
     "Goal",
     "GoalCheckpoint",
     "GoalEngine",
     "GoalStatus",
+    "HomeAction",
+    "HomeController",
+    "HomeEntity",
+    "HomeResult",
+    "HomeTransport",
     "Identity",
     "IdentityService",
     "LLMMessage",
@@ -90,6 +124,7 @@ __all__ = [
     "NodeDescriptor",
     "NodeHealth",
     "NodeRole",
+    "Notification",
     "Observation",
     "OfflineCapabilityDecision",
     "ConnectivityState",
@@ -105,6 +140,8 @@ __all__ = [
     "SpeechToText",
     "TextToSpeech",
     "VoiceActivityDetector",
+    "VoiceEndpoint",
+    "VoiceRoute",
     "VoiceSessionContext",
     "Tool",
     "ToolContext",

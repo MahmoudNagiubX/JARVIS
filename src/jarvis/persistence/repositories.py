@@ -745,3 +745,37 @@ class RuntimeRepository:
     def delete_personalization(self, owner_id: str, key: str) -> None:
         with self.database.transaction() as db:
             db.execute("DELETE FROM personalization WHERE owner_id = ? AND key = ?", (owner_id, key))
+
+    # Phase 04 device fabric --------------------------------------------
+    def upsert_device_fabric(self, device: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO device_fabric VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, role=excluded.role, transport=excluded.transport, status=excluded.status, capabilities_json=excluded.capabilities_json, trust_level=excluded.trust_level, last_seen=excluded.last_seen, room_id=excluded.room_id, metadata_json=excluded.metadata_json",
+                (
+                    device.device_id, device.owner_id, device.name, device.role, device.transport, device.status,
+                    json_text(sorted(device.capabilities)), device.trust_level, iso(device.last_seen), device.room_id,
+                    json_text(dict(device.metadata)),
+                ),
+            )
+
+    def fabric_device(self, owner_id: str, device_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM device_fabric WHERE owner_id = ? AND id = ?", (owner_id, device_id)).fetchone()
+        return dict(row) if row else None
+
+    def fabric_devices(self, owner_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM device_fabric WHERE owner_id = ? ORDER BY name, id", (owner_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_device_fabric(self, owner_id: str, device_id: str, **fields: object) -> dict[str, Any]:
+        allowed = {"name", "role", "transport", "status", "capabilities_json", "trust_level", "last_seen", "room_id", "metadata_json"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"unsupported device fields: {sorted(unknown)}")
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        values = [iso(value) if isinstance(value, datetime) else value for value in fields.values()]
+        with self.database.transaction() as db:
+            db.execute(f"UPDATE device_fabric SET {assignments} WHERE owner_id = ? AND id = ?", (*values, owner_id, device_id))
+        result = self.fabric_device(owner_id, device_id)
+        if result is None:
+            raise KeyError(device_id)
+        return result

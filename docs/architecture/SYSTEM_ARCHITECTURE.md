@@ -13,7 +13,8 @@ Clients / UI / Voice / Device transports
                  |
   Runtime plane: conversation -> goals -> workers -> tools
                  |
- Capability plane: models | memory | world state | computer | browser | voice
+ Capability plane: models | memory | world state | computer | browser | home
+                  | devices | communications | notifications | voice routing
                  |
       Infrastructure adapters and durable stores
 ```
@@ -50,7 +51,7 @@ Every cross-boundary event uses `jarvis.events.Event` with:
 - optional session and actor ids;
 - structured payload, severity, and lifecycle state.
 
-Phase 02 uses `InMemoryEventBus` plus durable event persistence through the
+Phase 04 uses `InMemoryEventBus` plus durable event persistence through the
 repository. Later durable delivery, outbox, or distributed transports are
 adapters and must preserve this envelope.
 
@@ -58,14 +59,15 @@ adapters and must preserve this envelope.
 
 `created -> starting -> ready -> stopping -> stopped` is explicit. Startup
 emits `system.bootstrap.started` and `system.bootstrap.ready`. Shutdown emits
-`system.shutdown.started` and `system.shutdown.completed`. Phase 02 startup
-composes local authority, SQLite, model, tool, satellite, and voice
+`system.shutdown.started` and `system.shutdown.completed`. Phase 04 startup
+composes local authority, SQLite, model, tool, satellite,
+computer/browser/device/home/communication/notification, and voice
 boundaries, but performs no model load, audio-hardware open, or non-loopback
 network bind.
 
 ## Security ordering
 
-For a consequential capability request, the Phase 02 sequence is:
+For a consequential capability request, the Phase 04 sequence is:
 
 ```text
 authenticate -> authorize -> validate -> request approval -> audit decision

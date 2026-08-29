@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
@@ -41,6 +42,30 @@ class VoiceSessionContext:
     input_device: str | None = None
     output_device: str | None = None
     room_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceEndpoint:
+    endpoint_id: str
+    device_id: str
+    room_id: str | None = None
+    input_enabled: bool = True
+    output_enabled: bool = True
+    online: bool = False
+    last_seen: datetime | None = None
+    owner_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceRoute:
+    session_id: str
+    source_endpoint_id: str
+    output_endpoint_id: str
+    room_id: str | None = None
+    handoff: bool = False
+    conversation_id: str | None = None
+    priority: int = 0
+    active_speaker: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from ..contracts import AgentContextSnapshot, DeviceIdentity, Identity, MemoryQuery, WorldStateQuery
+from ..capabilities.registry import CapabilityRegistry
 from ..memory.service import DurableMemoryService
 from ..offline.service import OfflineModeService
 from ..personalization.service import DurablePersonalizationService
@@ -26,6 +27,7 @@ class ContextAssembler:
         personalization: DurablePersonalizationService,
         tools: ToolRegistry,
         offline: OfflineModeService,
+        capabilities: CapabilityRegistry | None = None,
     ) -> None:
         self.memory = memory
         self.world_state = world_state
@@ -34,6 +36,7 @@ class ContextAssembler:
         self.personalization = personalization
         self.tools = tools
         self.offline = offline
+        self.capabilities = capabilities
 
     async def capture_input(self, identity: Identity, text: str, source_reference: str | None = None) -> None:
         await self.memory.remember_from_conversation(identity.owner_id, text, source_reference)
@@ -54,6 +57,9 @@ class ContextAssembler:
             + [f"world:{item.fact_id}:{item.source_reference}" for item in facts[:12] if item.source_reference]
             + [f"proactive:{item.finding_id}" for item in findings[:6]]
         )
+        capability_names = [spec.name for spec in self.tools.list()]
+        if self.capabilities is not None:
+            capability_names.extend(item.capability_id for item in self.capabilities.list(device_id=device.device_id))
         return AgentContextSnapshot(
             identity={"identity_id": identity.identity_id, "owner_id": identity.owner_id, "display_name": identity.display_name, "roles": sorted(identity.roles), "device_id": device.device_id},
             memories=memory_data,
@@ -61,7 +67,7 @@ class ContextAssembler:
             goals=goal_data,
             proactive_findings=finding_data,
             personalization=dict(profile.values) | {"internet_online": self.offline.state.online},
-            tool_capabilities=tuple(spec.name for spec in self.tools.list()),
+            tool_capabilities=tuple(sorted(set(capability_names))),
             evidence=evidence,
         )
 

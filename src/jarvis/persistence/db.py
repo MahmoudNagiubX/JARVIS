@@ -300,6 +300,21 @@ CREATE TABLE IF NOT EXISTS personalization (
     updated_at TEXT NOT NULL,
     PRIMARY KEY(owner_id, key)
 );
+
+CREATE TABLE IF NOT EXISTS device_fabric (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES owners(id),
+    name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    transport TEXT NOT NULL,
+    status TEXT NOT NULL,
+    capabilities_json TEXT NOT NULL,
+    trust_level TEXT NOT NULL,
+    last_seen TEXT,
+    room_id TEXT,
+    metadata_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_device_fabric_owner_status ON device_fabric(owner_id, status);
 """
 
 

@@ -84,6 +84,31 @@ class CoreHttpServer:
                         self._respond(HTTPStatus.OK, asyncio.run(application.context(
                             principal.identity, principal.device, query.get("q", [""])[0]
                         )))
+                    elif route == "/devices":
+                        self._respond(HTTPStatus.OK, {"devices": asyncio.run(application.list_devices(self._owner(query)))})
+                    elif route.startswith("/devices/") and route.endswith("/capabilities"):
+                        parts = route.strip("/").split("/")
+                        result = asyncio.run(application.device_capabilities(self._owner(query), parts[1]))
+                        self._respond(HTTPStatus.OK, result)
+                    elif route.startswith("/devices/"):
+                        device_id = route.rsplit("/", 1)[-1]
+                        result = asyncio.run(application.get_device(self._owner(query), device_id))
+                        self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
+                    elif route == "/home/entities":
+                        principal = self._authenticated({key: values[0] for key, values in query.items() if values})
+                        self._respond(HTTPStatus.OK, {"entities": asyncio.run(application.home_entities(principal.identity, principal.device))})
+                    elif route == "/communications/channels":
+                        self._respond(HTTPStatus.OK, {"channels": asyncio.run(application.communication_channels())})
+                    elif route == "/communications/messages":
+                        self._respond(HTTPStatus.OK, {"messages": asyncio.run(application.communication_messages(
+                            self._owner(query), channel=query.get("channel", [None])[0], query=query.get("q", [None])[0]
+                        ))})
+                    elif route == "/notifications":
+                        self._respond(HTTPStatus.OK, {"notifications": asyncio.run(application.list_notifications(
+                            self._owner(query), query.get("active_only", ["false"])[0].casefold() == "true"
+                        ))})
+                    elif route == "/capabilities":
+                        self._respond(HTTPStatus.OK, {"capabilities": application.capabilities(query.get("device_id", [None])[0])})
                     else:
                         self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
                 except PermissionError:
@@ -137,6 +162,84 @@ class CoreHttpServer:
                             return
                         result = asyncio.run(application.cancel(run_id, principal.identity, principal.device))
                         self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
+                        return
+                    if route.startswith("/computer/approvals/"):
+                        principal = self._authenticated(body)
+                        approval_id = route.rsplit("/", 1)[-1]
+                        result = asyncio.run(application.decide_computer_action(
+                            approval_id, bool(body["approved"]), str(body.get("decided_by", principal.identity.identity_id))
+                        ))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/computer/actions":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.computer_action(
+                            principal.identity, principal.device, str(body["action"]),
+                            body.get("parameters") if isinstance(body.get("parameters"), dict) else {},
+                            dry_run=bool(body.get("dry_run", True)),
+                        ))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route.startswith("/browser/approvals/"):
+                        principal = self._authenticated(body)
+                        approval_id = route.rsplit("/", 1)[-1]
+                        result = asyncio.run(application.decide_browser_action(
+                            approval_id, bool(body["approved"]), str(body.get("decided_by", principal.identity.identity_id))
+                        ))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/browser/actions":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.browser_action(
+                            principal.identity, principal.device, str(body["action"]),
+                            body.get("parameters") if isinstance(body.get("parameters"), dict) else {},
+                            dry_run=bool(body.get("dry_run", True)),
+                        ))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/home/actions":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.home_action(
+                            principal.identity, principal.device, str(body["entity_id"]), str(body["action"]),
+                            body.get("parameters") if isinstance(body.get("parameters"), dict) else {},
+                            dry_run=bool(body.get("dry_run", True)),
+                        ))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/communications/drafts":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.communication_draft(
+                            principal.identity.owner_id, str(body["channel"]), str(body["recipient"]), str(body["content"]),
+                            body.get("reply_to") if isinstance(body.get("reply_to"), str) else None,
+                        ))
+                        self._respond(HTTPStatus.CREATED, result)
+                        return
+                    if route == "/communications/send/decide":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.decide_communication_send(
+                            principal.identity.owner_id, str(body["approval_id"]), bool(body["approved"]),
+                            str(body.get("decided_by", principal.identity.identity_id)),
+                        ))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/communications/send":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.communication_send(
+                            principal.identity, principal.device, str(body["channel"]), str(body["recipient"]), str(body["content"]),
+                            important=bool(body.get("important", False)),
+                        ))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/notifications":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.create_notification(principal.identity.owner_id, body))
+                        self._respond(HTTPStatus.CREATED, result)
+                        return
+                    if route.startswith("/notifications/") and route.endswith("/dismiss"):
+                        principal = self._authenticated(body)
+                        notification_id = route.strip("/").split("/")[1]
+                        result = asyncio.run(application.dismiss_notification(principal.identity.owner_id, notification_id))
+                        self._respond(HTTPStatus.OK, result)
                         return
                     if route == "/memory":
                         principal = self._authenticated(body)

@@ -29,6 +29,7 @@ class SatelliteConnection:
     handler: SatelliteHandler
     last_heartbeat: datetime
     online: bool = True
+    revoked: bool = False
 
 
 class WindowsSatelliteRegistry:
@@ -57,6 +58,15 @@ class WindowsSatelliteRegistry:
         )
         return CoreWelcome(True, session_id)
 
+    def reconnect(
+        self,
+        hello: SatelliteHello,
+        device: DeviceIdentity,
+        handler: SatelliteHandler,
+    ) -> CoreWelcome:
+        """Re-establish a typed session after a transport interruption."""
+        return self.register(hello, device, handler)
+
     def heartbeat(self, heartbeat: SatelliteHeartbeat) -> bool:
         connection = self._connections.get(heartbeat.session_id)
         if connection is None or connection.hello.device_id != heartbeat.device_id:
@@ -67,14 +77,26 @@ class WindowsSatelliteRegistry:
 
     def session_for_device(self, device_id: str) -> SatelliteConnection | None:
         for connection in self._connections.values():
-            if connection.device.device_id == device_id and connection.online:
+            if connection.device.device_id == device_id and connection.online and not connection.revoked:
                 return connection
         return None
+
+    def capabilities(self, device_id: str) -> frozenset[str]:
+        connection = next((item for item in self._connections.values() if item.device.device_id == device_id), None)
+        return connection.hello.capabilities if connection else frozenset()
+
+    def status(self, device_id: str) -> str:
+        connection = next((item for item in self._connections.values() if item.device.device_id == device_id), None)
+        if connection is None:
+            return "unknown"
+        if connection.revoked:
+            return "revoked"
+        return "online" if connection.online else "offline"
 
     async def execute(self, session_id: str, command: SatelliteCommand) -> CommandObservation:
         validate_command(command)
         connection = self._connections.get(session_id)
-        if connection is None or not connection.online:
+        if connection is None or not connection.online or connection.revoked:
             return CommandObservation(command.command_id, "failed", error_code="satellite_offline")
         if command.capability not in connection.device.capabilities:
             return CommandObservation(command.command_id, "denied", error_code="device_capability_missing")
@@ -89,3 +111,12 @@ class WindowsSatelliteRegistry:
             return False
         connection.online = False
         return True
+
+    def revoke(self, device_id: str) -> bool:
+        changed = False
+        for connection in self._connections.values():
+            if connection.device.device_id == device_id:
+                connection.online = False
+                connection.revoked = True
+                changed = True
+        return changed
