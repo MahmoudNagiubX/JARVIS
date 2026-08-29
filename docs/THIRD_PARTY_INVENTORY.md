@@ -1,9 +1,9 @@
 # Third-party inventory
 
-This is the Phase 02 inventory for source references and declared dependency
+This is the Phase 03 inventory for source references and declared dependency
 surfaces. It is not a final distribution notice.
 
-| Source/component | Local evidence | License/status | Phase 02 treatment |
+| Source/component | Local evidence | License/status | Phase 03 treatment |
 |---|---|---|---|
 | BMO/JARVIS | `C:\Users\mahmo\Desktop\BMO\BMO-Personal-AI-OS\LICENSE`, `pyproject.toml` | Apache-2.0 declared | Architectural reference; no source copied |
 | PersonalJarvis | `C:\Jarivs\01_foundation_candidates\personal-jarvis\LICENSE`, `NOTICE` | Apache-2.0 for current release; NOTICE says releases through 1.6.0 remain MIT | Donor/reference only; code and bundled assets not copied |
@@ -12,6 +12,9 @@ surfaces. It is not a final distribution notice.
 | Python standard library | Python runtime | Python Software Foundation License | SQLite, HTTP, CLI, hashing, and async orchestration |
 | Ollama | Existing local service boundary | No SDK copied | Optional loopback model adapter only; no pull/copy/install/delete |
 | Existing local Qwen assets | Local assets observed outside this repository | Exact model license not established here | Alias configuration only; no asset copied |
+| Mem0 / Cognee / Graphiti | No runtime package selected | Not introduced | Reference-only evaluation; JARVIS memory remains authoritative |
+| LangGraph | No runtime package selected | Not introduced | Reference-only evaluation; JARVIS goal engine remains authoritative |
+| PostgreSQL / pgvector | Product migration boundary only | No runtime package dependency | Partial/deferred adapter path; no live service claimed |
 
 ## Declared dependency surfaces reviewed
 
@@ -24,7 +27,7 @@ surfaces. It is not a final distribution notice.
 - aceFelix/jarvis core declares provider SDKs, Pydantic, terminal UI/config
   dependencies; optional extras add GUI, browser, camera/vision, voice,
   daemon, realtime UI, and channel integrations.
-- Phase 02 foundation declares no runtime dependencies. Pytest is an optional
+- Phase 03 foundation declares no runtime dependencies. Pytest is an optional
   development dependency only; the baseline test command uses the standard
   library `unittest` runner.
 
@@ -35,4 +38,4 @@ retain applicable license/NOTICE text, check bundled model and asset licenses,
 review trademarks and contributor terms, and record the result in an updated
 inventory. A package license does not automatically license its provider SDKs,
 models, or bundled assets. Microsoft UFO is an adapter boundary only and is
-not merged in Phase 02.
+not merged. No Phase 03 donor repository was modified.

@@ -10,8 +10,11 @@ from typing import Protocol
 
 
 class GoalStatus(StrEnum):
+    DRAFT = "draft"
     PROPOSED = "proposed"
     ACTIVE = "active"
+    WAITING = "waiting"
+    BLOCKED = "blocked"
     PAUSED = "paused"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -26,6 +29,30 @@ class Goal:
     status: GoalStatus = GoalStatus.PROPOSED
     created_at: datetime | None = None
     metadata: Mapping[str, object] = field(default_factory=dict)
+    title: str | None = None
+    description: str | None = None
+    priority: int = 0
+    target_date: datetime | None = None
+    constraints: Mapping[str, object] = field(default_factory=dict)
+    budget: Mapping[str, object] = field(default_factory=dict)
+    plan: tuple[str, ...] = ()
+    steps: tuple[Mapping[str, object], ...] = ()
+    dependencies: tuple[str, ...] = ()
+    checkpoints: tuple[Mapping[str, object], ...] = ()
+    next_action: str | None = None
+    last_reviewed_at: datetime | None = None
+    completion_criteria: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class GoalCheckpoint:
+    checkpoint_id: str
+    goal_id: str
+    title: str
+    status: str
+    created_at: datetime
+    completed_at: datetime | None = None
+    evidence: Mapping[str, object] = field(default_factory=dict)
 
 
 class GoalEngine(Protocol):

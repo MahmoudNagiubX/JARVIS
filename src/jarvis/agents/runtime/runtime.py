@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from ...bus import InMemoryEventBus
 from ...contracts import DeviceIdentity, Identity, LLMMessage, LLMRequest, LLMRole, ToolContext
+from ...context.assembler import ContextAssembler
 from ...events import Event, EventCategory, EventState
 from ...models.gateway import ModelGateway
 from ...models.routing import ModelRoute
@@ -39,6 +40,7 @@ class AgentRunOutcome:
     assistant_message_id: str | None = None
     error_code: str | None = None
     replayed: bool = False
+    context_snapshot: dict[str, object] | None = None
 
 
 class AgentRuntime:
@@ -52,6 +54,7 @@ class AgentRuntime:
         tools: ToolExecutionService,
         *,
         max_steps: int = 3,
+        context_assembler: ContextAssembler | None = None,
     ) -> None:
         self.repository = repository
         self.event_bus = event_bus
@@ -59,6 +62,7 @@ class AgentRuntime:
         self.tools = tools
         self.router = RequestRouter()
         self.max_steps = max(1, min(max_steps, 10))
+        self.context_assembler = context_assembler
         self._tasks: dict[str, asyncio.Task[AgentRunOutcome]] = {}
         self._cancelled: set[str] = set()
 
@@ -102,6 +106,8 @@ class AgentRuntime:
         message = self.repository.create_message(conversation_id, session_id, None, device.device_id, "user", content, client_message_id)
         run = self.repository.create_run(conversation_id, session_id, device.device_id, message.id, f"corr-{uuid4()}")
         self.repository.update_message_run_id(message.id, run.id)
+        if self.context_assembler is not None:
+            await self.context_assembler.capture_input(identity, content, message.id)
         return await self._execute(run.id, identity, device)
 
     async def resume(
@@ -169,13 +175,15 @@ class AgentRuntime:
         await self._emit("run.started", EventCategory.AGENT, run, {})
         try:
             messages = messages_override or self._history(run)
+            context_snapshot = await self.context_assembler.assemble(identity, device, messages[-1].content) if self.context_assembler else None
             for _step in range(self.max_steps):
                 if run_id in self._cancelled:
                     raise asyncio.CancelledError
                 request_id = f"model-request-{uuid4()}"
+                request_messages = self._with_context(messages, context_snapshot)
                 request = LLMRequest(
                     request_id,
-                    tuple(messages),
+                    tuple(request_messages),
                     max_output_tokens=512,
                     tools=self._tool_schemas(),
                 )
@@ -201,21 +209,21 @@ class AgentRuntime:
                 await self._emit("model.completed", EventCategory.MODEL, run, {"request_id": request_id, "model": response.model}, state=EventState.COMPLETED)
                 if not response.tool_calls:
                     assistant = self.repository.create_message(run.conversation_id, run.session_id, run.id, None, "assistant", response.text)
-                    self.repository.update_run(run_id, status="succeeded", completed_at=datetime.now(UTC), context_json={"messages": [{"role": m.role.value, "content": m.content} for m in messages]})
+                    self.repository.update_run(run_id, status="succeeded", completed_at=datetime.now(UTC), context_json=self._run_context(messages, context_snapshot))
                     await self._emit("run.completed", EventCategory.AGENT, run, {"assistant_message_id": assistant.id}, state=EventState.COMPLETED)
-                    return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.SUCCEEDED, response.text, assistant_message_id=assistant.id)
+                    return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.SUCCEEDED, response.text, assistant_message_id=assistant.id, context_snapshot=context_snapshot)
                 context = ToolContext(identity, device, run.session_id, run.correlation_id)
                 for proposal in response.tool_calls:
                     name, arguments = self._proposal(proposal)
                     tool_result = await self.tools.execute(name, arguments, context, run_id=run.id)
                     if tool_result.status is ToolExecutionStatus.APPROVAL_REQUIRED:
-                        context_json = {"messages": [{"role": m.role.value, "content": m.content} for m in messages]}
+                        context_json = self._run_context(messages, context_snapshot)
                         self.repository.update_run(run_id, status="paused", pending_approval_id=tool_result.approval_id, context_json=context_json)
                         await self._emit("run.paused", EventCategory.AGENT, run, {"approval_id": tool_result.approval_id})
-                        return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.PAUSED, pending_approval_id=tool_result.approval_id)
+                        return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.PAUSED, pending_approval_id=tool_result.approval_id, context_snapshot=context_snapshot)
                     messages.append(LLMMessage(LLMRole.TOOL, json.dumps(tool_result.output if tool_result.output is not None else {"error": tool_result.error_code}, ensure_ascii=False)))
             self.repository.update_run(run_id, status="failed", completed_at=datetime.now(UTC), failure_code="max_agent_steps")
-            return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.FAILED, error_code="max_agent_steps")
+            return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.FAILED, error_code="max_agent_steps", context_snapshot=context_snapshot)
         except asyncio.CancelledError:
             self.repository.update_run(run_id, status="cancelled", completed_at=datetime.now(UTC), failure_code="cancelled")
             await self._emit("run.cancelled", EventCategory.AGENT, run, {}, state=EventState.COMPLETED)
@@ -254,6 +262,22 @@ class AgentRuntime:
             }
             for spec in self.tools.registry.list()
         )
+
+    @staticmethod
+    def _with_context(messages: list[LLMMessage], snapshot: object | None) -> list[LLMMessage]:
+        if snapshot is None:
+            return list(messages)
+        prompt = ContextAssembler.prompt(snapshot)
+        if messages and messages[0].role is LLMRole.SYSTEM:
+            return [messages[0], LLMMessage(LLMRole.SYSTEM, prompt), *messages[1:]]
+        return [LLMMessage(LLMRole.SYSTEM, prompt), *messages]
+
+    @staticmethod
+    def _run_context(messages: list[LLMMessage], snapshot: object | None) -> dict[str, object]:
+        return {
+            "messages": [{"role": message.role.value, "content": message.content} for message in messages],
+            "context_snapshot": snapshot.as_dict() if snapshot is not None else None,
+        }
 
     async def _emit(self, event_type: str, category: EventCategory, run: RunRecord, payload: dict[str, object], *, state: EventState = EventState.EMITTED) -> None:
         event = Event.create(event_type, category, correlation_id=run.correlation_id, session_id=run.session_id, actor_id=run.request_device_id, payload=payload, state=state)

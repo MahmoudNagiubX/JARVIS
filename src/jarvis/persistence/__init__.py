@@ -1,8 +1,9 @@
-"""Single persistence boundary for the Phase 02 runtime."""
+"""Single persistence boundary for the Phase 03 runtime."""
 
 from .db import SQLiteDatabase
 from .models import ConversationRecord, MessageRecord, RunRecord, SessionRecord
 from .repositories import RuntimeRepository
+from .adapters import DatabaseHealth, DatabaseAdapter, PostgresDatabase
 
 __all__ = [
     "ConversationRecord",
@@ -10,5 +11,8 @@ __all__ = [
     "RunRecord",
     "RuntimeRepository",
     "SQLiteDatabase",
+    "DatabaseAdapter",
+    "DatabaseHealth",
+    "PostgresDatabase",
     "SessionRecord",
 ]

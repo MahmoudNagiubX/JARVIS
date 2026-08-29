@@ -27,6 +27,9 @@ class EventCategory(StrEnum):
     COMMUNICATION = "communication"
     ENGINEERING = "engineering"
     UI = "ui"
+    PERSONALIZATION = "personalization"
+    PROACTIVE = "proactive"
+    NODE = "node"
 
 
 class EventSeverity(StrEnum):

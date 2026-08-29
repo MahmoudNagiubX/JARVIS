@@ -22,6 +22,7 @@ class PolicyPermissionEngine:
         self.rules = rules or (
             PermissionRule("tool.status.read", PermissionEffect.ALLOW, "safe_read_tool"),
             PermissionRule("tool.echo.reversible", PermissionEffect.ALLOW, "reversible_tool"),
+            PermissionRule("tool.project.tests.run", PermissionEffect.ALLOW, "safe_test_runner"),
             PermissionRule("tool.", PermissionEffect.REQUIRE_APPROVAL, "tool_policy_requires_approval"),
             PermissionRule("computer.", PermissionEffect.REQUIRE_APPROVAL, "computer_action_requires_approval"),
         )

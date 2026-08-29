@@ -398,6 +398,18 @@ class RuntimeRepository:
         row = self.database.connection.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
         return dict(row) if row else None
 
+    def pending_approvals(self, owner_id: str | None = None) -> list[dict[str, Any]]:
+        if owner_id is None:
+            rows = self.database.connection.execute(
+                "SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at"
+            ).fetchall()
+        else:
+            rows = self.database.connection.execute(
+                "SELECT * FROM approvals WHERE status = 'pending' AND requester_id = ? ORDER BY created_at",
+                (owner_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def update_approval(self, approval_id: str, status: str, decided_by: str, decided_at: datetime, reason: str | None) -> None:
         with self.database.transaction() as db:
             db.execute(
@@ -449,3 +461,287 @@ class RuntimeRepository:
                 "UPDATE tool_calls SET status = ?, output_json = ?, completed_at = ? WHERE id = ?",
                 (status, json_text(output) if output is not None else None, iso(utc_now()), tool_call_id),
             )
+
+    # Phase 03 memory -----------------------------------------------------
+    def insert_memory(self, record: Any) -> None:
+        updated_at = record.updated_at or record.created_at
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record.memory_id,
+                    record.owner_id,
+                    record.category,
+                    record.content,
+                    json_text(dict(record.metadata)),
+                    json_text(dict(record.structured_data)),
+                    record.source,
+                    record.source_reference,
+                    iso(record.created_at),
+                    iso(updated_at),
+                    iso(record.last_accessed_at),
+                    float(record.confidence),
+                    record.sensitivity,
+                    record.scope,
+                    iso(record.valid_from),
+                    iso(record.valid_until),
+                    record.retention_policy,
+                    record.status,
+                    record.supersedes,
+                    json_text(list(record.tags)),
+                    int(record.pinned),
+                    int(record.archived),
+                    json_text(list(record.embedding)) if record.embedding is not None else None,
+                ),
+            )
+
+    def memory(self, owner_id: str, memory_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM memories WHERE owner_id = ? AND id = ?", (owner_id, memory_id)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def memories(
+        self,
+        owner_id: str,
+        statuses: Sequence[str] = ("active",),
+        include_archived: bool = False,
+        category: str | None = None,
+        source: str | None = None,
+        tags: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
+        placeholders = ",".join("?" for _ in statuses)
+        archived_clause = "" if include_archived else " AND archived = 0"
+        conditions = ["owner_id = ?"]
+        values: list[object] = [owner_id]
+        if statuses:
+            conditions.append(f"status IN ({placeholders})")
+            values.extend(statuses)
+        if category:
+            conditions.append("category = ?")
+            values.append(category)
+        if source:
+            conditions.append("source = ?")
+            values.append(source)
+        if tags:
+            conditions.extend("tags_json LIKE ?" for _ in tags)
+            values.extend(f'%"{tag}"%' for tag in tags)
+        rows = self.database.connection.execute(
+            f"SELECT * FROM memories WHERE {' AND '.join(conditions)}{archived_clause} ORDER BY pinned DESC, updated_at DESC",
+            values,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_memory(self, owner_id: str, memory_id: str, **fields: object) -> dict[str, Any]:
+        allowed = {
+            "category", "content", "structured_data_json", "source", "source_reference",
+            "updated_at", "last_accessed_at", "confidence", "sensitivity", "scope",
+            "valid_from", "valid_until", "retention_policy", "status", "supersedes",
+            "tags_json", "pinned", "archived", "embedding_json",
+        }
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"unsupported memory fields: {sorted(unknown)}")
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        values = [iso(value) if isinstance(value, datetime) else value for value in fields.values()]
+        with self.database.transaction() as db:
+            db.execute(
+                f"UPDATE memories SET {assignments} WHERE owner_id = ? AND id = ?",
+                (*values, owner_id, memory_id),
+            )
+        result = self.memory(owner_id, memory_id)
+        if result is None:
+            raise KeyError(memory_id)
+        return result
+
+    # Phase 03 world state -----------------------------------------------
+    def insert_world_observation(self, observation: Any, owner_id: str) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO world_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    observation.observation_id,
+                    observation.owner_id or owner_id,
+                    observation.source,
+                    observation.source_reference,
+                    iso(observation.observed_at),
+                    observation.subject,
+                    json_text(dict(observation.value)),
+                    float(observation.confidence),
+                    observation.freshness_seconds,
+                    iso(observation.expires_at),
+                    int(observation.authority_level),
+                    observation.conflict_state,
+                    observation.device_id,
+                    observation.scope,
+                ),
+            )
+
+    def world_observations(self, owner_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute(
+            "SELECT * FROM world_observations WHERE owner_id = ? ORDER BY observed_at DESC LIMIT ?",
+            (owner_id, max(1, min(limit, 1000))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def world_fact(self, owner_id: str, key: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute(
+            "SELECT * FROM world_facts WHERE owner_id = ? AND key = ? ORDER BY authority_level DESC, observed_at DESC LIMIT 1",
+            (owner_id, key),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def world_facts(self, owner_id: str, key_prefix: str | None = None, include_expired: bool = False) -> list[dict[str, Any]]:
+        conditions = ["owner_id = ?"]
+        values: list[object] = [owner_id]
+        if key_prefix:
+            conditions.append("key LIKE ?")
+            values.append(f"{key_prefix}%")
+        if not include_expired:
+            conditions.append("(expires_at IS NULL OR expires_at > ?)")
+            values.append(iso(utc_now()))
+        rows = self.database.connection.execute(
+            f"SELECT * FROM world_facts WHERE {' AND '.join(conditions)} ORDER BY key", values
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def insert_world_fact(self, fact: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO world_facts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    fact.fact_id, fact.owner_id, fact.key, json_text(fact.value), fact.source,
+                    fact.source_reference, iso(fact.observed_at), fact.freshness, iso(fact.expires_at),
+                    float(fact.confidence), int(fact.authority_level), fact.conflict_state,
+                    fact.device_id, fact.scope,
+                ),
+            )
+
+    def update_world_fact(self, fact_id: str, **fields: object) -> None:
+        allowed = {"value_json", "source", "source_reference", "observed_at", "freshness", "expires_at", "confidence", "authority_level", "conflict_state", "device_id", "scope"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"unsupported world fact fields: {sorted(unknown)}")
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        values = [iso(value) if isinstance(value, datetime) else value for value in fields.values()]
+        with self.database.transaction() as db:
+            db.execute(f"UPDATE world_facts SET {assignments} WHERE id = ?", (*values, fact_id))
+
+    def insert_world_conflict(self, conflict: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO world_conflicts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (conflict.conflict_id, conflict.owner_id, conflict.key, json_text(list(conflict.fact_ids)), conflict.reason, iso(conflict.detected_at), int(conflict.resolved)),
+            )
+
+    def world_conflicts(self, owner_id: str, unresolved_only: bool = True) -> list[dict[str, Any]]:
+        condition = " AND resolved = 0" if unresolved_only else ""
+        rows = self.database.connection.execute(
+            f"SELECT * FROM world_conflicts WHERE owner_id = ?{condition} ORDER BY detected_at DESC", (owner_id,)
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    # Phase 03 goals ------------------------------------------------------
+    def insert_goal(self, goal: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO goals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    goal.goal_id, goal.owner_id, goal.title or goal.statement[:120], goal.description or goal.statement,
+                    goal.status.value if hasattr(goal.status, "value") else goal.status, goal.priority,
+                    iso(goal.created_at), iso(goal.target_date), json_text(dict(goal.constraints)), json_text(dict(goal.budget)),
+                    json_text(list(goal.plan)), json_text(list(goal.steps)), json_text(list(goal.dependencies)),
+                    json_text(list(goal.checkpoints)), goal.next_action, iso(goal.last_reviewed_at),
+                    json_text(list(goal.completion_criteria)), json_text(dict(goal.metadata)),
+                ),
+            )
+
+    def goal(self, owner_id: str, goal_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM goals WHERE owner_id = ? AND id = ?", (owner_id, goal_id)).fetchone()
+        return dict(row) if row else None
+
+    def goals(self, owner_id: str, statuses: Sequence[str] = ()) -> list[dict[str, Any]]:
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            rows = self.database.connection.execute(
+                f"SELECT * FROM goals WHERE owner_id = ? AND status IN ({placeholders}) ORDER BY priority DESC, created_at DESC",
+                (owner_id, *statuses),
+            ).fetchall()
+        else:
+            rows = self.database.connection.execute(
+                "SELECT * FROM goals WHERE owner_id = ? ORDER BY priority DESC, created_at DESC", (owner_id,)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_goal(self, owner_id: str, goal_id: str, **fields: object) -> dict[str, Any]:
+        allowed = {"title", "description", "status", "priority", "target_date", "constraints_json", "budget_json", "plan_json", "steps_json", "dependencies_json", "checkpoints_json", "next_action", "last_reviewed_at", "completion_criteria_json", "metadata_json"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"unsupported goal fields: {sorted(unknown)}")
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        values = [iso(value) if isinstance(value, datetime) else value for value in fields.values()]
+        with self.database.transaction() as db:
+            db.execute(f"UPDATE goals SET {assignments} WHERE owner_id = ? AND id = ?", (*values, owner_id, goal_id))
+        result = self.goal(owner_id, goal_id)
+        if result is None:
+            raise KeyError(goal_id)
+        return result
+
+    # Phase 03 proactive and personalization ----------------------------
+    def insert_finding(self, finding: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO proactive_findings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    finding.finding_id, finding.owner_id, finding.finding_type, finding.severity,
+                    json_text(dict(finding.evidence)), json_text(list(finding.source_events)), iso(finding.detected_at),
+                    finding.recommended_action, int(finding.auto_action_allowed), finding.cooldown_seconds,
+                    finding.status, iso(finding.acknowledged_at), iso(finding.last_notified_at),
+                ),
+            )
+
+    def finding(self, owner_id: str, finding_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM proactive_findings WHERE owner_id = ? AND id = ?", (owner_id, finding_id)).fetchone()
+        return dict(row) if row else None
+
+    def findings(self, owner_id: str, statuses: Sequence[str] = ()) -> list[dict[str, Any]]:
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            rows = self.database.connection.execute(
+                f"SELECT * FROM proactive_findings WHERE owner_id = ? AND status IN ({placeholders}) ORDER BY detected_at DESC",
+                (owner_id, *statuses),
+            ).fetchall()
+        else:
+            rows = self.database.connection.execute(
+                "SELECT * FROM proactive_findings WHERE owner_id = ? ORDER BY detected_at DESC", (owner_id,)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_finding(self, owner_id: str, finding_id: str, **fields: object) -> dict[str, Any]:
+        allowed = {"status", "acknowledged_at", "last_notified_at"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"unsupported finding fields: {sorted(unknown)}")
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        values = [iso(value) if isinstance(value, datetime) else value for value in fields.values()]
+        with self.database.transaction() as db:
+            db.execute(f"UPDATE proactive_findings SET {assignments} WHERE owner_id = ? AND id = ?", (*values, owner_id, finding_id))
+        result = self.finding(owner_id, finding_id)
+        if result is None:
+            raise KeyError(finding_id)
+        return result
+
+    def set_personalization(self, owner_id: str, key: str, value: object, source: str, updated_at: datetime | None = None) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO personalization(owner_id, key, value_json, source, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(owner_id, key) DO UPDATE SET value_json = excluded.value_json, source = excluded.source, updated_at = excluded.updated_at",
+                (owner_id, key, json_text(value), source, iso(updated_at or utc_now())),
+            )
+
+    def personalization(self, owner_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM personalization WHERE owner_id = ? ORDER BY key", (owner_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_personalization(self, owner_id: str, key: str) -> None:
+        with self.database.transaction() as db:
+            db.execute("DELETE FROM personalization WHERE owner_id = ? AND key = ?", (owner_id, key))

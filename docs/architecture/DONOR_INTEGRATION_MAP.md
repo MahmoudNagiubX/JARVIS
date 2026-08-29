@@ -22,6 +22,14 @@ additional architectural spines. No donor source code is copied into Phase 01.
 | Realtime duplex voice | aceFelix `agent/voice/realtime_talk.py` | Adapt audio/VAD/interruption mechanisms behind voice contracts; never bypass common tool authority | 03 |
 | File/session memory | aceFelix `agent/core/memory` | Use only where compatible with owner-scoped memory and future durable store | 03 |
 
+## Phase 03 disposition
+
+Phase 03 keeps memory, World State, goals, proactive rules, personalization,
+and Venom descriptors product-owned. PersonalJarvis and aceFelix concepts were
+used only as read-only architectural references; no Mem0, Cognee, Graphiti, or
+LangGraph runtime adapter was selected. The final repository remains
+dependency-free and the donor worktrees remain unmodified.
+
 ## Integration gates
 
 Every migrated component must pass these gates:

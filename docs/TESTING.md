@@ -7,11 +7,14 @@ $env:PYTHONPATH = "src"
 python -m unittest discover -s tests -v
 ```
 
-The suite covers the Phase 01 contracts/lifecycle and Phase 02 identity and
+The suite covers the Phase 01 contracts/lifecycle, Phase 02 identity and
 device enrollment, permission allow/deny, durable approvals and resume,
 audit/event persistence, model mock routing, text flow and replay,
 cancellation boundaries, worker handling, typed satellite execution, and
-voice TTS cancellation/barge-in.
+voice TTS cancellation/barge-in. Phase 03 adds memory extraction/search/edit,
+World State fusion/expiry/conflict handling, bounded goals, proactive cooldown
+and safe action routing, personalization/offline/context behavior, and the
+loopback resource APIs.
 
 Tests use deterministic providers and adapters. They do not prove a real
 PostgreSQL/pgvector deployment, GPU inference, physical voice acceptance, or

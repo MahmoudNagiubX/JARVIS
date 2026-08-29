@@ -1,4 +1,4 @@
-"""Dependency composition and lifecycle for the Phase 02 core runtime."""
+"""Dependency composition and lifecycle for the Phase 03 core runtime."""
 
 from __future__ import annotations
 
@@ -15,7 +15,9 @@ from .authority.approvals.service import DurableApprovalEngine
 from .authority.identity.service import IdentityService as RuntimeIdentityService
 from .authority.permissions.engine import PolicyPermissionEngine
 from .agents.runtime.runtime import AgentRuntime
+from .autonomy.policy import AutonomyPolicy
 from .computer.controller import WindowsComputerController
+from .context.assembler import ContextAssembler
 from .contracts import (
     ApprovalEngine,
     AuditService,
@@ -23,7 +25,7 @@ from .contracts import (
     CommunicationChannel,
     ComputerController,
     GoalEngine,
-    MemoryStore,
+    MemoryService,
     PermissionEngine,
     RealtimeVoiceSession,
     SpeechToText,
@@ -33,20 +35,27 @@ from .contracts import (
 from .devices.satellite.registry import WindowsSatelliteRegistry
 from .events import Event, EventCategory, EventState
 from .models.gateway import ModelGateway
+from .models.routing import ModelRoute
 from .persistence.db import SQLiteDatabase
 from .persistence.repositories import RuntimeRepository
+from .memory.service import DurableMemoryService
+from .nodes.venom import VenomNode
+from .offline.service import OfflineModeService
+from .personalization.service import DurablePersonalizationService
+from .proactive.service import DurableProactiveService
 from .runtime.noop import (
-    InMemoryGoalEngine,
-    InMemoryMemoryStore,
-    InMemoryWorldState,
     NoOpBrowserController,
     NoOpCommunicationChannel,
     NoOpSpeechToText,
     NoOpTextToSpeech,
 )
+from .scheduler.service import BackgroundScheduler
 from .tools.registry import ToolRegistry, default_registry
 from .tools.service import ToolExecutionService
 from .voice.core import VoiceCore
+from .world_state.service import DurableWorldStateService
+from .world_state.workspace import WorkspaceContextService
+from .goals.engine import DurableGoalEngine
 
 
 class RuntimeState(StrEnum):
@@ -74,9 +83,17 @@ class JarvisRuntime:
     tool_service: ToolExecutionService
     agent: AgentRuntime
     satellite: WindowsSatelliteRegistry
-    memory: MemoryStore
-    world_state: WorldState
+    memory: MemoryService
+    world_state: DurableWorldStateService
     goals: GoalEngine
+    personalization: DurablePersonalizationService
+    proactive: DurableProactiveService
+    context: ContextAssembler
+    autonomy: AutonomyPolicy
+    offline: OfflineModeService
+    workspace: WorkspaceContextService
+    scheduler: BackgroundScheduler
+    venom: VenomNode
     computer: ComputerController
     browser: BrowserController
     voice: RealtimeVoiceSession
@@ -92,6 +109,7 @@ class JarvisRuntime:
         if self.state is not RuntimeState.CREATED:
             raise RuntimeError(f"cannot start runtime from {self.state.value}")
         self.state = RuntimeState.STARTING
+        await self.scheduler.start()
         correlation_id = self.runtime_id
         started = Event.create(
             "system.bootstrap.started",
@@ -118,6 +136,12 @@ class JarvisRuntime:
         if self.state is not RuntimeState.READY:
             raise RuntimeError(f"cannot shut down runtime from {self.state.value}")
         self.state = RuntimeState.STOPPING
+        await self.scheduler.stop()
+        if getattr(self.voice.state, "value", None) != "stopped":
+            try:
+                await self.voice.stop()
+            except RuntimeError:
+                pass
         started = Event.create(
             "system.shutdown.started",
             EventCategory.SYSTEM,
@@ -155,7 +179,42 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     satellite = WindowsSatelliteRegistry()
     stt = NoOpSpeechToText()
     tts = NoOpTextToSpeech()
-    agent = AgentRuntime(repository, event_bus, models, tool_service, max_steps=effective_config.max_agent_steps)
+    memory = DurableMemoryService(repository, event_bus, audit)
+    world_state = DurableWorldStateService(repository, event_bus)
+    goals = DurableGoalEngine(repository, event_bus, audit)
+    personalization = DurablePersonalizationService(repository, event_bus, audit)
+    autonomy = AutonomyPolicy()
+    offline = OfflineModeService()
+    proactive = DurableProactiveService(repository, event_bus, world_state, goals, tool_service, audit, autonomy)
+    context = ContextAssembler(memory, world_state, goals, proactive, personalization, registry, offline)
+    agent = AgentRuntime(repository, event_bus, models, tool_service, max_steps=effective_config.max_agent_steps, context_assembler=context)
+    scheduler = BackgroundScheduler()
+
+    async def maintenance_owner() -> str | None:
+        owner = repository.first_owner()
+        return str(owner["id"]) if owner else None
+
+    async def maintain_memory() -> dict[str, int]:
+        owner_id = await maintenance_owner()
+        return await memory.maintain(owner_id) if owner_id else {"expired": 0, "archived": 0}
+
+    async def expire_world_state() -> int:
+        owner_id = await maintenance_owner()
+        return await world_state.expire(owner_id) if owner_id else 0
+
+    async def detect_proactive() -> int:
+        owner_id = await maintenance_owner()
+        return len(await proactive.detect(owner_id)) if owner_id else 0
+
+    async def refresh_health() -> dict[str, object]:
+        await offline.refresh()
+        model_health = await models.health(ModelRoute.GENERAL_REASONING)
+        return {"model": model_health.provider, "offline": offline.state.online}
+
+    scheduler.add("memory-maintenance", 300, maintain_memory)
+    scheduler.add("world-state-expiry", 60, expire_world_state)
+    scheduler.add("goal-proactive-check", 60, detect_proactive)
+    scheduler.add("health-check", 120, refresh_health)
     return JarvisRuntime(
         config=effective_config,
         event_bus=event_bus,
@@ -170,9 +229,17 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         tool_service=tool_service,
         agent=agent,
         satellite=satellite,
-        memory=InMemoryMemoryStore(),
-        world_state=InMemoryWorldState(),
-        goals=InMemoryGoalEngine(),
+        memory=memory,
+        world_state=world_state,
+        goals=goals,
+        personalization=personalization,
+        proactive=proactive,
+        context=context,
+        autonomy=autonomy,
+        offline=offline,
+        workspace=WorkspaceContextService(world_state),
+        scheduler=scheduler,
+        venom=VenomNode(),
         computer=WindowsComputerController(satellite),
         browser=NoOpBrowserController(),
         voice=VoiceCore(agent, event_bus, stt, tts),

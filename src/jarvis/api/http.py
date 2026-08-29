@@ -38,31 +38,67 @@ class CoreHttpServer:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
                 parsed = urlparse(self.path)
+                route = self._route(parsed.path)
                 try:
-                    if parsed.path == "/health":
+                    query = parse_qs(parsed.query)
+                    if route == "/health":
                         self._respond(HTTPStatus.OK, asyncio.run(application.health()))
-                    elif parsed.path == "/v1/events":
-                        query = parse_qs(parsed.query)
+                    elif route == "/events":
                         correlation_id = query.get("correlation_id", [None])[0]
                         self._respond(HTTPStatus.OK, {"events": application.events(correlation_id)})
-                    elif parsed.path == "/v1/events/stream":
-                        query = parse_qs(parsed.query)
+                    elif route == "/events/stream":
                         correlation_id = query.get("correlation_id", [None])[0]
                         self._stream(application.events(correlation_id))
-                    elif parsed.path.startswith("/v1/approvals/"):
-                        approval_id = parsed.path.rsplit("/", 1)[-1]
+                    elif route.startswith("/approvals/"):
+                        approval_id = route.rsplit("/", 1)[-1]
                         result = asyncio.run(application.approval(approval_id))
                         self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
+                    elif route == "/memory":
+                        self._respond(HTTPStatus.OK, {"memories": asyncio.run(application.list_memory(
+                            self._owner(query), text=query.get("q", [""])[0], category=query.get("category", [None])[0],
+                            source=query.get("source", [None])[0], tags=tuple(query.get("tag", [])),
+                            include_archived=query.get("include_archived", ["false"])[0].casefold() == "true",
+                            limit=int(query.get("limit", [50])[0]),
+                        ))})
+                    elif route.startswith("/memory/"):
+                        memory_id = route.rsplit("/", 1)[-1]
+                        result = asyncio.run(application.get_memory(self._owner(query), memory_id))
+                        self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
+                    elif route == "/world-state":
+                        self._respond(HTTPStatus.OK, asyncio.run(application.world_state(
+                            self._owner(query), key_prefix=query.get("key_prefix", [None])[0],
+                            include_expired=query.get("include_expired", ["false"])[0].casefold() == "true",
+                        )))
+                    elif route == "/world-state/conflicts":
+                        self._respond(HTTPStatus.OK, {"conflicts": asyncio.run(application.world_conflicts(self._owner(query)))})
+                    elif route == "/goals":
+                        self._respond(HTTPStatus.OK, {"goals": asyncio.run(application.list_goals(self._owner(query), tuple(query.get("status", []))))})
+                    elif route == "/proactive/findings":
+                        self._respond(HTTPStatus.OK, {"findings": asyncio.run(application.proactive_findings(
+                            self._owner(query), query.get("active_only", ["false"])[0].casefold() == "true"
+                        ))})
+                    elif route == "/personalization/profile":
+                        self._respond(HTTPStatus.OK, asyncio.run(application.personalization_profile(self._owner(query))))
+                    elif route == "/context":
+                        principal = self._authenticated({key: values[0] for key, values in query.items() if values})
+                        self._respond(HTTPStatus.OK, asyncio.run(application.context(
+                            principal.identity, principal.device, query.get("q", [""])[0]
+                        )))
                     else:
                         self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                except PermissionError:
+                    self._respond(HTTPStatus.UNAUTHORIZED, {"error": "principal_not_found"})
+                except (KeyError, TypeError, ValueError) as exc:
+                    self._respond(HTTPStatus.BAD_REQUEST, {"error": str(exc) or exc.__class__.__name__})
                 except Exception as exc:
                     self._respond(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": exc.__class__.__name__})
 
             def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
                 parsed = urlparse(self.path)
+                route = self._route(parsed.path)
                 try:
                     body = self._body()
-                    if parsed.path == "/v1/messages":
+                    if route == "/messages":
                         principal = asyncio.run(application.authenticate_principal(
                             str(body["credential"]), str(body["device_id"]), str(body["identity_id"])
                         ))
@@ -77,8 +113,8 @@ class CoreHttpServer:
                         ))
                         self._respond(HTTPStatus.OK, result)
                         return
-                    if parsed.path.startswith("/v1/approvals/"):
-                        approval_id = parsed.path.rsplit("/", 1)[-1]
+                    if route.startswith("/approvals/"):
+                        approval_id = route.rsplit("/", 1)[-1]
                         principal = asyncio.run(application.authenticate_principal(
                             str(body["credential"]), str(body["device_id"]), str(body["identity_id"])
                         ))
@@ -91,8 +127,8 @@ class CoreHttpServer:
                         ))
                         self._respond(HTTPStatus.OK, result)
                         return
-                    if parsed.path.startswith("/v1/runs/") and parsed.path.endswith("/cancel"):
-                        run_id = parsed.path.split("/")[-2]
+                    if route.startswith("/runs/") and route.endswith("/cancel"):
+                        run_id = route.split("/")[-2]
                         principal = asyncio.run(application.authenticate_principal(
                             str(body["credential"]), str(body["device_id"]), str(body["identity_id"])
                         ))
@@ -102,11 +138,155 @@ class CoreHttpServer:
                         result = asyncio.run(application.cancel(run_id, principal.identity, principal.device))
                         self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
                         return
+                    if route == "/memory":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.create_memory(
+                            principal.identity.owner_id, str(body["content"]), str(body.get("category", "fact")),
+                            structured_data=body.get("structured_data") if isinstance(body.get("structured_data"), dict) else None,
+                            source=str(body.get("source", "user")), source_reference=str(body.get("source_reference", "api")),
+                            confidence=float(body.get("confidence", 1.0)), sensitivity=str(body.get("sensitivity", "personal")),
+                            tags=tuple(item for item in body.get("tags", []) if isinstance(item, str)),
+                        ))
+                        self._respond(HTTPStatus.CREATED, result)
+                        return
+                    if route == "/memory/search":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.list_memory(
+                            principal.identity.owner_id, text=str(body.get("text", body.get("q", ""))),
+                            category=body.get("category") if isinstance(body.get("category"), str) else None,
+                            source=body.get("source") if isinstance(body.get("source"), str) else None,
+                            tags=tuple(item for item in body.get("tags", []) if isinstance(item, str)),
+                            include_archived=bool(body.get("include_archived", False)), limit=int(body.get("limit", 50)),
+                        ))
+                        self._respond(HTTPStatus.OK, {"memories": result})
+                        return
+                    if route == "/memory/forget-category":
+                        principal = self._authenticated(body)
+                        count = asyncio.run(application.forget_memory_category(principal.identity.owner_id, str(body["category"])))
+                        self._respond(HTTPStatus.OK, {"deleted": count, "category": str(body["category"])})
+                        return
+                    if route.startswith("/memory/"):
+                        parts = route.strip("/").split("/")
+                        if len(parts) == 3 and parts[2] in {"pin", "archive"}:
+                            principal = self._authenticated(body)
+                            enabled = bool(body.get("enabled", True))
+                            if parts[2] == "pin":
+                                result = asyncio.run(application.pin_memory(principal.identity.owner_id, parts[1], enabled))
+                            else:
+                                result = asyncio.run(application.archive_memory(principal.identity.owner_id, parts[1], enabled))
+                            self._respond(HTTPStatus.OK, result)
+                            return
+                    if route == "/goals":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.create_goal(principal.identity.owner_id, body))
+                        self._respond(HTTPStatus.CREATED, result)
+                        return
+                    if route.startswith("/goals/"):
+                        parts = route.strip("/").split("/")
+                        if len(parts) == 3 and parts[2] in {"pause", "resume", "cancel", "complete", "activate"}:
+                            principal = self._authenticated(body)
+                            result = asyncio.run(application.control_goal(principal.identity.owner_id, parts[1], parts[2]))
+                            self._respond(HTTPStatus.OK, result)
+                            return
+                    if route.startswith("/proactive/findings/") and route.endswith("/acknowledge"):
+                        principal = self._authenticated(body)
+                        finding_id = route.split("/")[-2]
+                        result = asyncio.run(application.acknowledge_finding(principal.identity.owner_id, finding_id))
+                        self._respond(HTTPStatus.OK, result)
+                        return
                     self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                except PermissionError:
+                    self._respond(HTTPStatus.UNAUTHORIZED, {"error": "principal_not_found"})
                 except (KeyError, TypeError, ValueError) as exc:
                     self._respond(HTTPStatus.BAD_REQUEST, {"error": str(exc) or exc.__class__.__name__})
                 except Exception as exc:
                     self._respond(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": exc.__class__.__name__})
+
+            def do_PATCH(self) -> None:  # noqa: N802 - stdlib handler API
+                parsed = urlparse(self.path)
+                route = self._route(parsed.path)
+                try:
+                    body = self._body()
+                    principal = self._authenticated(body)
+                    owner_id = principal.identity.owner_id
+                    if route.startswith("/memory/"):
+                        values = {key: value for key, value in body.items() if key not in {"credential", "device_id", "identity_id"}}
+                        result = asyncio.run(application.update_memory(owner_id, route.rsplit("/", 1)[-1], values))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route.startswith("/goals/"):
+                        goal_id = route.rsplit("/", 1)[-1]
+                        result = asyncio.run(application.update_goal(owner_id, goal_id, body))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/personalization/profile":
+                        values = body.get("values", {key: value for key, value in body.items() if key not in {"credential", "device_id", "identity_id", "source"}})
+                        if not isinstance(values, dict):
+                            raise ValueError("personalization values must be an object")
+                        result = asyncio.run(application.update_personalization(owner_id, values, str(body.get("source", "user"))))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                except PermissionError:
+                    self._respond(HTTPStatus.UNAUTHORIZED, {"error": "principal_not_found"})
+                except KeyError:
+                    self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                except (TypeError, ValueError) as exc:
+                    self._respond(HTTPStatus.BAD_REQUEST, {"error": str(exc) or exc.__class__.__name__})
+                except Exception as exc:
+                    self._respond(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": exc.__class__.__name__})
+
+            def do_DELETE(self) -> None:  # noqa: N802 - stdlib handler API
+                parsed = urlparse(self.path)
+                route = self._route(parsed.path)
+                try:
+                    body = self._body()
+                    principal = self._authenticated(body)
+                    if route.startswith("/memory/"):
+                        asyncio.run(application.delete_memory(principal.identity.owner_id, route.rsplit("/", 1)[-1]))
+                        self._respond(HTTPStatus.NO_CONTENT, {})
+                        return
+                    self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                except PermissionError:
+                    self._respond(HTTPStatus.UNAUTHORIZED, {"error": "principal_not_found"})
+                except KeyError:
+                    self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                except (TypeError, ValueError) as exc:
+                    self._respond(HTTPStatus.BAD_REQUEST, {"error": str(exc) or exc.__class__.__name__})
+                except Exception as exc:
+                    self._respond(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": exc.__class__.__name__})
+
+            @staticmethod
+            def _route(path: str) -> str:
+                route = path.removeprefix("/v1")
+                return route.rstrip("/") or "/"
+
+            def _owner(self, query: dict[str, list[str]]) -> str:
+                row = application.runtime.repository.first_owner()
+                if row is None:
+                    raise ValueError("owner_id is required")
+                requested = query.get("owner_id", [None])[0]
+                auth_keys = {"credential", "device_id", "identity_id"}
+                if auth_keys.issubset(query):
+                    principal = self._authenticated({key: query[key][0] for key in auth_keys})
+                    if requested and requested != principal.identity.owner_id:
+                        raise PermissionError("owner_binding_mismatch")
+                    return principal.identity.owner_id
+                owner = requested or str(row["id"])
+                if owner != str(row["id"]):
+                    raise PermissionError("owner_authentication_required")
+                return owner
+
+            def _authenticated(self, values: dict[str, Any]) -> Any:
+                required = ("credential", "device_id", "identity_id")
+                if any(key not in values for key in required):
+                    raise ValueError("credential, device_id, and identity_id are required")
+                principal = asyncio.run(application.authenticate_principal(
+                    str(values["credential"]), str(values["device_id"]), str(values["identity_id"])
+                ))
+                if principal is None:
+                    raise PermissionError("principal_not_found")
+                return principal
 
             def _body(self) -> dict[str, Any]:
                 length = int(self.headers.get("Content-Length", "0"))
