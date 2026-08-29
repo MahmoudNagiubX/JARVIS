@@ -63,6 +63,7 @@ from .nodes import NodeDescriptor, NodeHealth, NodeRole, VenomNodePlan
 from .notifications import Notification
 from .offline import ConnectivityState, OfflineCapabilityDecision
 from .personalization import PersonalizationProfile, PersonalizationUpdate
+from .presence import PresenceObservation, PresenceSnapshot, PresenceSource
 from .proactive import FindingStatus, ProactiveFinding, ProactiveFindingType
 from .perception import (
     CameraObservation,
@@ -200,6 +201,9 @@ __all__ = [
     "ConnectivityState",
     "PersonalizationProfile",
     "PersonalizationUpdate",
+    "PresenceObservation",
+    "PresenceSnapshot",
+    "PresenceSource",
     "FindingStatus",
     "ProactiveFinding",
     "ProactiveFindingType",

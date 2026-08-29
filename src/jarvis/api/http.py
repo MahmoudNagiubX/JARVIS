@@ -85,6 +85,23 @@ class CoreHttpServer:
                         self._websocket(query)
                     elif route == "/experience/clients":
                         self._respond(HTTPStatus.OK, {"clients": application.list_clients(self._authenticated(values).identity.owner_id)})
+                    elif route == "/presence":
+                        self._respond(HTTPStatus.OK, asyncio.run(application.presence(principal.identity.owner_id)))
+                    elif route == "/attention":
+                        self._respond(HTTPStatus.OK, asyncio.run(application.attention(principal.identity.owner_id)))
+                    elif route == "/personal-operations/modes":
+                        self._respond(HTTPStatus.OK, {"modes": asyncio.run(application.personal_modes(principal.identity.owner_id))})
+                    elif route == "/focus":
+                        self._respond(HTTPStatus.OK, asyncio.run(application.focus_state(principal.identity.owner_id)))
+                    elif route == "/communications/follow-ups":
+                        self._respond(HTTPStatus.OK, {"follow_ups": asyncio.run(application.communication_followups(principal.identity.owner_id, query.get("active_only", ["false"])[0].casefold() == "true"))})
+                    elif route == "/communications/auto-send-rules":
+                        self._respond(HTTPStatus.OK, {"rules": asyncio.run(application.communication_auto_send_rules(principal.identity.owner_id))})
+                    elif route == "/home/context":
+                        principal = self._authenticated(values)
+                        self._respond(HTTPStatus.OK, asyncio.run(application.home_context(principal.identity, principal.device)))
+                    elif route == "/routines":
+                        self._respond(HTTPStatus.OK, {"routines": application.routines()})
                     elif route == "/events":
                         correlation_id = query.get("correlation_id", [None])[0]
                         principal = self._authenticated({})
@@ -242,6 +259,43 @@ class CoreHttpServer:
                         ))
                         self._respond(HTTPStatus.OK, result)
                         return
+                    if route == "/personal-operations/mode":
+                        principal = self._authenticated(body)
+                        ttl = body.get("ttl_seconds")
+                        result = asyncio.run(application.set_personal_mode(principal.identity.owner_id, str(body["mode"]), ttl_seconds=float(ttl) if ttl is not None else None, source=str(body.get("source", "user"))))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/personal-operations/run":
+                        principal = self._authenticated(body)
+                        values = body.get("values", {})
+                        self._respond(HTTPStatus.OK, asyncio.run(application.personal_operation(principal.identity.owner_id, str(body["operation"]), values if isinstance(values, dict) else {}, identity=principal.identity, device=principal.device)))
+                        return
+                    if route == "/focus/start":
+                        principal = self._authenticated(body)
+                        self._respond(HTTPStatus.OK, asyncio.run(application.focus_start(principal.identity.owner_id, body)))
+                        return
+                    if route == "/focus/end":
+                        principal = self._authenticated(body)
+                        self._respond(HTTPStatus.OK, asyncio.run(application.focus_end(principal.identity.owner_id, body)))
+                        return
+                    if route.startswith("/communications/follow-ups/") and route.endswith("/acknowledge"):
+                        principal = self._authenticated(body)
+                        followup_id = route.strip("/").split("/")[2]
+                        self._respond(HTTPStatus.OK, asyncio.run(application.acknowledge_communication_followup(principal.identity.owner_id, followup_id)))
+                        return
+                    if route == "/communications/follow-ups":
+                        principal = self._authenticated(body)
+                        self._respond(HTTPStatus.CREATED, asyncio.run(application.create_communication_followup(principal.identity.owner_id, body)))
+                        return
+                    if route == "/communications/auto-send-rules":
+                        principal = self._authenticated(body)
+                        self._respond(HTTPStatus.CREATED, asyncio.run(application.create_communication_auto_send_rule(principal.identity.owner_id, body)))
+                        return
+                    if route.startswith("/routines/") and route.endswith("/run"):
+                        principal = self._authenticated(body)
+                        routine_id = route.strip("/").split("/")[1]
+                        self._respond(HTTPStatus.OK, asyncio.run(application.run_routine(routine_id, principal.identity, principal.device, dry_run=bool(body.get("dry_run", True)))))
+                        return
                     if route.startswith("/approvals/"):
                         approval_id = route.rsplit("/", 1)[-1]
                         principal = asyncio.run(application.authenticate_principal(
@@ -328,6 +382,11 @@ class CoreHttpServer:
                             principal = self._authenticated(body)
                             self._respond(HTTPStatus.OK, asyncio.run(application.set_automation_enabled(principal.identity.owner_id, parts[1], parts[2] == "enable")))
                             return
+                    if route.startswith("/communications/auto-send-rules/"):
+                        rule_id = route.strip("/").split("/")[-1]
+                        values = {key: value for key, value in body.items() if key not in {"credential", "device_id", "identity_id"}}
+                        self._respond(HTTPStatus.OK, asyncio.run(application.update_communication_auto_send_rule(owner_id, rule_id, values)))
+                        return
                     if route == "/evaluations/run":
                         principal = self._authenticated(body)
                         self._respond(HTTPStatus.OK, asyncio.run(application.run_evaluation(str(body["suite"]), principal.identity.owner_id)))
@@ -454,6 +513,12 @@ class CoreHttpServer:
                         principal = self._authenticated(body)
                         result = asyncio.run(application.create_notification(principal.identity.owner_id, body))
                         self._respond(HTTPStatus.CREATED, result)
+                        return
+                    if route.startswith("/notifications/") and route.endswith("/deliver"):
+                        principal = self._authenticated(body)
+                        notification_id = route.strip("/").split("/")[1]
+                        result = asyncio.run(application.deliver_notification(principal.identity.owner_id, notification_id, body))
+                        self._respond(HTTPStatus.OK, result)
                         return
                     if route.startswith("/notifications/") and route.endswith("/dismiss"):
                         principal = self._authenticated(body)

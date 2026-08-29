@@ -17,6 +17,7 @@ Clients / UI / Voice / Device transports
                   | devices | communications | notifications | voice routing
                   | engineering | research | perception | developer workers
                   | intelligence: skills | workspace | findings | briefings | automation | evaluation
+                  | personal operations | presence | attention | delivery | follow-ups | home context
                  |
       Infrastructure adapters and durable stores
 ```
@@ -48,6 +49,7 @@ capability directly.
 | Experience projection | Read model | Project real events into owner-scoped HUD/client state | Mutating authorities or faking lifecycle state |
 | Engineering/research/perception | Product service + injected provider | Bound specialist work, evidence, and on-demand observation | Shell bypass, hidden memory, continuous capture |
 | Mission/skill/intelligence | Product-owned bounded services | Inspectable plans, declarative procedures, findings, briefings, rules, evaluation | New authority, second scheduler/tool registry, autonomous source mutation |
+| Personal operations | Orchestration services | Modes, focus, routines, presence, attention, delivery and follow-up coordination | Owning tasks, messages, notifications, home actions, or approvals |
 
 ## Event model
 

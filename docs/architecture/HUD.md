@@ -6,8 +6,9 @@ there are no Marvel assets, copied donor UI assets, CDN dependencies, or
 browser-side business rules.
 
 The console displays system state, model/offline health, event counts, runs,
-workers, devices, goals, approvals, research, engineering, voice, and the
-bounded event timeline. State data is fetched through the authenticated
+workers, devices, goals, approvals, research, engineering, voice, presence,
+attention, current mode/focus, communication follow-ups, home context, and
+the bounded event timeline. State data is fetched through the authenticated
 experience API. The shell itself contains no credentials or secrets.
 
 The current stdlib adapter uses SSE snapshots for broad client compatibility.

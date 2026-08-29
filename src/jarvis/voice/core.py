@@ -33,6 +33,8 @@ class VoiceCore:
         event_bus: InMemoryEventBus,
         stt: SpeechToText,
         tts: TextToSpeech,
+        *,
+        follow_up_seconds: float = 30.0,
     ) -> None:
         self.agent = agent
         self.event_bus = event_bus
@@ -42,6 +44,8 @@ class VoiceCore:
         self._context: VoiceSessionContext | None = None
         self._tts_task: asyncio.Task[bytes] | None = None
         self._active_run_id: str | None = None
+        self.follow_up_seconds = max(0.0, follow_up_seconds)
+        self._follow_up_task: asyncio.Task[None] | None = None
 
     @property
     def state(self) -> VoiceSessionState:
@@ -52,6 +56,10 @@ class VoiceCore:
         return self._context
 
     async def start(self, context: VoiceSessionContext | None = None) -> None:
+        if self._follow_up_task and not self._follow_up_task.done():
+            self._follow_up_task.cancel()
+            await asyncio.gather(self._follow_up_task, return_exceptions=True)
+        self._follow_up_task = None
         if context is not None:
             if not context.session_id or not context.device_id:
                 raise ValueError("voice session requires session and device identifiers")
@@ -68,6 +76,10 @@ class VoiceCore:
         await self._emit("voice.listening", EventState.ACCEPTED)
 
     async def stop(self) -> None:
+        if self._follow_up_task and not self._follow_up_task.done():
+            self._follow_up_task.cancel()
+            await asyncio.gather(self._follow_up_task, return_exceptions=True)
+        self._follow_up_task = None
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
             await asyncio.gather(self._tts_task, return_exceptions=True)
@@ -112,6 +124,7 @@ class VoiceCore:
             identity,
             device,
             session_id=self._context.session_id if self._context else None,
+            conversation_id=self._context.conversation_id if self._context else None,
         )
         self._active_run_id = outcome.run_id
         if outcome.state is not AgentRunState.SUCCEEDED or not outcome.response:
@@ -131,6 +144,8 @@ class VoiceCore:
             self._tts_task = None
         self._state = VoiceSessionState.FOLLOW_UP
         await self._emit("voice.turn_completed", EventState.COMPLETED, {"run_id": outcome.run_id})
+        if self.follow_up_seconds:
+            self._follow_up_task = asyncio.create_task(self._expire_follow_up(self.follow_up_seconds, outcome.run_id))
         return VoiceTurnResult(transcript, outcome.response, outcome.run_id, self._state, audio=audio)
 
     async def barge_in(self) -> bool:
@@ -146,11 +161,22 @@ class VoiceCore:
         await self._emit("voice.listening", EventState.ACCEPTED)
         return True
 
+    async def _expire_follow_up(self, seconds: float, run_id: str) -> None:
+        try:
+            await asyncio.sleep(seconds)
+        except asyncio.CancelledError:
+            return
+        if self._state is VoiceSessionState.FOLLOW_UP:
+            self._state = VoiceSessionState.LISTENING
+            await self._emit("voice.follow_up_expired", EventState.COMPLETED, {"run_id": run_id})
+
     def _check_context(self, device: DeviceIdentity) -> None:
         if self._context is None:
             raise RuntimeError("voice session has not started")
         if self._context.device_id != device.device_id:
             raise ValueError("voice device does not match session context")
+        if self._context.owner_id is not None and self._context.owner_id != device.owner_id:
+            raise ValueError("voice owner does not match session context")
 
     async def _emit(
         self,

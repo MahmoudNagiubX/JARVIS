@@ -89,6 +89,10 @@ class DurableProactiveService:
             created = datetime.fromisoformat(row["created_at"])
             if created <= observed_at - timedelta(minutes=10):
                 candidates.append((ProactiveFindingType.APPROVAL_WAITING.value, "info", {"approval_id": row["id"]}, (), None, False, 1800))
+        for row in getattr(self.repository, "communication_followups", lambda *_args: [])(owner_id, ("open", "due")):
+            due_at = datetime.fromisoformat(str(row["due_at"]))
+            if due_at <= observed_at:
+                candidates.append((ProactiveFindingType.COMMUNICATION_FOLLOWUP_DUE.value, "info", {"followup_id": row["id"], "thread_id": row["thread_id"], "due_at": row["due_at"]}, (), None, False, 1800))
 
         findings: list[ProactiveFinding] = []
         for item in candidates:

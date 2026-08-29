@@ -79,6 +79,12 @@ class ExperienceProjection:
             "workspace": {},
             "worker_delegations": {},
             "evaluations": {},
+            "presence": {},
+            "attention": {},
+            "operations": {},
+            "focus": None,
+            "follow_ups": {},
+            "home": {},
         }
 
     async def on_event(self, event: Event) -> None:
@@ -282,6 +288,12 @@ class ExperienceProjection:
             workspace=tuple(loaded.get("workspace", state["workspace"].values())),
             worker_delegations=tuple(loaded.get("worker_delegations", state["worker_delegations"].values())),
             evaluations=tuple(loaded.get("evaluations", state["evaluations"].values())),
+            presence=dict(loaded.get("presence", state["presence"])),
+            attention=dict(loaded.get("attention", state["attention"])),
+            operations=dict(loaded.get("operations", state["operations"])),
+            focus=loaded.get("focus", state["focus"]),
+            follow_ups=tuple(loaded.get("follow_ups", state["follow_ups"].values())),
+            home=dict(loaded.get("home", state["home"])),
             timeline=timeline,
         )
 

@@ -620,6 +620,63 @@ class CoreApplication:
     async def list_notifications(self, owner_id: str, active_only: bool = False) -> list[dict[str, Any]]:
         return [asdict(item) for item in await self.runtime.notifications.list(owner_id, active_only)]
 
+    async def presence(self, owner_id: str) -> dict[str, Any]:
+        return asdict(await self.runtime.presence.refresh(owner_id))
+
+    async def attention(self, owner_id: str) -> dict[str, Any]:
+        mode = await self.runtime.operations.mode(owner_id)
+        presence = await self.runtime.presence.refresh(owner_id)
+        focus = await self.runtime.operations.focus(owner_id)
+        return {"mode": mode.mode, "presence": asdict(presence), "voice_active": self.runtime.voice.state.value in {"listening", "thinking", "speaking", "follow_up"}, "focus": asdict(focus) if focus else None}
+
+    async def personal_modes(self, owner_id: str) -> list[dict[str, Any]]:
+        return [asdict(item) for item in await self.runtime.operations.modes(owner_id)]
+
+    async def set_personal_mode(self, owner_id: str, mode: str, *, ttl_seconds: float | None = None, source: str = "user") -> dict[str, Any]:
+        return asdict(await self.runtime.operations.set_mode(owner_id, mode, ttl_seconds=ttl_seconds, source=source))
+
+    async def personal_operation(self, owner_id: str, operation: str, values: dict[str, object] | None = None, *, identity: Identity | None = None, device: DeviceIdentity | None = None) -> dict[str, Any]:
+        return asdict(await self.runtime.operations.run(owner_id, operation, identity=identity, device=device, values=values))
+
+    async def focus_state(self, owner_id: str) -> dict[str, Any]:
+        focus = await self.runtime.operations.focus(owner_id)
+        return asdict(focus) if focus else {"owner_id": owner_id, "status": "inactive"}
+
+    async def focus_start(self, owner_id: str, values: dict[str, object]) -> dict[str, Any]:
+        duration = values.get("duration_seconds")
+        return asdict(await self.runtime.operations.start_focus(owner_id, duration_seconds=float(duration) if duration is not None else None, goal_id=values.get("goal_id") if isinstance(values.get("goal_id"), str) else None, mission_id=values.get("mission_id") if isinstance(values.get("mission_id"), str) else None))
+
+    async def focus_end(self, owner_id: str, values: dict[str, object] | None = None) -> dict[str, Any]:
+        values = values or {}
+        return asdict(await self.runtime.operations.end_focus(owner_id, reason=values.get("reason") if isinstance(values.get("reason"), str) else None))
+
+    async def communication_followups(self, owner_id: str, active_only: bool = False) -> list[dict[str, Any]]:
+        return [asdict(item) for item in await self.runtime.communication_followups.list(owner_id, active_only=active_only)]
+
+    async def acknowledge_communication_followup(self, owner_id: str, followup_id: str) -> dict[str, Any]:
+        return asdict(await self.runtime.communication_followups.acknowledge(owner_id, followup_id))
+
+    async def create_communication_followup(self, owner_id: str, values: dict[str, object]) -> dict[str, Any]:
+        return asdict(await self.runtime.communication_followups.create(owner_id, str(values["thread_id"]), message_id=values.get("message_id") if isinstance(values.get("message_id"), str) else None, direction=str(values.get("direction", "awaiting_other_party")), summary=str(values.get("summary", "Awaiting reply")), due_at=self._parse_datetime(values.get("due_at")), delay_seconds=float(values.get("delay_seconds", 86400)), related_goal_id=values.get("related_goal_id") if isinstance(values.get("related_goal_id"), str) else None, related_mission_id=values.get("related_mission_id") if isinstance(values.get("related_mission_id"), str) else None, metadata=values.get("metadata") if isinstance(values.get("metadata"), dict) else None))
+
+    async def communication_auto_send_rules(self, owner_id: str) -> list[dict[str, Any]]:
+        return [asdict(item) for item in await self.runtime.communication_followups.rules(owner_id)]
+
+    async def create_communication_auto_send_rule(self, owner_id: str, values: dict[str, object]) -> dict[str, Any]:
+        return asdict(await self.runtime.communication_followups.create_rule(owner_id, values))
+
+    async def update_communication_auto_send_rule(self, owner_id: str, rule_id: str, values: dict[str, object]) -> dict[str, Any]:
+        return asdict(await self.runtime.communication_followups.update_rule(owner_id, rule_id, values))
+
+    async def home_context(self, identity: Identity, device: DeviceIdentity) -> dict[str, Any]:
+        return asdict(await self.runtime.home_context.refresh(identity, device))
+
+    def routines(self) -> list[dict[str, Any]]:
+        return [asdict(item) for item in self.runtime.home_routines.list()]
+
+    async def run_routine(self, routine_id: str, identity: Identity, device: DeviceIdentity, *, dry_run: bool = True) -> dict[str, Any]:
+        return asdict(await self.runtime.home_routines.run(routine_id, identity, device, dry_run=dry_run))
+
     async def create_notification(self, owner_id: str, values: dict[str, object]) -> dict[str, Any]:
         action_options = tuple(item for item in values.get("action_options", ()) if isinstance(item, str))
         expires_at = self._parse_datetime(values.get("expires_at"))
@@ -639,6 +696,11 @@ class CoreApplication:
 
     async def dismiss_notification(self, owner_id: str, notification_id: str) -> dict[str, Any]:
         return asdict(await self.runtime.notifications.dismiss(owner_id, notification_id))
+
+    async def deliver_notification(self, owner_id: str, notification_id: str, values: dict[str, object] | None = None) -> dict[str, Any]:
+        values = values or {}
+        result = await self.runtime.notification_delivery.deliver(owner_id, notification_id, mode=str(values.get("mode", "normal")), active_voice=bool(values.get("active_voice", False)))
+        return asdict(result)
 
     def capabilities(self, device_id: str | None = None) -> list[dict[str, Any]]:
         return [asdict(item) for item in self.runtime.capabilities.list(device_id=device_id)]

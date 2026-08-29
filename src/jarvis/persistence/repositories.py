@@ -639,7 +639,7 @@ class RuntimeRepository:
     def insert_world_observation(self, observation: Any, owner_id: str) -> None:
         with self.database.transaction() as db:
             db.execute(
-                "INSERT INTO world_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO world_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     observation.observation_id,
                     observation.owner_id or owner_id,
@@ -1181,3 +1181,100 @@ class RuntimeRepository:
         if result is None:
             raise KeyError(device_id)
         return result
+
+    # Phase 08 personal operations ---------------------------------------
+    def insert_personal_mode(self, mode: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO personal_modes(id, owner_id, mode, source, started_at, expires_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (mode.mode_id, mode.owner_id, mode.mode, mode.source, iso(mode.started_at), iso(mode.expires_at), json_text(dict(mode.metadata))),
+            )
+
+    def personal_modes(self, owner_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM personal_modes WHERE owner_id = ? ORDER BY started_at DESC LIMIT ?", (owner_id, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def insert_focus_session(self, session: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO focus_sessions(id, owner_id, status, goal_id, mission_id, started_at, ends_at, ended_at, interruption_reason, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (session.focus_id, session.owner_id, session.status, session.goal_id, session.mission_id, iso(session.started_at), iso(session.ends_at), iso(session.ended_at), session.interruption_reason, json_text(dict(session.metadata))),
+            )
+
+    def focus_session(self, owner_id: str, focus_id: str | None = None) -> dict[str, Any] | None:
+        query = "SELECT * FROM focus_sessions WHERE owner_id = ?"
+        values: list[object] = [owner_id]
+        if focus_id is not None:
+            query += " AND id = ?"
+            values.append(focus_id)
+        else:
+            query += " AND status = 'active'"
+        query += " ORDER BY started_at DESC LIMIT 1"
+        row = self.database.connection.execute(query, tuple(values)).fetchone()
+        return dict(row) if row else None
+
+    def focus_sessions(self, owner_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM focus_sessions WHERE owner_id = ? ORDER BY started_at DESC LIMIT ?", (owner_id, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def insert_communication_followup(self, item: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO communication_followups(id, owner_id, thread_id, message_id, direction, status, summary, due_at, created_at, resolved_at, related_goal_id, related_mission_id, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (item.followup_id, item.owner_id, item.thread_id, item.message_id, item.direction, item.status, item.summary, iso(item.due_at), iso(item.created_at), iso(item.resolved_at), item.related_goal_id, item.related_mission_id, json_text(dict(item.metadata))),
+            )
+
+    def communication_followups(self, owner_id: str, statuses: Sequence[str] = ()) -> list[dict[str, Any]]:
+        query = "SELECT * FROM communication_followups WHERE owner_id = ?"
+        values: list[object] = [owner_id]
+        if statuses:
+            query += " AND status IN (" + ",".join("?" for _ in statuses) + ")"
+            values.extend(statuses)
+        query += " ORDER BY due_at ASC, created_at DESC"
+        rows = self.database.connection.execute(query, tuple(values)).fetchall()
+        return [dict(row) for row in rows]
+
+    def communication_followup(self, owner_id: str, followup_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM communication_followups WHERE owner_id = ? AND id = ?", (owner_id, followup_id)).fetchone()
+        return dict(row) if row else None
+
+    def insert_auto_send_rule(self, rule: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO auto_send_rules(id, owner_id, channel, recipient_allowlist_json, message_class, allowed_context_json, max_frequency, window_seconds, allowed_time_start, allowed_time_end, sensitivity, approval_requirement, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (rule.rule_id, rule.owner_id, rule.channel, json_text(list(rule.recipient_allowlist)), rule.message_class, json_text(dict(rule.allowed_context)), rule.max_frequency, rule.window_seconds, rule.allowed_time_start, rule.allowed_time_end, rule.sensitivity, rule.approval_requirement, int(rule.enabled), iso(rule.created_at), iso(rule.updated_at)),
+            )
+
+    def auto_send_rules(self, owner_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM auto_send_rules WHERE owner_id = ? ORDER BY created_at DESC", (owner_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def auto_send_rule(self, owner_id: str, rule_id: str) -> dict[str, Any] | None:
+        row = self.database.connection.execute("SELECT * FROM auto_send_rules WHERE owner_id = ? AND id = ?", (owner_id, rule_id)).fetchone()
+        return dict(row) if row else None
+
+    def insert_delivery_attempt(self, attempt: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO notification_delivery_attempts(id, owner_id, notification_id, channel, target, status, reason, fingerprint, attempted_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (attempt.attempt_id, attempt.owner_id, attempt.notification_id, attempt.channel, attempt.target, attempt.status, attempt.reason, attempt.fingerprint, iso(attempt.attempted_at), json_text(dict(attempt.metadata))),
+            )
+
+    def delivery_attempts(self, owner_id: str, notification_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        query = "SELECT * FROM notification_delivery_attempts WHERE owner_id = ?"
+        values: list[object] = [owner_id]
+        if notification_id is not None:
+            query += " AND notification_id = ?"
+            values.append(notification_id)
+        query += " ORDER BY attempted_at DESC LIMIT ?"
+        values.append(limit)
+        rows = self.database.connection.execute(query, tuple(values)).fetchall()
+        return [dict(row) for row in rows]
+
+    def insert_routine_run(self, run: Any) -> None:
+        with self.database.transaction() as db:
+            db.execute("INSERT OR REPLACE INTO routine_runs(id, owner_id, routine_id, status, result_json, started_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (run.run_id, run.owner_id, run.routine_id, run.status, json_text(dict(run.result)), iso(run.started_at), iso(run.completed_at)))
+
+    def routine_runs(self, owner_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute("SELECT * FROM routine_runs WHERE owner_id = ? ORDER BY started_at DESC LIMIT ?", (owner_id, limit)).fetchall()
+        return [dict(row) for row in rows]

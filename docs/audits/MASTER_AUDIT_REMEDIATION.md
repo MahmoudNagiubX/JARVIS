@@ -73,3 +73,19 @@ Physical voice acceptance, real satellite transport, Playwright, PostgreSQL
 client/listener, Ollama availability, OCR/local vision, Venom transport, and
 external messaging remain live/deployment evidence debt. They are not claimed
 as completed by this local remediation.
+
+## Phase 08 implementation record
+
+The Phase 08 local slice is implemented on top of the published remediation
+base. Presence is a TTL-bound World State projection; attention is a delivery
+policy; notification delivery records honest adapter outcomes; and voice
+follow-up is an explicit timer on the existing `VoiceCore`. Personal
+operations coordinate existing authorities, while communication follow-ups,
+scoped auto-send rules, focus/mode records, delivery attempts, and routine
+runs use bounded persistence.
+
+Home context and routines delegate to `HomeActionService`; restricted home
+actions remain blocked. New resource GET routes are private under the exact
+public allowlist already recorded above. External communication, physical
+voice, Home Assistant live acceptance, and deployment-specific adapters remain
+deferred rather than simulated.

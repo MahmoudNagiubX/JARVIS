@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from datetime import UTC, datetime, time
+import hashlib
+import json
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime, time, timedelta
 from typing import Iterable, Mapping
 from uuid import uuid4
 
@@ -77,6 +79,8 @@ class CommunicationIntelligenceService:
         return self._from_row(row) if row else None
 
     def can_auto_send(self, owner_id: str, channel: str, recipient: str, *, message_type: str = "normal", context: Mapping[str, object] | None = None, now: datetime | None = None) -> tuple[bool, str]:
+        if message_type in {"bulk", "important", "urgent", "sensitive", "financial"}:
+            return False, "confirmation_required" if message_type != "bulk" else "bulk_send_denied"
         for policy in self._policies:
             if policy.channel != channel or policy.recipient != recipient or policy.message_type != message_type:
                 continue
@@ -114,3 +118,175 @@ class CommunicationIntelligenceService:
         import json
         data = json.loads(str(row["insight_json"]))
         return CommunicationInsight(str(row["id"]), str(row["owner_id"]), str(row["thread_id"]), str(data["priority"]), str(data["summary"]), tuple(data.get("action_items", ())), data.get("reply_suggestion"), datetime.fromisoformat(data["follow_up_at"]) if data.get("follow_up_at") else None, True)
+
+
+@dataclass(frozen=True, slots=True)
+class CommunicationFollowUp:
+    followup_id: str
+    owner_id: str
+    thread_id: str
+    message_id: str | None
+    direction: str
+    status: str
+    summary: str
+    due_at: datetime
+    created_at: datetime
+    resolved_at: datetime | None = None
+    related_goal_id: str | None = None
+    related_mission_id: str | None = None
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AutoSendRule:
+    rule_id: str
+    owner_id: str
+    channel: str
+    recipient_allowlist: tuple[str, ...]
+    message_class: str = "normal"
+    allowed_context: Mapping[str, object] = field(default_factory=dict)
+    max_frequency: int = 1
+    window_seconds: float = 86400.0
+    allowed_time_start: str | None = None
+    allowed_time_end: str | None = None
+    sensitivity: str = "normal"
+    approval_requirement: str = "always"
+    enabled: bool = True
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+class CommunicationFollowUpService:
+    """Follow-up metadata and scoped send policy; message content stays in CommunicationsHub."""
+
+    def __init__(self, repository: RuntimeRepository, event_bus: InMemoryEventBus, intelligence: CommunicationIntelligenceService | None = None) -> None:
+        self.repository = repository
+        self.event_bus = event_bus
+        self.intelligence = intelligence
+        self._sent: dict[tuple[str, str, str], list[datetime]] = {}
+
+    async def create(self, owner_id: str, thread_id: str, *, message_id: str | None = None, direction: str = "awaiting_other_party", summary: str = "Awaiting reply", due_at: datetime | None = None, delay_seconds: float = 86400.0, related_goal_id: str | None = None, related_mission_id: str | None = None, metadata: Mapping[str, object] | None = None) -> CommunicationFollowUp:
+        if not thread_id.strip() or not summary.strip():
+            raise ValueError("follow-up thread and summary are required")
+        now = datetime.now(UTC)
+        item = CommunicationFollowUp(f"followup-{uuid4()}", owner_id, thread_id, message_id, direction, "open", summary[:400], due_at or now + timedelta(seconds=max(1.0, delay_seconds)), now, None, related_goal_id, related_mission_id, dict(metadata or {}))
+        self.repository.insert_communication_followup(item)
+        await self._emit("communication.followup_created", item)
+        return item
+
+    async def list(self, owner_id: str, *, active_only: bool = False) -> tuple[CommunicationFollowUp, ...]:
+        statuses = ("open", "due") if active_only else ()
+        return tuple(self._from_row(row) for row in self.repository.communication_followups(owner_id, statuses))
+
+    async def acknowledge(self, owner_id: str, followup_id: str) -> CommunicationFollowUp:
+        row = self.repository.communication_followup(owner_id, followup_id)
+        if row is None:
+            raise KeyError(followup_id)
+        item = self._from_row(row)
+        updated = CommunicationFollowUp(item.followup_id, item.owner_id, item.thread_id, item.message_id, item.direction, "resolved", item.summary, item.due_at, item.created_at, datetime.now(UTC), item.related_goal_id, item.related_mission_id, item.metadata)
+        self.repository.insert_communication_followup(updated)
+        await self._emit("communication.followup_resolved", updated, EventState.COMPLETED)
+        return updated
+
+    async def create_follow_up(self, owner_id: str, thread_id: str, **kwargs: object) -> CommunicationFollowUp:
+        return await self.create(owner_id, thread_id, **kwargs)  # type: ignore[arg-type]
+
+    async def acknowledge_follow_up(self, owner_id: str, followup_id: str) -> CommunicationFollowUp:
+        return await self.acknowledge(owner_id, followup_id)
+
+    async def due(self, owner_id: str, *, now: datetime | None = None) -> tuple[CommunicationFollowUp, ...]:
+        current = now or datetime.now(UTC)
+        values = []
+        for item in await self.list(owner_id, active_only=True):
+            if item.due_at <= current:
+                due_item = item if item.status == "due" else CommunicationFollowUp(item.followup_id, item.owner_id, item.thread_id, item.message_id, item.direction, "due", item.summary, item.due_at, item.created_at, item.resolved_at, item.related_goal_id, item.related_mission_id, item.metadata)
+                self.repository.insert_communication_followup(due_item)
+                values.append(due_item)
+                if item.status != "due":
+                    await self._emit("communication.followup_due", due_item, EventState.COMPLETED)
+        return tuple(values)
+
+    async def create_rule(self, owner_id: str, values: Mapping[str, object]) -> AutoSendRule:
+        recipients = values.get("recipient_allowlist", values.get("recipients", ()))
+        if not isinstance(recipients, (list, tuple)) or not recipients:
+            raise ValueError("auto-send recipient allowlist is required")
+        now = datetime.now(UTC)
+        rule = AutoSendRule(
+            str(values.get("rule_id", f"autosend-{uuid4()}")), owner_id, str(values.get("channel", "")), tuple(str(item) for item in recipients), str(values.get("message_class", "normal")),
+            dict(values.get("allowed_context", {})) if isinstance(values.get("allowed_context"), dict) else {}, max(1, int(values.get("max_frequency", 1))), max(1.0, float(values.get("window_seconds", 86400))), values.get("allowed_time_start") if isinstance(values.get("allowed_time_start"), str) else None, values.get("allowed_time_end") if isinstance(values.get("allowed_time_end"), str) else None, str(values.get("sensitivity", "normal")), str(values.get("approval_requirement", "always")), bool(values.get("enabled", True)), now, now,
+        )
+        if not rule.channel.strip():
+            raise ValueError("auto-send channel is required")
+        if rule.message_class == "bulk" or rule.sensitivity in {"financial", "sensitive"} and rule.approval_requirement == "none":
+            raise ValueError("unsafe auto-send rule")
+        self.repository.insert_auto_send_rule(rule)
+        return rule
+
+    async def rules(self, owner_id: str) -> tuple[AutoSendRule, ...]:
+        return tuple(self._rule_from_row(row) for row in self.repository.auto_send_rules(owner_id))
+
+    async def list_auto_send_rules(self, owner_id: str) -> tuple[AutoSendRule, ...]:
+        return await self.rules(owner_id)
+
+    async def create_auto_send_rule(self, owner_id: str, values: Mapping[str, object]) -> AutoSendRule:
+        return await self.create_rule(owner_id, values)
+
+    async def update_rule(self, owner_id: str, rule_id: str, values: Mapping[str, object]) -> AutoSendRule:
+        row = self.repository.auto_send_rule(owner_id, rule_id)
+        if row is None:
+            raise KeyError(rule_id)
+        current = self._rule_from_row(row)
+        allowed = {"enabled", "max_frequency", "allowed_time_start", "allowed_time_end", "approval_requirement"}
+        if set(values) - allowed:
+            raise ValueError("unsupported auto-send rule fields")
+        data = {**asdict(current), **dict(values), "updated_at": datetime.now(UTC)}
+        updated = AutoSendRule(**{key: data[key] for key in AutoSendRule.__dataclass_fields__})
+        self.repository.insert_auto_send_rule(updated)
+        return updated
+
+    def can_auto_send_scoped(self, owner_id: str, channel: str, recipient: str, content: str, *, message_class: str = "normal", context: Mapping[str, object] | None = None, now: datetime | None = None) -> tuple[bool, str]:
+        current = now or datetime.now(UTC)
+        if not content.strip():
+            return False, "empty_message"
+        if message_class == "bulk":
+            return False, "bulk_send_denied"
+        for rule in (self._rule_from_row(row) for row in self.repository.auto_send_rules(owner_id)):
+            if not rule.enabled or rule.channel != channel or rule.message_class != message_class or recipient not in rule.recipient_allowlist:
+                continue
+            if message_class in {"important", "urgent", "sensitive", "financial"} or rule.sensitivity in {"financial", "sensitive"} or rule.approval_requirement != "none":
+                return False, "confirmation_required"
+            if any((context or {}).get(key) != value for key, value in rule.allowed_context.items()):
+                continue
+            if not self._in_window(rule.allowed_time_start, rule.allowed_time_end, current):
+                continue
+            fingerprint = hashlib.sha256(f"{channel}|{recipient}|{content.strip()}".encode()).hexdigest()
+            key = (owner_id, recipient, fingerprint)
+            sent = [item for item in self._sent.get(key, ()) if current - item <= timedelta(seconds=rule.window_seconds)]
+            if len(sent) >= rule.max_frequency:
+                return False, "rate_limited"
+            self._sent[key] = [*sent, current]
+            return True, "explicit_scoped_policy"
+        return False, "no_scoped_auto_send_policy"
+
+    async def _emit(self, event_type: str, item: CommunicationFollowUp, state: EventState = EventState.EMITTED) -> None:
+        event = Event.create(event_type, EventCategory.COMMUNICATION, correlation_id=item.followup_id, actor_id=item.owner_id, payload={"owner_id": item.owner_id, "followup_id": item.followup_id, "thread_id": item.thread_id, "status": item.status}, state=state)
+        self.repository.append_event(event)
+        await self.event_bus.publish(event)
+
+    @staticmethod
+    def _from_row(row: Mapping[str, object]) -> CommunicationFollowUp:
+        return CommunicationFollowUp(str(row["id"]), str(row["owner_id"]), str(row["thread_id"]), row.get("message_id"), str(row["direction"]), str(row["status"]), str(row["summary"]), datetime.fromisoformat(str(row["due_at"])), datetime.fromisoformat(str(row["created_at"])), datetime.fromisoformat(str(row["resolved_at"])) if row.get("resolved_at") else None, row.get("related_goal_id"), row.get("related_mission_id"), json.loads(str(row["metadata_json"])))
+
+    @staticmethod
+    def _rule_from_row(row: Mapping[str, object]) -> AutoSendRule:
+        return AutoSendRule(str(row["id"]), str(row["owner_id"]), str(row["channel"]), tuple(json.loads(str(row["recipient_allowlist_json"]))), str(row["message_class"]), json.loads(str(row["allowed_context_json"])), int(row["max_frequency"]), float(row["window_seconds"]), row.get("allowed_time_start"), row.get("allowed_time_end"), str(row["sensitivity"]), str(row["approval_requirement"]), bool(row["enabled"]), datetime.fromisoformat(str(row["created_at"])), datetime.fromisoformat(str(row["updated_at"])))
+
+    @staticmethod
+    def _in_window(start: str | None, end: str | None, current: datetime) -> bool:
+        if not start or not end:
+            return True
+        try:
+            begin, finish = time.fromisoformat(start), time.fromisoformat(end)
+        except ValueError:
+            return False
+        return begin <= current.time() <= finish if begin <= finish else current.time() >= begin or current.time() <= finish

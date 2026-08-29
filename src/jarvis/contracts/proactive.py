@@ -19,6 +19,7 @@ class ProactiveFindingType(StrEnum):
     OPERATION_COMPLETED = "operation_completed"
     APPROVAL_WAITING = "approval_waiting"
     DISK_SPACE_CRITICAL = "disk_space_critical"
+    COMMUNICATION_FOLLOWUP_DUE = "communication_followup_due"
 
 
 class FindingStatus(StrEnum):

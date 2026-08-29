@@ -26,6 +26,15 @@ class DurablePersonalizationService:
         "briefing_preference": "morning",
         "worker_preference": "local_first",
         "response_length": "concise",
+        "preferred_address": "Mahmoud",
+        "voice_announcement_level": "important",
+        "quiet_hours": None,
+        "focus_interruption_threshold": "urgent",
+        "preferred_notification_device": None,
+        "preferred_voice_endpoint": None,
+        "follow_up_delay": 30,
+        "work_mode_preferences": {},
+        "study_mode_preferences": {},
     }
     ALLOWED_KEYS = set(DEFAULTS) | {"preferred_tools", "common_project_directories", "usual_work_periods", "common_workflows", "notification_dismissal_patterns", "briefing_preference", "worker_preference", "response_length"}
 

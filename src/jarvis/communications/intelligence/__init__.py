@@ -1,5 +1,5 @@
 """Deterministic communication analysis above the Communications Hub."""
 
-from .service import CommunicationIntelligenceService, CommunicationInsight, SendPolicy
+from .service import AutoSendRule, CommunicationFollowUp, CommunicationFollowUpService, CommunicationIntelligenceService, CommunicationInsight, SendPolicy
 
-__all__ = ["CommunicationIntelligenceService", "CommunicationInsight", "SendPolicy"]
+__all__ = ["AutoSendRule", "CommunicationFollowUp", "CommunicationFollowUpService", "CommunicationIntelligenceService", "CommunicationInsight", "SendPolicy"]

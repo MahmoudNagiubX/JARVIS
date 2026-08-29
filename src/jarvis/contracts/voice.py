@@ -42,6 +42,9 @@ class VoiceSessionContext:
     input_device: str | None = None
     output_device: str | None = None
     room_id: str | None = None
+    owner_id: str | None = None
+    endpoint_id: str | None = None
+    conversation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

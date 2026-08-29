@@ -53,6 +53,15 @@ class NotificationService:
         await self._emit("notification.delivered", owner_id, {"notification_id": notification_id}, EventState.COMPLETED)
         return updated
 
+    async def mark_delivered(self, owner_id: str, notification_id: str) -> Notification:
+        """Record a coordinator-verified presentation without invoking an adapter twice."""
+        current = self._required(owner_id, notification_id)
+        if current.delivered_at is not None:
+            return current
+        updated = Notification(current.notification_id, current.title, current.message, current.severity, current.source, current.action_options, current.target_device, current.expires_at, current.dedup_key, current.created_at, datetime.now(UTC), current.dismissed_at, current.metadata, current.owner_id)
+        self._items[notification_id] = updated
+        return updated
+
     async def dismiss(self, owner_id: str, notification_id: str) -> Notification:
         current = self._required(owner_id, notification_id)
         updated = Notification(current.notification_id, current.title, current.message, current.severity, current.source, current.action_options, current.target_device, current.expires_at, current.dedup_key, current.created_at, current.delivered_at, datetime.now(UTC), current.metadata, current.owner_id)

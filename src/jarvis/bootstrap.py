@@ -85,9 +85,15 @@ from .intelligence.events.service import EventIntelligenceService
 from .briefings.service import BriefingService
 from .automation.service import AutomationService
 from .communications.intelligence.service import CommunicationIntelligenceService
+from .communications.intelligence.service import CommunicationFollowUpService
 from .agents.workers.coordination import WorkerCoordinator
 from .evaluation.service import EvaluationService
 from .evaluation.improvement import ControlledImprovementPolicy
+from .presence.service import PresenceService
+from .attention.policy import AttentionPolicy
+from .notifications.delivery import NotificationDeliveryCoordinator
+from .operations.service import PersonalOperationsService
+from .home.service import HomeContextService, HomeRoutineService
 
 
 class RuntimeState(StrEnum):
@@ -157,6 +163,13 @@ class JarvisRuntime:
     briefings: BriefingService
     automation: AutomationService
     communications_intelligence: CommunicationIntelligenceService
+    communication_followups: CommunicationFollowUpService
+    presence: PresenceService
+    attention: AttentionPolicy
+    notification_delivery: NotificationDeliveryCoordinator
+    operations: PersonalOperationsService
+    home_context: HomeContextService
+    home_routines: HomeRoutineService
     worker_coordinator: WorkerCoordinator
     evaluations: EvaluationService
     improvement_policy: ControlledImprovementPolicy
@@ -288,10 +301,18 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     automation = AutomationService(repository, event_bus, skill_executor=skill_executor, missions=missions, briefings=briefings, offline=offline, capabilities=capabilities)
     automation.notifications = notifications
     communications_intelligence = CommunicationIntelligenceService(repository, event_bus)
+    communication_followups = CommunicationFollowUpService(repository, event_bus, communications_intelligence)
     worker_coordinator = WorkerCoordinator(repository, event_bus, developer_gateway=None, permission=permission)
     evaluations = EvaluationService(repository, event_bus)
     evaluations.register_default_suites()
     improvement_policy = ControlledImprovementPolicy()
+    clients = ClientSessionService(repository, event_bus)
+    presence = PresenceService(world_state, voice_routing, clients, device_fabric, repository, event_bus)
+    attention = AttentionPolicy()
+    notification_delivery = NotificationDeliveryCoordinator(notifications, attention, presence, voice_routing, repository, event_bus, personalization=personalization)
+    operations = PersonalOperationsService(repository, event_bus, world_state, personalization, goals=goals, missions=missions, briefings=briefings, notifications=notifications, automation=automation, offline=offline)
+    home_context = HomeContextService(home, world_state, repository, event_bus)
+    home_routines = HomeRoutineService(home_context, home, repository, event_bus)
 
     async def experience_state(owner_id: str) -> dict[str, object]:
         devices = tuple(
@@ -318,6 +339,12 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         workspace_view = tuple(asdict(item) for item in await workspace_intelligence.list(owner_id))
         worker_view = tuple(asdict(item) for item in await worker_coordinator.list(owner_id))
         evaluation_view = tuple(evaluations.list(owner_id))
+        presence_view = asdict(await presence.snapshot(owner_id))
+        mode_view = asdict(await operations.mode(owner_id))
+        focus = await operations.focus(owner_id)
+        focus_view = asdict(focus) if focus else None
+        followup_view = tuple(asdict(item) for item in await communication_followups.list(owner_id, active_only=True))
+        home_view = asdict(await home_context.snapshot(owner_id))
         model = await models.health(ModelRoute.GENERAL_REASONING)
         current = runtime_ref.get("runtime")
         return {
@@ -339,11 +366,16 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
             "workspace": workspace_view,
             "worker_delegations": worker_view,
             "evaluations": evaluation_view,
+            "presence": presence_view,
+            "attention": {"mode": mode_view["mode"], "focus_active": focus_view is not None},
+            "operations": {"mode": mode_view, "recent": [asdict(item) for item in await operations.modes(owner_id)][:5]},
+            "focus": focus_view,
+            "follow_ups": followup_view,
+            "home": home_view,
         }
 
     experience_projection = ExperienceProjection(event_bus, experience_state, repository=repository)
     observability = ObservabilityService(event_bus)
-    clients = ClientSessionService(repository, event_bus)
     engineering = EngineeringService(
         repository, event_bus, permission, approval, audit,
         (JupyterEngineeringProvider(), KiCadEngineeringProvider()),
@@ -410,6 +442,14 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         owner_id = await maintenance_owner()
         return await world_state.expire(owner_id) if owner_id else 0
 
+    async def expire_presence() -> int:
+        owner_id = await maintenance_owner()
+        return await presence.expire(owner_id) if owner_id else 0
+
+    async def detect_followups() -> int:
+        owner_id = await maintenance_owner()
+        return len(await communication_followups.due(owner_id)) if owner_id else 0
+
     async def detect_proactive() -> int:
         owner_id = await maintenance_owner()
         return len(await proactive.detect(owner_id)) if owner_id else 0
@@ -429,6 +469,8 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
 
     scheduler.add("memory-maintenance", 300, maintain_memory)
     scheduler.add("world-state-expiry", 60, expire_world_state)
+    scheduler.add("presence-expiry", 60, expire_presence)
+    scheduler.add("communication-followups", 60, detect_followups)
     scheduler.add("goal-proactive-check", 60, detect_proactive)
     scheduler.add("event-intelligence-check", 60, detect_event_intelligence)
     scheduler.add("automation-check", 60, run_automation_tick)
@@ -489,6 +531,13 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         briefings=briefings,
         automation=automation,
         communications_intelligence=communications_intelligence,
+        communication_followups=communication_followups,
+        presence=presence,
+        attention=attention,
+        notification_delivery=notification_delivery,
+        operations=operations,
+        home_context=home_context,
+        home_routines=home_routines,
         worker_coordinator=worker_coordinator,
         evaluations=evaluations,
         improvement_policy=improvement_policy,

@@ -141,6 +141,12 @@ class HudState:
     workspace: tuple[dict[str, object], ...] = ()
     worker_delegations: tuple[dict[str, object], ...] = ()
     evaluations: tuple[dict[str, object], ...] = ()
+    presence: dict[str, object] = field(default_factory=dict)
+    attention: dict[str, object] = field(default_factory=dict)
+    operations: dict[str, object] = field(default_factory=dict)
+    focus: dict[str, object] | None = None
+    follow_ups: tuple[dict[str, object], ...] = ()
+    home: dict[str, object] = field(default_factory=dict)
     timeline: tuple[dict[str, object], ...] = ()
 
 

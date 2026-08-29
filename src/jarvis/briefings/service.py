@@ -29,7 +29,7 @@ class Briefing:
 
 
 class BriefingService:
-    TYPES = frozenset({"morning", "work_start", "project", "system", "deadline", "end_of_day", "weekly"})
+    TYPES = frozenset({"morning", "work_start", "study_start", "project", "system", "deadline", "end_of_day", "weekly"})
 
     def __init__(self, repository: RuntimeRepository, event_bus: InMemoryEventBus, *, dedup_seconds: float = 900.0) -> None:
         self.repository = repository
@@ -67,6 +67,10 @@ class BriefingService:
         if approvals:
             lines.append(f"Pending approvals: {len(approvals)}")
             evidence.extend(f"approval:{item['id']}" for item in approvals[:5])
+        followups = getattr(self.repository, "communication_followups", lambda *_args: [])(owner_id, ("open", "due"))
+        for followup in followups[:3]:
+            lines.append(f"Communication follow-up: {str(followup.get('summary', followup.get('thread_id', 'reply')))[:160]}")
+            evidence.append(f"communication:{followup['thread_id']}")
         if not lines:
             return None
         dedup_key = f"{owner_id}:{briefing_type}:{project_id or 'all'}:" + "|".join(evidence)
