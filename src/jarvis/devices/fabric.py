@@ -42,10 +42,12 @@ class DeviceFabricService:
         current = await self.get(owner_id, heartbeat.device_id)
         if current is None:
             raise KeyError(heartbeat.device_id)
+        was_online = current.status == DeviceStatus.ONLINE.value
         metadata = dict(current.metadata) | dict(heartbeat.metadata)
         updated = DeviceRecord(current.device_id, current.owner_id, current.name, current.role, current.transport, DeviceStatus.ONLINE.value, current.capabilities, current.trust_level, heartbeat.timestamp, current.room_id, metadata)
         self.repository.upsert_device_fabric(updated)
-        await self._emit("device.online", updated, {"heartbeat": heartbeat.timestamp.isoformat()}, EventState.COMPLETED)
+        if not was_online:
+            await self._emit("device.online", updated, {"reason": "heartbeat_transition", "heartbeat": heartbeat.timestamp.isoformat()}, EventState.COMPLETED)
         return updated
 
     async def mark_offline(self, owner_id: str, device_id: str, *, reason: str = "transport_disconnected") -> DeviceRecord:

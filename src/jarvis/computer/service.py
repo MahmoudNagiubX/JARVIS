@@ -19,7 +19,7 @@ from ..authority.audit.service import DurableAuditService
 from ..authority.approvals.service import DurableApprovalEngine
 from ..authority.permissions.engine import PolicyPermissionEngine
 from ..bus import InMemoryEventBus
-from ..contracts import ApprovalRequest, AuditRecord, ComputerAction, ComputerCapability, ComputerResult, DeviceIdentity, Identity, ToolContext
+from ..contracts import ApprovalRequest, AuditRecord, ComputerAction, ComputerCapability, ComputerController, ComputerResult, DeviceIdentity, Identity, ToolContext
 from ..events import Event, EventCategory, EventState
 from ..persistence.repositories import RuntimeRepository
 
@@ -167,7 +167,7 @@ class ComputerActionService:
 
     def __init__(
         self,
-        controller: WindowsNativeComputerController,
+        controller: ComputerController,
         repository: RuntimeRepository,
         event_bus: InMemoryEventBus,
         permission: PolicyPermissionEngine,
@@ -180,10 +180,37 @@ class ComputerActionService:
         self.permission = permission
         self.audit = audit
         self.approvals = approvals
-        self._pending: dict[str, tuple[ComputerAction, Identity, DeviceIdentity]] = {}
+        self._pending: dict[str, tuple[ComputerAction, Identity, DeviceIdentity, DeviceIdentity, str]] = {}
 
-    async def execute(self, action: ComputerAction, identity: Identity, device: DeviceIdentity, *, session_id: str = "computer", correlation_id: str | None = None) -> ComputerResult:
+    async def execute(
+        self,
+        action: ComputerAction,
+        identity: Identity,
+        device: DeviceIdentity,
+        *,
+        target_device: DeviceIdentity | None = None,
+        session_id: str = "computer",
+        correlation_id: str | None = None,
+    ) -> ComputerResult:
         correlation = correlation_id or f"computer-{uuid4()}"
+        target = target_device or device
+        adapter = "satellite" if target.device_id != device.device_id else "local"
+        if target.owner_id != identity.owner_id:
+            await self._audit(
+                identity,
+                device,
+                correlation,
+                "computer.target_rejected",
+                "denied",
+                {
+                    "action": action.action,
+                    "request_device_id": device.device_id,
+                    "target_device_id": target.device_id,
+                    "execution_adapter": adapter,
+                    "reason": "target_owner_mismatch",
+                },
+            )
+            return ComputerResult("denied", error_code="target_owner_mismatch")
         capability = f"computer.{action.action}"
         required = "computer.observe" if action.action in self._read_actions else "computer.input"
         decision = await self.permission.evaluate(identity, device, capability, {
@@ -191,36 +218,76 @@ class ComputerActionService:
             "required_capabilities": frozenset({required}),
             "risk_level": "read" if action.action in self._read_actions or action.action in self._safe_actions else "consequential",
         })
-        await self._audit(identity, device, correlation, "computer.permission_checked", decision.effect.value, {"action": action.action, "reason": decision.reason_code})
+        await self._audit(
+            identity,
+            device,
+            correlation,
+            "computer.permission_checked",
+            decision.effect.value,
+            {
+                "action": action.action,
+                "request_device_id": device.device_id,
+                "target_device_id": target.device_id,
+                "execution_adapter": adapter,
+                "reason": decision.reason_code,
+            },
+        )
         if decision.effect.value != "allow":
             if decision.effect.value == "require_approval" and self.approvals is not None:
                 approval_id = f"approval-{uuid4()}"
                 await self.approvals.request(ApprovalRequest(approval_id, capability, identity.owner_id, device.device_id, "computer action requires approval", datetime.now(UTC), datetime.now(UTC) + timedelta(minutes=10), {"action": action.action, "parameters": dict(action.parameters)}))
-                self._pending[approval_id] = (action, identity, device)
-                await self._emit("computer.action_requested", identity.owner_id, correlation, {"action": action.action, "approval_id": approval_id}, EventState.ACCEPTED)
+                self._pending[approval_id] = (action, identity, device, target, adapter)
+                await self._emit(
+                    "computer.action_requested",
+                    identity.owner_id,
+                    correlation,
+                    {
+                        "action": action.action,
+                        "approval_id": approval_id,
+                        "request_device_id": device.device_id,
+                        "target_device_id": target.device_id,
+                        "execution_adapter": adapter,
+                    },
+                    EventState.ACCEPTED,
+                )
                 return ComputerResult("approval_required", error_code=decision.reason_code, approval_id=approval_id)
             await self._emit("computer.action_failed", identity.owner_id, correlation, {"action": action.action, "reason": decision.reason_code}, EventState.FAILED)
             return ComputerResult("approval_required" if decision.effect.value == "require_approval" else "denied", error_code=decision.reason_code)
-        return await self._execute_controller(action, identity, device, session_id, correlation)
+        return await self._execute_controller(action, identity, device, target, adapter, session_id, correlation)
 
     async def decide(self, approval_id: str, approved: bool, decided_by: str) -> ComputerResult:
         pending = self._pending.get(approval_id)
         if pending is None or self.approvals is None:
             raise KeyError(approval_id)
-        action, identity, device = pending
+        action, identity, device, target, adapter = pending
         decision = await self.approvals.decide(approval_id, approved, decided_by)
         self._pending.pop(approval_id, None)
         if decision.status.value != "approved":
             return ComputerResult("denied", error_code=decision.status.value, approval_id=approval_id)
-        return await self._execute_controller(action, identity, device, "computer", f"computer-{approval_id}", approval_id)
+        return await self._execute_controller(action, identity, device, target, adapter, "computer", f"computer-{approval_id}", approval_id)
 
-    async def _execute_controller(self, action: ComputerAction, identity: Identity, device: DeviceIdentity, session_id: str, correlation: str, approval_id: str | None = None) -> ComputerResult:
-        await self._emit("computer.action_requested", identity.owner_id, correlation, {"action": action.action})
-        await self._emit("computer.action_started", identity.owner_id, correlation, {"action": action.action}, EventState.ACCEPTED)
-        result = await self.controller.execute(action, ToolContext(identity, device, session_id, correlation))
+    async def _execute_controller(
+        self,
+        action: ComputerAction,
+        identity: Identity,
+        request_device: DeviceIdentity,
+        target_device: DeviceIdentity,
+        adapter: str,
+        session_id: str,
+        correlation: str,
+        approval_id: str | None = None,
+    ) -> ComputerResult:
+        metadata = {
+            "request_device_id": request_device.device_id,
+            "target_device_id": target_device.device_id,
+            "execution_adapter": adapter,
+        }
+        await self._emit("computer.action_requested", identity.owner_id, correlation, {"action": action.action, **metadata})
+        await self._emit("computer.action_started", identity.owner_id, correlation, {"action": action.action, **metadata}, EventState.ACCEPTED)
+        result = await self.controller.execute(action, ToolContext(identity, target_device, session_id, correlation, metadata=metadata))
         event = "computer.action_completed" if result.status == "succeeded" else "computer.action_failed"
-        await self._emit(event, identity.owner_id, correlation, {"action": action.action, "error_code": result.error_code}, EventState.COMPLETED if result.status == "succeeded" else EventState.FAILED)
-        await self._audit(identity, device, correlation, event, result.status, {"action": action.action, "error_code": result.error_code})
+        await self._emit(event, identity.owner_id, correlation, {"action": action.action, "error_code": result.error_code, **metadata}, EventState.COMPLETED if result.status == "succeeded" else EventState.FAILED)
+        await self._audit(identity, request_device, correlation, event, result.status, {"action": action.action, "error_code": result.error_code, **metadata})
         return ComputerResult(result.status, result.output, result.error_code, result.verified, approval_id)
 
     async def _audit(self, identity: Identity, device: DeviceIdentity, correlation: str, event_type: str, outcome: str, metadata: dict[str, object]) -> None:

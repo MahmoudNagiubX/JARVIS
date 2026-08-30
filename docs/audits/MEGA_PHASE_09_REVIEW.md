@@ -20,26 +20,53 @@ implementation reuses the existing `WindowsSatelliteRegistry`, `DeviceFabric`,
 - Runnable typed Windows satellite agent using the existing bounded native
   computer controller. No shell, PowerShell, Python evaluation, or arbitrary
   executable operation was added.
-- Topology in health/HUD projections without credentials; model and voice
-  adapters remain explicit and lazy.
+- Product computer actions now resolve an explicit owner-scoped target and
+  pass through the single `ComputerActionService` policy/approval/audit path
+  before a local or satellite execution router. Remote execution records
+  request device, target device, and adapter without secret arguments.
+- Topology in health/HUD projections without credentials; public health is an
+  aggregate while authenticated topology retains useful detail. Model and
+  voice adapters remain explicit and lazy.
+- The existing satellite health job now expires stale transport sessions,
+  disconnects the registry, fails pending commands as `satellite_stale`, and
+  projects offline state to DeviceFabric and World State. Identity revocation
+  propagates through the existing EventBus to transport, DeviceFabric, and
+  World State.
+- Heartbeat freshness is retained without repeated lifecycle events or
+  World-State observation churn. Reconnect history is bounded, and satellite
+  credentials are environment-only for both the CLI and PowerShell launcher.
+- `runtime_role=satellite` fails closed in the core composer; the typed
+  `jarvis.satellite_agent` remains the only satellite runtime.
 - Workstation inventory and evidence record. No Ollama listener, authorized
   Venom host, or installed audio runtime was found; physical model, voice, and
   Venom acceptance remain deferred.
 
+## Independent GitHub Review Remediation
+
+The remediation started from the published Phase 09 commit
+`0bb1d0b219b36867ee261f8e0eee20ea5a6913ee` and stayed within the targeted
+review gaps. It did not restart Phase 09 or add a second authority. The new
+focused file is `tests/test_phase_nine_authority_integration.py`.
+
 ## Verification
 
-- Phase 09 focused suite: **18 passed, 0 failed**.
+- Published baseline before remediation: **95 passed, 0 failed**.
+- Focused remediation suite: **15 passed, 0 failed**.
+- Phase 09 focused suite including remediation: **33 passed, 0 failed**.
 - Phase 08 closure + regression: **13 passed, 0 failed**; regression subset is
   **9/9 passed**.
-- Full repository suite: **95 passed, 0 failed** using
+- Full repository suite after remediation: **110 passed, 0 failed** using
   `python -m unittest discover -s tests -v`.
 - `python -m compileall src tests`: PASS.
 - `git diff --check`: PASS.
 
-The focused suite covers typed non-blocking round trips, queue/replay
-idempotency, wrong owner/device/session, bounds, reconnect, revocation,
-header-only HTTP authentication, loopback profiles, typed satellite allowlists,
-result rejection, model probe behavior, and single VoiceCore identity.
+The remediation suite covers the product-facing remote authority path,
+actor/target separation, permission and approval ordering, cross-owner denial,
+no remote-to-local fallback, stale session reconciliation, pending stale
+failures, canonical revocation propagation, heartbeat coalescing, bounded
+reconnect history, public-health redaction, satellite role separation, and
+environment-only credentials. Existing transport, HTTP, model/voice, and
+deployment tests remain green.
 
 ## Architecture review
 
@@ -51,7 +78,15 @@ not modified.
 
 ## Physical acceptance
 
-Physical satellite, voice, model, and Venom acceptance are not claimed. The
-required next step is an explicitly authorized deployment with named host,
-credentials supplied outside source control, and evidence captured under the
-bounded physical-acceptance policy.
+The bounded physical computer authority-path scenario passed on 2026-08-30:
+the Core server and satellite agent ran as separate processes on `NIGHTFURY`,
+connected over loopback with an environment credential, and executed a
+non-dry-run `list_processes` observation through `CoreApplication` /
+`ComputerActionService` to the target. The result was verified and audit
+metadata matched the actor, target, and satellite adapter. Only a bounded
+count and correlation are committed in
+`docs/phase09/evidence/PHYSICAL_COMPUTER_AUTHORITY_ACCEPTANCE.json`.
+
+This is same-host physical acceptance, not a claim of a second physical node.
+Physical voice, local model, Venom, browser, Home Assistant, and external
+communications remain honestly deferred.

@@ -51,6 +51,22 @@ class WindowsComputerController:
         return ToolResult(status, dict(observation.output), observation.error_code, verified=status is ToolResultStatus.SUCCEEDED)
 
 
+class ComputerExecutionRouter:
+    """Select the local or satellite adapter after policy has admitted an action."""
+
+    def __init__(self, local: object, satellite: WindowsComputerController) -> None:
+        self.local = local
+        self.satellite = satellite
+
+    async def execute(self, action: ComputerAction, context: ToolContext) -> ToolResult:
+        adapter = context.metadata.get("execution_adapter", "local")
+        if adapter == "local":
+            return await self.local.execute(action, context)
+        if adapter == "satellite":
+            return await self.satellite.execute(action, context)
+        return ToolResult(ToolResultStatus.DENIED, error_code="execution_adapter_invalid")
+
+
 class UFOComputerController:
     """Reserved adapter boundary; Microsoft UFO is not a Phase 02 dependency."""
 

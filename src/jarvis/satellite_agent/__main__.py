@@ -15,11 +15,17 @@ def main() -> None:
     parser.add_argument("--owner-id", default=os.getenv("JARVIS_OWNER_ID"))
     parser.add_argument("--identity-id", default=os.getenv("JARVIS_IDENTITY_ID"))
     parser.add_argument("--device-id", default=os.getenv("JARVIS_NODE_ID"))
-    parser.add_argument("--credential", default=os.getenv("JARVIS_SATELLITE_CREDENTIAL"), help="credential held in memory only")
     parser.add_argument("--capability", action="append", dest="capabilities", default=None)
     parser.add_argument("--software-version", default="phase09")
     args = parser.parse_args()
-    required = {name: getattr(args, name) for name in ("core_url", "owner_id", "identity_id", "device_id", "credential")}
+    credential = os.getenv("JARVIS_SATELLITE_CREDENTIAL")
+    required = {
+        "core_url": args.core_url,
+        "owner_id": args.owner_id,
+        "identity_id": args.identity_id,
+        "device_id": args.device_id,
+        "JARVIS_SATELLITE_CREDENTIAL": credential,
+    }
     missing = [name for name, value in required.items() if not value]
     if missing:
         parser.error("missing required settings: " + ", ".join(missing))
@@ -31,7 +37,7 @@ def main() -> None:
         frozenset(args.capabilities or ("computer.observe",)),
         args.software_version,
     )
-    asyncio.run(WindowsSatelliteAgent(config, args.credential).run_forever())
+    asyncio.run(WindowsSatelliteAgent(config, credential).run_forever())
 
 
 if __name__ == "__main__":

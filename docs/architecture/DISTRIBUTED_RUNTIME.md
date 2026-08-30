@@ -21,8 +21,24 @@ bounded Windows native controller
 The transport is an adapter around the existing registry. It owns only
 session, queue, TTL, payload, replay, and heartbeat mechanics. It does not
 create a second scheduler, EventBus, approval engine, VoiceCore, or tool
-registry. Core-issued computer actions still pass through the existing typed
-computer boundary.
+registry. Product computer actions use this single authority flow:
+
+```text
+authenticated actor + request device
+        |
+ComputerActionService: permission -> approval -> audit
+        |
+owner-scoped target resolution
+        |
+ComputerExecutionRouter
+        +--> local WindowsNativeComputerController
+        +--> remote WindowsComputerController -> typed satellite transport
+```
+
+The requesting device and execution target are separate fields. An explicit
+remote target must belong to the same owner, remain non-revoked, declare the
+required capability, and have a fresh reachable session. It never silently
+falls back to the local controller.
 
 Runtime profiles are `test`, `development`, `live-workstation`, and
 `live-distributed`. `runtime_role` is `core` or `satellite`; node identity and
@@ -31,6 +47,11 @@ and the default voice adapters are NoOp. A profile reports topology in health
 and the experience projection without exposing credentials.
 
 The core marks a satellite online only after an accepted hello and refreshes
-its DeviceFabric and World State on heartbeat. Missing heartbeats are marked
-offline by the existing scheduler. Disconnect, revocation, reconnect, queue
-overflow, expired commands, and rejected results are observable failures.
+its DeviceFabric and World State on a real transition. Identical heartbeat
+refreshes advance `last_seen` without emitting duplicate lifecycle events or
+World-State observations. The existing scheduler expires sessions after the
+bounded stale threshold and projects transport, registry, DeviceFabric, and
+World State offline together. Canonical identity revocation propagates through
+the existing EventBus and fails pending work. Disconnect, revocation,
+reconnect, queue overflow, expired commands, and rejected results are
+observable failures; inactive reconnect history is bounded.

@@ -72,7 +72,7 @@ class WindowsSatelliteRegistry:
 
     def heartbeat(self, heartbeat: SatelliteHeartbeat) -> bool:
         connection = self._connections.get(heartbeat.session_id)
-        if connection is None or connection.hello.device_id != heartbeat.device_id:
+        if connection is None or connection.hello.device_id != heartbeat.device_id or connection.revoked or not connection.online:
             return False
         connection.last_heartbeat = heartbeat.timestamp
         connection.online = True
@@ -115,13 +115,16 @@ class WindowsSatelliteRegistry:
         connection.online = False
         return True
 
+    def retire(self, session_id: str) -> bool:
+        """Forget an inactive transport session after its pending work is settled."""
+        return self._connections.pop(session_id, None) is not None
+
     def revoke(self, device_id: str) -> bool:
-        changed = False
+        changed = device_id not in self._revoked_devices
+        self._revoked_devices.add(device_id)
         for connection in self._connections.values():
             if connection.device.device_id == device_id:
                 connection.online = False
                 connection.revoked = True
                 changed = True
-        if changed:
-            self._revoked_devices.add(device_id)
         return changed

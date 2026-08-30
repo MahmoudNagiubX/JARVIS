@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-08-30T08:03:33Z",
+  "host": "NIGHTFURY",
+  "core_profile": "development",
+  "satellite_device_id": "device-475a293c-c599-47be-ae48-9ac90a297b36",
+  "action": "list_processes",
+  "dry_run": false,
+  "permission_outcome": "allow",
+  "transport_session_result": "online",
+  "verified_controller_result": true,
+  "audit_event_correlation": "computer-56cbc865-b48a-4fff-9b4b-8059791b7753",
+  "audit_metadata_valid": true,
+  "bounded_process_count": 200,
+  "latency_ms": 658.26,
+  "result_status": "succeeded",
+  "acceptance": "PASS",
+  "scope": "Process-separated Core and satellite agent on the inspected Windows host over loopback; no second-host deployment is claimed."
+}

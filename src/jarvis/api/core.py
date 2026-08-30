@@ -198,7 +198,7 @@ class CoreApplication:
                 "voice_input_adapter": self.runtime.config.voice_input_adapter,
                 "voice_output_adapter": self.runtime.config.voice_output_adapter,
             },
-            "node_transport": self.runtime.satellite_transport.health(),
+            "node_transport": self.runtime.satellite_transport.public_health(),
         }
 
     async def satellite_connect(self, principal: DemoPrincipal, values: dict[str, object]) -> dict[str, Any]:
@@ -254,19 +254,25 @@ class CoreApplication:
         )
         if not accepted:
             return {"accepted": False, "reason": "satellite_session_invalid"}
+        current = await self.runtime.device_fabric.get(
+            principal.identity.owner_id,
+            principal.device.device_id,
+        )
+        was_online = current is not None and current.status == DeviceStatus.ONLINE.value
         await self.runtime.device_fabric.heartbeat(
             DeviceHeartbeat(principal.device.device_id, heartbeat.timestamp, {"transport": "http-long-poll", "session_id": session_id}),
             principal.identity.owner_id,
         )
-        await self.runtime.world_state.set_fact(
-            principal.identity.owner_id,
-            f"device.{principal.device.device_id}.online",
-            True,
-            source="satellite",
-            source_reference=session_id,
-            freshness_seconds=self.runtime.config.heartbeat_interval_seconds * 3,
-            device_id=principal.device.device_id,
-        )
+        if not was_online:
+            await self.runtime.world_state.set_fact(
+                principal.identity.owner_id,
+                f"device.{principal.device.device_id}.online",
+                True,
+                source="satellite",
+                source_reference=session_id,
+                freshness_seconds=self.runtime.config.heartbeat_interval_seconds * 3,
+                device_id=principal.device.device_id,
+            )
         return {"accepted": True, "session_id": session_id, "sequence": heartbeat.sequence}
 
     async def satellite_poll(self, principal: DemoPrincipal, session_id: str, wait_seconds: float) -> dict[str, Any]:
@@ -666,9 +672,24 @@ class CoreApplication:
         parameters: dict[str, object] | None = None,
         *,
         dry_run: bool = True,
+        target_device_id: str | None = None,
     ) -> dict[str, Any]:
+        target = device
+        if target_device_id is not None:
+            target = await self.runtime.identity.device(target_device_id)
+            if target is None:
+                return {"status": "denied", "output": {}, "error_code": "target_not_found", "verified": False, "approval_id": None}
+            if target.owner_id != identity.owner_id:
+                return {"status": "denied", "output": {}, "error_code": "target_owner_mismatch", "verified": False, "approval_id": None}
+            target_record = await self.runtime.device_fabric.get(identity.owner_id, target_device_id)
+            target_row = self.runtime.repository.device(target_device_id)
+            if (target_row is not None and target_row.get("status") != "active") or (target_record is not None and target_record.status == DeviceStatus.REVOKED.value):
+                return {"status": "denied", "output": {}, "error_code": "device_revoked", "verified": False, "approval_id": None}
         result = await self.runtime.computer_actions.execute(
-            ComputerAction(action, parameters or {}, dry_run), identity, device
+            ComputerAction(action, parameters or {}, dry_run),
+            identity,
+            device,
+            target_device=target,
         )
         return asdict(result)
 

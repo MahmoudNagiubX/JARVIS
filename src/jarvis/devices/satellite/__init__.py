@@ -8,7 +8,7 @@ from .contracts import (
     SatelliteHello,
 )
 from .registry import WindowsSatelliteRegistry
-from .transport import ResultSubmission, SatelliteTransportService
+from .transport import ExpiredSatelliteSession, ResultSubmission, SatelliteTransportService
 
 __all__ = [
     "CommandObservation",
@@ -18,5 +18,6 @@ __all__ = [
     "SatelliteHello",
     "WindowsSatelliteRegistry",
     "ResultSubmission",
+    "ExpiredSatelliteSession",
     "SatelliteTransportService",
 ]

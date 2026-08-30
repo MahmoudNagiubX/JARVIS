@@ -7,10 +7,12 @@ operations listed below:
 `list_processes`, `inspect_file`, `search_files`, `open_file`, `open_folder`,
 `open_application`, and `stop_safe_process`.
 
-The client must receive an owner-bound credential through an environment
-secret or an external secret manager. It keeps that value in memory and sends
-it only as an Authorization header. It does not place credentials in URLs,
-JSON bodies, logs, or source control.
+The client must receive an owner-bound credential through the
+`JARVIS_SATELLITE_CREDENTIAL` environment variable or an external secret
+manager. There is no credential CLI argument or PowerShell `-Credential`
+parameter. It keeps that value in memory and sends it only as an Authorization
+header. It does not place credentials in URLs, JSON bodies, logs, or source
+control.
 
 Example environment (loopback core only):
 
@@ -33,5 +35,7 @@ elevate privileges, or claim physical acceptance from a mock.
 Acceptance requires a real Windows process, a real owner-bound enrollment,
 heartbeat freshness, a harmless observation, an allowlisted action, rejection
 of an unsupported typed operation, reconnect, revocation, and evidence of
-offline recovery. If the core is unavailable, the client reports transport
-failure and never reports command success.
+offline recovery. The completed same-host authority-path evidence is recorded
+under `docs/phase09/evidence/PHYSICAL_COMPUTER_AUTHORITY_ACCEPTANCE.json`.
+It does not claim a second physical node. If the core is unavailable, the
+client reports transport failure and never reports command success.

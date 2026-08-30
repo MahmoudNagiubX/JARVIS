@@ -15,7 +15,9 @@ import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from ...bus import InMemoryEventBus
 from ...contracts import DeviceIdentity, Identity
+from ...events import Event, EventCategory, EventState
 from ...persistence.repositories import RuntimeRepository
 
 
@@ -71,8 +73,9 @@ def _credential_parts(raw: str) -> tuple[str, str] | None:
 class IdentityService:
     """Fail-closed owner, agent, device, enrollment, and credential service."""
 
-    def __init__(self, repository: RuntimeRepository) -> None:
+    def __init__(self, repository: RuntimeRepository, event_bus: InMemoryEventBus | None = None) -> None:
         self.repository = repository
+        self.event_bus = event_bus
 
     async def bootstrap_owner(self, display_name: str) -> Identity:
         name = display_name.strip()
@@ -197,4 +200,20 @@ class IdentityService:
         return tuple(result)
 
     async def revoke_device(self, device_id: str) -> None:
-        self.repository.revoke_device(device_id, datetime.now(UTC))
+        row = self.repository.device(device_id)
+        if row is None:
+            raise KeyError(device_id)
+        revoked_at = datetime.now(UTC)
+        self.repository.revoke_device(device_id, revoked_at)
+        if self.event_bus is None:
+            return
+        event = Event.create(
+            "device.revoked",
+            EventCategory.DEVICE,
+            correlation_id=f"device-{device_id}",
+            actor_id=row["owner_id"],
+            payload={"owner_id": row["owner_id"], "device_id": device_id},
+            state=EventState.COMPLETED,
+        )
+        self.repository.append_event(event)
+        await self.event_bus.publish(event)

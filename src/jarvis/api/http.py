@@ -473,6 +473,7 @@ class CoreHttpServer:
                             principal.identity, principal.device, str(body["action"]),
                             body.get("parameters") if isinstance(body.get("parameters"), dict) else {},
                             dry_run=bool(body.get("dry_run", True)),
+                            target_device_id=body.get("target_device_id") if isinstance(body.get("target_device_id"), str) else None,
                         ))
                         self._respond(HTTPStatus.OK, result)
                         return

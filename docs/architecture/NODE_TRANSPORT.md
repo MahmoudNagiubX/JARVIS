@@ -25,6 +25,17 @@ poll, heartbeat, result, and disconnect to the authenticated owner, device,
 and session. Query-string credentials are rejected. No route accepts shell,
 PowerShell, Python evaluation, or arbitrary executable text.
 
+The health scheduler calls the transport's bounded stale-session expiration.
+Expired sessions are disconnected from the registry, pending commands fail as
+`satellite_stale`, and the same transition is projected to DeviceFabric and
+World State. Heartbeats update freshness but lifecycle events are coalesced;
+reconnect keeps only a bounded inactive history. Canonical
+`device.revoked` events invalidate the transport and deny future connects.
+
+Public `/health` returns only aggregate transport fields (`transport`,
+`available`, `online_sessions`, and `degraded`). Authenticated experience
+topology may use the detailed view with device/session state.
+
 Long-poll is an adapter choice, not a new authority. A future authorized
 transport may replace it while preserving the same typed contracts and
 security ordering.

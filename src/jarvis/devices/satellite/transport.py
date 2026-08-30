@@ -45,6 +45,13 @@ class _TransportSession:
 
 
 @dataclass(frozen=True, slots=True)
+class ExpiredSatelliteSession:
+    session_id: str
+    owner_id: str
+    device_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class ResultSubmission:
     accepted: bool
     duplicate: bool = False
@@ -65,6 +72,7 @@ class SatelliteTransportService:
     MAX_COMMAND_BYTES = 64 * 1024
     MAX_RESULT_BYTES = 256 * 1024
     MAX_COMPLETED = 4096
+    MAX_INACTIVE_SESSIONS = 32
     ALLOWED_RESULT_STATUSES = frozenset({"completed", "failed", "denied"})
 
     def __init__(
@@ -112,6 +120,20 @@ class SatelliteTransportService:
     async def revoke(self, device_id: str) -> bool:
         return await asyncio.to_thread(self._revoke, device_id)
 
+    async def expire_stale_sessions(self, now: datetime | None = None) -> tuple[ExpiredSatelliteSession, ...]:
+        return await asyncio.to_thread(self._expire_stale_sessions, now)
+
+    def public_health(self) -> dict[str, object]:
+        with self._lock:
+            online = sum(1 for session in self._sessions.values() if session.online)
+            total = len(self._sessions)
+            return {
+                "transport": "http-long-poll",
+                "available": online > 0,
+                "online_sessions": online,
+                "degraded": total > online,
+            }
+
     def health(self, *, include_owner: bool = False) -> dict[str, object]:
         with self._lock:
             sessions = []
@@ -156,6 +178,7 @@ class SatelliteTransportService:
                     self._fail_pending(previous, "satellite_reconnected")
                     previous.online = False
                 self.registry.disconnect(previous_id)
+                self.registry.retire(previous_id)
             session_ref: dict[str, str] = {}
 
             async def handler(command: SatelliteCommand) -> CommandObservation:
@@ -172,6 +195,7 @@ class SatelliteTransportService:
                 queue.Queue(maxsize=self.max_queue_per_device),
             )
             self._device_sessions[device.device_id] = welcome.session_id
+            self._prune_inactive_sessions()
             return CoreWelcome(True, welcome.session_id, None, int(self.heartbeat_interval_seconds))
 
     async def _dispatch(self, session_id: str, command: SatelliteCommand) -> CommandObservation:
@@ -248,6 +272,25 @@ class SatelliteTransportService:
             session.last_heartbeat = heartbeat.timestamp
             return True
 
+    def _expire_stale_sessions(self, now: datetime | None = None) -> tuple[ExpiredSatelliteSession, ...]:
+        current = now or datetime.now(UTC)
+        if current.tzinfo is None:
+            raise ValueError("stale-session time must be timezone-aware")
+        cutoff = current.astimezone(UTC) - timedelta(seconds=max(30.0, self.heartbeat_interval_seconds * 3))
+        expired: list[ExpiredSatelliteSession] = []
+        with self._lock:
+            for session in tuple(self._sessions.values()):
+                if not session.online or session.last_heartbeat >= cutoff:
+                    continue
+                self._fail_pending(session, "satellite_stale")
+                session.online = False
+                self.registry.disconnect(session.session_id)
+                if self._device_sessions.get(session.device_id) == session.session_id:
+                    self._device_sessions.pop(session.device_id, None)
+                expired.append(ExpiredSatelliteSession(session.session_id, session.owner_id, session.device_id))
+            self._prune_inactive_sessions()
+        return tuple(expired)
+
     def _submit_result(self, owner_id: str, device_id: str, session_id: str, observation: CommandObservation) -> ResultSubmission:
         try:
             if not observation.command_id.strip() or observation.status not in self.ALLOWED_RESULT_STATUSES:
@@ -293,6 +336,8 @@ class SatelliteTransportService:
             if session:
                 self._fail_pending(session, "device_revoked")
                 session.online = False
+            self._device_sessions.pop(device_id, None)
+            self._prune_inactive_sessions()
             return changed or session is not None
 
     def _session_for(self, session_id: str, owner_id: str, device_id: str) -> _TransportSession | None:
@@ -313,6 +358,12 @@ class SatelliteTransportService:
     def _fail_pending(self, session: _TransportSession, error_code: str) -> None:
         for pending in tuple(session.pending.values()):
             self._complete(session, pending, CommandObservation(pending.command.command_id, "failed", error_code=error_code))
+
+    def _prune_inactive_sessions(self) -> None:
+        inactive = [session for session in self._sessions.values() if not session.online]
+        inactive.sort(key=lambda session: session.last_heartbeat)
+        for session in inactive[:-self.MAX_INACTIVE_SESSIONS]:
+            self._sessions.pop(session.session_id, None)
 
 
 def _encoded_size(value: object) -> int:

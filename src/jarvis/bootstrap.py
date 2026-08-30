@@ -19,7 +19,7 @@ from .agents.runtime.runtime import AgentRuntime
 from .autonomy.policy import AutonomyPolicy
 from .capabilities.registry import CapabilityRegistry
 from .communications.hub import CommunicationsHub, LocalCommunicationChannel
-from .computer.controller import WindowsComputerController
+from .computer.controller import ComputerExecutionRouter, WindowsComputerController
 from .computer.service import ComputerActionService, WindowsNativeComputerController
 from .context.assembler import ContextAssembler
 from .contracts import (
@@ -254,6 +254,8 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     """Compose the foundation without opening I/O or loading any model."""
 
     effective_config = config or JarvisConfig.from_env()
+    if effective_config.runtime_role == "satellite":
+        raise ValueError("satellite role must use python -m jarvis.satellite_agent")
     database_path = ":memory:" if effective_config.environment in {"test", "offline-test"} else effective_config.database_path
     database = SQLiteDatabase(database_path)
     backup_service = SQLiteBackupService(database)
@@ -281,8 +283,10 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     proactive = DurableProactiveService(repository, event_bus, world_state, goals, tool_service, audit, autonomy)
     capabilities = CapabilityRegistry()
     device_fabric = DeviceFabricService(repository, event_bus, audit)
-    computer_controller = WindowsNativeComputerController()
-    computer_actions = ComputerActionService(computer_controller, repository, event_bus, permission, audit, approval)
+    local_computer_controller = WindowsNativeComputerController()
+    satellite_computer_controller = WindowsComputerController(satellite)
+    computer_router = ComputerExecutionRouter(local_computer_controller, satellite_computer_controller)
+    computer_actions = ComputerActionService(computer_router, repository, event_bus, permission, audit, approval)
     browser_controller = LocalBrowserController()
     browser_actions = BrowserActionService(browser_controller, repository, event_bus, permission, audit, approval)
     home = HomeActionService(None, repository, event_bus, permission, audit, RestrictedMQTTTransport())
@@ -330,6 +334,28 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     home_context = HomeContextService(home, world_state, repository, event_bus)
     home_routines = HomeRoutineService(home_context, home, repository, event_bus)
     operations.home_routines = home_routines
+
+    async def propagate_device_revocation(event: Event) -> None:
+        device_id = event.payload.get("device_id")
+        owner_id = event.payload.get("owner_id")
+        if not isinstance(device_id, str) or not isinstance(owner_id, str):
+            return
+        await satellite_transport.revoke(device_id)
+        try:
+            await device_fabric.revoke(owner_id, device_id)
+        except KeyError:
+            pass
+        await world_state.set_fact(
+            owner_id,
+            f"device.{device_id}.online",
+            False,
+            source="satellite",
+            source_reference=event.event_id,
+            freshness_seconds=effective_config.heartbeat_interval_seconds * 3,
+            device_id=device_id,
+        )
+
+    event_bus.subscribe("device.revoked", propagate_device_revocation)
 
     async def experience_state(owner_id: str) -> dict[str, object]:
         devices = tuple(
@@ -493,14 +519,22 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         return len(await automation.run_schedule(owner_id)) if owner_id else 0
 
     async def refresh_satellite_health() -> int:
-        owner_id = await maintenance_owner()
-        if not owner_id:
-            return 0
-        changed = await device_fabric.mark_stale_offline(
-            owner_id,
-            max_age_seconds=max(30, int(effective_config.heartbeat_interval_seconds * 3)),
-        )
-        return len(changed)
+        expired = await satellite_transport.expire_stale_sessions()
+        for session in expired:
+            try:
+                await device_fabric.mark_offline(session.owner_id, session.device_id, reason="satellite_stale")
+            except KeyError:
+                continue
+            await world_state.set_fact(
+                session.owner_id,
+                f"device.{session.device_id}.online",
+                False,
+                source="satellite",
+                source_reference=session.session_id,
+                freshness_seconds=effective_config.heartbeat_interval_seconds * 3,
+                device_id=session.device_id,
+            )
+        return len(expired)
 
     async def refresh_health() -> dict[str, object]:
         await offline.refresh()
@@ -523,7 +557,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         event_bus=event_bus,
         database=database,
         repository=repository,
-        identity=RuntimeIdentityService(repository),
+        identity=RuntimeIdentityService(repository, event_bus),
         permission=permission,
         approval=approval,
         audit=audit,
@@ -543,7 +577,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         workspace=workspace_context,
         scheduler=scheduler,
         venom=VenomNode(),
-        computer=WindowsComputerController(satellite),
+        computer=satellite_computer_controller,
         browser=browser_controller,
         voice=voice,
         stt=stt,

@@ -9,7 +9,7 @@
 | pgvector | DEFERRED | No PostgreSQL deployment or extension available |
 | Ollama/Qwen live | PARTIAL | Opt-in probe exists; no local Ollama/listener |
 | Physical voice | DEFERRED | No physical voice session run; NoOp defaults |
-| Windows satellite | PARTIAL | Authenticated bounded HTTP transport, typed agent, no physical satellite acceptance |
+| Windows satellite | PASS | Same-host process-separated Core/typed agent authority-path observation passed; second-host deployment not claimed; bounded evidence in `docs/phase09/evidence/PHYSICAL_COMPUTER_AUTHORITY_ACCEPTANCE.json` |
 | Computer control | PARTIAL | Windows-safe/dry-run boundaries tested; no physical destructive actions |
 | Browser/Playwright | PARTIAL | Deterministic controller tested; no Node/Playwright |
 | Authenticated WebSocket | PARTIAL | Loopback handshake, auth, topic allowlist, bounded queue/lifetime; no full client-frame adapter |
