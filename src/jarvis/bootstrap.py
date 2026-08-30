@@ -439,7 +439,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     )
     engineering_worker = EngineeringWorker(engineering, event_bus, repository)
     research = ResearchService(repository, event_bus, permission, audit, local=LocalDocumentProvider((str(Path.cwd()),)))
-    perception_router = DesktopPerceptionRouter(windows_perception_provider, satellite, satellite_transport)
+    perception_router = DesktopPerceptionRouter(windows_perception_provider, satellite, satellite_transport, device_lookup=device_fabric.get)
     perception = PerceptionService(
         repository, event_bus, permission, audit, provider=windows_perception_provider,
         router=perception_router, desktop_context=desktop_context, device_lookup=device_fabric.get,

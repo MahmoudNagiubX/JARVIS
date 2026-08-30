@@ -668,7 +668,16 @@ class CoreApplication:
 
     async def perception_latest(self, identity: Identity, device: DeviceIdentity, values: dict[str, object] | None = None) -> dict[str, Any]:
         values = values or {}
-        return asdict(await self.runtime.perception.latest_observation(identity, device, observation_id=values.get("observation_id") if isinstance(values.get("observation_id"), str) else None, session_id=str(values.get("session_id", "perception"))))
+        target = await self.runtime.perception.resolve_target(identity, device, values.get("target_device_id"))
+        if target is None:
+            return {"status": "denied", "error_code": "target_device_missing"}
+        return asdict(await self.runtime.perception.latest_observation(
+            identity,
+            device,
+            target_device=target,
+            observation_id=values.get("observation_id") if isinstance(values.get("observation_id"), str) else None,
+            session_id=str(values.get("session_id", "perception")),
+        ))
 
     async def perception_window(self, identity: Identity, device: DeviceIdentity, window: str) -> dict[str, Any]:
         return asdict(await self.runtime.perception.capture_window(identity, device, window))

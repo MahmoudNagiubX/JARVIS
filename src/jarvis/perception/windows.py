@@ -197,6 +197,7 @@ class WindowsDesktopProvider:
         title = title_buffer.value[:300] or None
         class_buffer = ctypes.create_unicode_buffer(257)
         self._user32.GetClassNameW(hwnd, class_buffer, len(class_buffer))
+        window_class = class_buffer.value[:200] or None
         process_id = wintypes.DWORD()
         self._user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
         process_name = self._process_name(int(process_id.value))
@@ -205,9 +206,9 @@ class WindowsDesktopProvider:
             return None
         window_ref = f"window-{uuid4()}"
         self._window_refs[window_ref] = _WindowHandle(
-            hwnd, int(process_id.value), _fingerprint(title), now + timedelta(seconds=self.window_ref_ttl_seconds)
+            hwnd, int(process_id.value), _fingerprint(title), window_class, now + timedelta(seconds=self.window_ref_ttl_seconds)
         )
-        return DesktopWindow(window_ref, title, process_name, int(process_id.value) or None, class_buffer.value[:200] or None, VisualRegion(*rect), True, active)
+        return DesktopWindow(window_ref, title, process_name, int(process_id.value) or None, window_class, VisualRegion(*rect), True, active)
 
     def _process_name(self, process_id: int) -> str | None:
         if not process_id:
@@ -238,6 +239,16 @@ class WindowsDesktopProvider:
         if not self._user32.IsWindow(entry.hwnd) or not self._user32.IsWindowVisible(entry.hwnd):
             self._window_refs.pop(window_ref, None)
             raise ValueError("window_ref_expired")
+        process_id = wintypes.DWORD()
+        self._user32.GetWindowThreadProcessId(entry.hwnd, ctypes.byref(process_id))
+        if int(process_id.value) != entry.process_id:
+            self._window_refs.pop(window_ref, None)
+            raise ValueError("window_ref_expired")
+        class_buffer = ctypes.create_unicode_buffer(257)
+        self._user32.GetClassNameW(entry.hwnd, class_buffer, len(class_buffer))
+        if (class_buffer.value[:200] or None) != entry.window_class:
+            self._window_refs.pop(window_ref, None)
+            raise ValueError("window_ref_changed")
         return entry.hwnd
 
     def _gdi_capture(self, left: int, top: int, width: int, height: int) -> TransientFrame:
@@ -294,12 +305,13 @@ class _BITMAPINFO(ctypes.Structure):
 
 
 class _WindowHandle:
-    __slots__ = ("hwnd", "process_id", "title_fingerprint", "expires_at")
+    __slots__ = ("hwnd", "process_id", "title_fingerprint", "window_class", "expires_at")
 
-    def __init__(self, hwnd: int, process_id: int, title_fingerprint: str, expires_at: datetime) -> None:
+    def __init__(self, hwnd: int, process_id: int, title_fingerprint: str, window_class: str | None, expires_at: datetime) -> None:
         self.hwnd = hwnd
         self.process_id = process_id
         self.title_fingerprint = title_fingerprint
+        self.window_class = window_class
         self.expires_at = expires_at
 
 

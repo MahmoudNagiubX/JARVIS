@@ -4,30 +4,48 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from ..contracts import DesktopContextSnapshot, DeviceIdentity, ScreenObservation, VisualElement, VisualRegion
 from ..devices.satellite.contracts import SatelliteCommand
 from ..devices.satellite.registry import WindowsSatelliteRegistry
 from ..devices.satellite.transport import SatelliteTransportService
-from .windows import WindowsDesktopProvider
+
+
+DeviceLookup = Callable[[str, str], Awaitable[object | None]]
 
 
 class DesktopPerceptionRouter:
     """Select one existing local provider or the existing typed satellite transport."""
 
-    def __init__(self, local: object, satellite: WindowsSatelliteRegistry, transport: SatelliteTransportService) -> None:
+    def __init__(
+        self,
+        local: object,
+        satellite: WindowsSatelliteRegistry,
+        transport: SatelliteTransportService,
+        device_lookup: DeviceLookup | None = None,
+    ) -> None:
         self.local = local
         self.satellite = satellite
         self.transport = transport
+        self.device_lookup = device_lookup
 
     def adapter_for(self, target: DeviceIdentity) -> str:
-        return "satellite" if self.satellite.session_for_device(target.device_id) is not None else "local"
+        if self.satellite.session_for_device(target.device_id) is not None:
+            return "satellite"
+        return "satellite" if self.satellite.status(target.device_id) in {"online", "offline", "revoked"} else "local"
 
-    async def desktop_context(self, target: DeviceIdentity, *, owner_id: str, session_id: str, force_satellite: bool = False) -> DesktopContextSnapshot:
-        adapter = self.adapter_for(target)
-        if force_satellite and adapter != "satellite":
+    async def desktop_context(
+        self,
+        target: DeviceIdentity,
+        *,
+        owner_id: str,
+        session_id: str,
+        request_device_id: str | None = None,
+    ) -> DesktopContextSnapshot:
+        adapter = await self._adapter_for(target, owner_id=owner_id, request_device_id=request_device_id)
+        if adapter == "unavailable":
             raise RuntimeError("perception_target_offline")
         if adapter == "satellite":
             connection = self.satellite.session_for_device(target.device_id)
@@ -53,13 +71,13 @@ class DesktopPerceptionRouter:
         *,
         owner_id: str,
         session_id: str,
+        request_device_id: str | None = None,
         window_ref: str | None = None,
         region: VisualRegion | None = None,
         mode: str = "screen",
-        force_satellite: bool = False,
     ) -> ScreenObservation:
-        adapter = self.adapter_for(target)
-        if force_satellite and adapter != "satellite":
+        adapter = await self._adapter_for(target, owner_id=owner_id, request_device_id=request_device_id)
+        if adapter == "unavailable":
             raise RuntimeError("perception_target_offline")
         if adapter == "satellite":
             connection = self.satellite.session_for_device(target.device_id)
@@ -91,6 +109,22 @@ class DesktopPerceptionRouter:
             )
         result = provider.capture(target.device_id, window_ref, region)
         return await result if hasattr(result, "__await__") else result
+
+    async def _adapter_for(self, target: DeviceIdentity, *, owner_id: str, request_device_id: str | None) -> str:
+        adapter = self.adapter_for(target)
+        if adapter == "satellite":
+            return adapter
+        if self.device_lookup is not None:
+            record = await self.device_lookup(owner_id, target.device_id)
+            if record is not None:
+                transport = str(getattr(record, "transport", ""))
+                if transport == "http-long-poll":
+                    return "satellite"
+                if request_device_id is not None and request_device_id != target.device_id:
+                    return "unavailable"
+        elif request_device_id is not None and request_device_id != target.device_id:
+            return "unavailable"
+        return "local"
 
 
 def _snapshot_from_mapping(value: object, device_id: str) -> DesktopContextSnapshot:

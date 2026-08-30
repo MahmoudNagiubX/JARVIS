@@ -69,8 +69,9 @@ class WindowsSatelliteAgent:
             raise ValueError("satellite intervals must be positive")
         self.config = config
         self._credential = credential
-        self._controller = controller or WindowsNativeComputerController()
-        self._perception_provider = perception_provider or WindowsDesktopProvider()
+        shared_provider = perception_provider or WindowsDesktopProvider()
+        self._perception_provider = shared_provider
+        self._controller = controller or WindowsNativeComputerController(perception_provider=shared_provider)
         self._opener = opener
         self._session_id: str | None = None
         self._sequence = 0

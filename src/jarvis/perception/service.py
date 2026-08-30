@@ -175,13 +175,15 @@ class PerceptionService:
         identity: Identity,
         device: DeviceIdentity,
         *,
+        target_device: DeviceIdentity | None = None,
         observation_id: str | None = None,
         session_id: str = "perception",
     ) -> PerceptionResult:
-        denied = await self._authorize(identity, device, device, require_pixels=False)
+        target = target_device or device
+        denied = await self._authorize(identity, device, target, require_pixels=False)
         if denied is not None:
             return denied
-        value = self.cache.get(identity.owner_id, device.device_id, session_id, observation_id, now=datetime.now(UTC)) if observation_id else self.cache.latest(identity.owner_id, device.device_id, session_id)
+        value = self.cache.get(identity.owner_id, target.device_id, session_id, observation_id, now=datetime.now(UTC)) if observation_id else self.cache.latest(identity.owner_id, target.device_id, session_id)
         if value is None:
             return PerceptionResult("failed", error_code="observation_not_found_or_expired")
         if isinstance(value, DesktopContextSnapshot):
@@ -260,9 +262,9 @@ class PerceptionService:
             return PerceptionResult("deferred" if not getattr(self.provider, "available", False) else "failed", error_code=code)
 
     async def capture_window(self, identity: Identity, device: DeviceIdentity, window: str, *, session_id: str = "perception") -> PerceptionResult:
-        if not window.strip() or len(window) > 300:
+        if not isinstance(window, str) or not window.strip() or len(window) > 300:
             raise ValueError("window must be bounded")
-        return await self.capture_screen(identity, device, window=window, session_id=session_id)
+        return await self.observe_screen(identity, device, target_device=device, window_ref=window, mode="screen", session_id=session_id)
 
     def clear(self) -> None:
         self.cache.clear()
@@ -317,8 +319,7 @@ class PerceptionService:
 
     async def _desktop_snapshot(self, identity: Identity, request: DeviceIdentity, target: DeviceIdentity, session_id: str) -> DesktopContextSnapshot:
         if self.router is not None:
-            force_satellite = target.device_id != request.device_id
-            return await self.router.desktop_context(target, owner_id=identity.owner_id, session_id=session_id, force_satellite=force_satellite)
+            return await self.router.desktop_context(target, owner_id=identity.owner_id, session_id=session_id, request_device_id=request.device_id)
         context = self.provider.desktop_context(target.device_id) if hasattr(self.provider, "desktop_context") else DesktopContextSnapshot(f"snapshot-{target.device_id}", target.device_id, datetime.now(UTC), source=getattr(self.provider, "name", "local"), confidence=0.0)
         return await context if hasattr(context, "__await__") else context
 
@@ -327,7 +328,7 @@ class PerceptionService:
             if region.x + region.width > context.display_width or region.y + region.height > context.display_height:
                 raise ValueError("capture_region_out_of_bounds")
         if self.router is not None:
-            return await self.router.screen(target, owner_id=identity.owner_id, session_id=session_id, window_ref=window_ref, region=region, mode=mode, force_satellite=target.device_id != request.device_id)
+            return await self.router.screen(target, owner_id=identity.owner_id, session_id=session_id, request_device_id=request.device_id, window_ref=window_ref, region=region, mode=mode)
         result = self.provider.capture(target.device_id, window_ref, region)
         return self._metadata_only(await result if hasattr(result, "__await__") else result)
 

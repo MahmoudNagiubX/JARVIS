@@ -5,6 +5,7 @@ import platform
 import unittest
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 from jarvis.authority.identity.service import EnrollmentGrant
 from jarvis.api.core import CoreApplication, DemoPrincipal
@@ -18,6 +19,7 @@ from jarvis.contracts import (
     LLMResponse,
     PerceptionPrivacyMode,
     ScreenObservation,
+    ToolContext,
     ToolResultRetention,
     VisualRegion,
 )
@@ -25,9 +27,9 @@ from jarvis.perception.cache import ObservationCache
 from jarvis.perception.frame import TransientFrame, analyze_and_release
 from jarvis.perception.privacy import PerceptionPrivacyPolicy
 from jarvis.perception.providers import StaticPerceptionProvider
-from jarvis.perception.windows import WindowsDesktopProvider
+from jarvis.perception.windows import WindowsDesktopProvider, _WindowHandle
 from jarvis.satellite_agent.agent import WindowsSatelliteAgent, SatelliteAgentConfig
-from jarvis.devices.satellite.contracts import SatelliteCommand, validate_command, validate_perception_output
+from jarvis.devices.satellite.contracts import CommandObservation, SatelliteCommand, validate_command, validate_perception_output
 
 
 SENTINEL = "VERY_SECRET_SCREEN_SENTINEL_123"
@@ -42,6 +44,57 @@ class _MetadataProvider(StaticPerceptionProvider):
     def desktop_context(self, device_id: str) -> DesktopContextSnapshot:
         window = DesktopWindow("window-test", self.title, self.process_name, 42, "Notepad", VisualRegion(0, 0, 800, 600), True, True)
         return DesktopContextSnapshot("snapshot-test", device_id, datetime.now(UTC), window, (window,), 1920, 1080, "test-provider", 1.0)
+
+
+class _CountingProvider(_MetadataProvider):
+    def __init__(self, *, process_name: str = "notepad.exe", title: str = "safe") -> None:
+        super().__init__(process_name=process_name, title=title)
+        self.context_calls = 0
+        self.capture_calls = 0
+
+    def desktop_context(self, device_id: str) -> DesktopContextSnapshot:
+        self.context_calls += 1
+        return super().desktop_context(device_id)
+
+    async def capture(self, *args, **kwargs) -> ScreenObservation:
+        self.capture_calls += 1
+        return await super().capture(*args, **kwargs)
+
+
+class _SharedWindowProvider(_MetadataProvider):
+    def __init__(self) -> None:
+        super().__init__(title="shared window")
+        self.focused: str | None = None
+
+    def desktop_context(self, device_id: str) -> DesktopContextSnapshot:
+        window = DesktopWindow("window-shared", "shared window", "notepad.exe", 42, "Notepad", VisualRegion(0, 0, 800, 600), True, True)
+        return DesktopContextSnapshot("snapshot-shared", device_id, datetime.now(UTC), window, (window,), 1920, 1080, "shared-test-provider", 1.0)
+
+    def focus_window(self, window_ref: str) -> bool:
+        self.focused = window_ref
+        return window_ref == "window-shared"
+
+
+class _WindowIdentityUser32:
+    def __init__(self, process_id: int, window_class: str) -> None:
+        self.process_id = process_id
+        self.window_class = window_class
+
+    def IsWindow(self, hwnd: int) -> bool:
+        return hwnd == 100
+
+    def IsWindowVisible(self, hwnd: int) -> bool:
+        return hwnd == 100
+
+    def GetWindowThreadProcessId(self, hwnd: int, process_id) -> int:
+        del hwnd
+        process_id._obj.value = self.process_id
+        return 1
+
+    def GetClassNameW(self, hwnd: int, buffer, size: int) -> int:
+        del hwnd, size
+        buffer.value = self.window_class
+        return len(self.window_class)
 
 
 class _Model:
@@ -77,6 +130,53 @@ class PhaseTenActivePerceptionTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.perception.provider = provider
         if self.runtime.perception.router is not None:
             self.runtime.perception.router.local = provider
+
+    async def _enroll_device(self, name: str, capabilities: tuple[str, ...]) -> DeviceIdentity:
+        grant = await self.runtime.identity.create_enrollment(
+            EnrollmentGrant(self.identity.owner_id, name, "desktop", "windows", ("tool.request",), capabilities)
+        )
+        issued = await self.runtime.identity.redeem_enrollment(grant.code)
+        device = await self.runtime.identity.authenticate(issued.raw, issued.device_id)
+        assert device is not None
+        return device
+
+    async def _connect_satellite(self, device: DeviceIdentity) -> tuple[CoreApplication, str]:
+        application = CoreApplication(self.runtime)
+        welcome = await application.satellite_connect(
+            DemoPrincipal(self.identity, device),
+            {
+                "device_id": device.device_id,
+                "owner_id": self.identity.owner_id,
+                "platform": "windows",
+                "capabilities": ["perception.screen"],
+                "protocol_version": "2",
+            },
+        )
+        self.assertTrue(welcome["accepted"])
+        return application, str(welcome["session_id"])
+
+    async def _complete_satellite_perception(
+        self,
+        device: DeviceIdentity,
+        session_id: str,
+        task: asyncio.Task,
+        outputs: tuple[dict[str, object], ...],
+    ) -> object:
+        for output in outputs:
+            command = await self.runtime.satellite_transport.poll(
+                self.identity.owner_id, device.device_id, session_id, wait_seconds=1
+            )
+            self.assertIsNotNone(command)
+            assert command is not None
+            self.assertEqual(command.action, "perception")
+            submission = await self.runtime.satellite_transport.submit_result(
+                self.identity.owner_id,
+                device.device_id,
+                session_id,
+                CommandObservation(command.command_id, "completed", output),
+            )
+            self.assertTrue(submission.accepted)
+        return await asyncio.wait_for(task, timeout=2)
 
     async def test_native_windows_context_is_bounded_and_refs_are_ephemeral(self) -> None:
         provider = WindowsDesktopProvider()
@@ -341,6 +441,295 @@ class PhaseTenActivePerceptionTests(unittest.IsolatedAsyncioTestCase):
         provider._window_refs[window_ref].expires_at = datetime.now(UTC) - timedelta(seconds=1)
         result = await self.runtime.computer_actions.execute(ComputerAction("focus_window", {"window_ref": window_ref}, False), self.identity, self.device)
         self.assertEqual(result.error_code, "window_ref_expired")
+
+    async def test_same_id_online_routes_context_and_screen_to_satellite(self) -> None:
+        provider = _CountingProvider()
+        self._use_provider(provider)
+        application, session_id = await self._connect_satellite(self.device)
+        try:
+            context_task = asyncio.create_task(
+                self.runtime.perception.observe_desktop_context(self.identity, self.device, session_id="same-id-online")
+            )
+            context_result = await self._complete_satellite_perception(
+                self.device,
+                session_id,
+                context_task,
+                ({
+                    "snapshot_id": "snapshot-same-id",
+                    "device_id": self.device.device_id,
+                    "observed_at": datetime.now(UTC).isoformat(),
+                    "windows": [],
+                    "source": "satellite",
+                    "confidence": 1.0,
+                },),
+            )
+            self.assertEqual(context_result.status, "completed")
+            self.assertEqual(context_result.context.source, "satellite")
+
+            screen_task = asyncio.create_task(
+                self.runtime.perception.observe_screen(self.identity, self.device, mode="screen", session_id="same-id-online")
+            )
+            screen_result = await self._complete_satellite_perception(
+                self.device,
+                session_id,
+                screen_task,
+                (
+                    {
+                        "snapshot_id": "snapshot-same-id-screen",
+                        "device_id": self.device.device_id,
+                        "observed_at": datetime.now(UTC).isoformat(),
+                        "windows": [],
+                        "source": "satellite",
+                        "confidence": 1.0,
+                    },
+                    {
+                        "observation_id": "observation-same-id",
+                        "device_id": self.device.device_id,
+                        "captured_at": datetime.now(UTC).isoformat(),
+                        "source": "satellite",
+                        "width": 1920,
+                        "height": 1080,
+                        "raw_retained": False,
+                        "confidence": 1.0,
+                        "metadata": {},
+                    },
+                ),
+            )
+            self.assertEqual(screen_result.status, "completed")
+            self.assertEqual(screen_result.observation.source, "satellite")
+            self.assertEqual(provider.context_calls, 0)
+            self.assertEqual(provider.capture_calls, 0)
+        finally:
+            await application.satellite_disconnect(DemoPrincipal(self.identity, self.device), session_id)
+
+    async def test_same_id_offline_routes_context_and_screen_fail_closed_without_local_fallback(self) -> None:
+        provider = _CountingProvider()
+        self._use_provider(provider)
+        application, session_id = await self._connect_satellite(self.device)
+        await application.satellite_disconnect(DemoPrincipal(self.identity, self.device), session_id)
+
+        context = await self.runtime.perception.observe_desktop_context(self.identity, self.device)
+        screen = await self.runtime.perception.observe_screen(self.identity, self.device, mode="screen")
+        self.assertEqual(context.error_code, "perception_target_offline")
+        self.assertEqual(screen.error_code, "perception_target_offline")
+        self.assertEqual(provider.context_calls, 0)
+        self.assertEqual(provider.capture_calls, 0)
+
+    async def test_genuine_local_target_still_uses_local_provider(self) -> None:
+        provider = _CountingProvider()
+        self._use_provider(provider)
+        context = await self.runtime.perception.observe_desktop_context(self.identity, self.device)
+        semantic = await self.runtime.perception.observe_screen(self.identity, self.device, mode="semantic")
+        self.assertEqual(context.status, "completed")
+        self.assertEqual(semantic.status, "completed")
+        self.assertGreater(provider.context_calls, 0)
+        self.assertEqual(provider.capture_calls, 0)
+
+    async def test_desktop_context_tool_is_ephemeral_and_title_sentinel_never_persists(self) -> None:
+        sentinel = "PRIVATE_WINDOW_TITLE_SENTINEL_7842"
+        self._use_provider(_MetadataProvider(title=sentinel))
+
+        class ContextModel:
+            def __init__(self) -> None:
+                self.requests = []
+                self.calls = 0
+
+            async def generate(self, request, route):
+                del route
+                self.requests.append(request)
+                self.calls += 1
+                if self.calls == 1:
+                    return LLMResponse(
+                        "context-tool-request",
+                        "",
+                        "test-model",
+                        "tool_calls",
+                        ({"function": {"name": "desktop.context.read", "arguments": {}}},),
+                        {},
+                    )
+                return LLMResponse("context-answer", "Desktop metadata was processed for this turn.", "test-model", "stop", (), {})
+
+        model = ContextModel()
+        self.runtime.agent.models = model
+        outcome = await self.runtime.agent.process_text("describe my current desktop", self.identity, self.device)
+        self.assertEqual(outcome.state.value, "succeeded")
+        self.assertIn(sentinel, str(model.requests))
+        self.assertNotIn(sentinel, outcome.response or "")
+
+        specs = {item.name: item for item in self.runtime.tools.list()}
+        self.assertEqual(specs["desktop.context.read"].retention, ToolResultRetention.EPHEMERAL)
+        run = self.runtime.repository.run(outcome.run_id)
+        assert run is not None
+        durable_values = [
+            str(run.context),
+            str(self.runtime.repository.messages(run.conversation_id)),
+            str(self.runtime.repository.events()),
+            str(self.runtime.repository.audit()),
+            str(self.runtime.repository.database.connection.execute("SELECT * FROM tool_calls").fetchall()),
+            str(self.runtime.repository.database.connection.execute("SELECT * FROM messages").fetchall()),
+            str(self.runtime.repository.database.connection.execute("SELECT * FROM memories").fetchall()),
+            str(self.runtime.repository.database.connection.execute("SELECT * FROM world_facts").fetchall()),
+            str(await CoreApplication(self.runtime).experience_state(self.identity.owner_id)),
+            CoreApplication(self.runtime).experience_hud(),
+        ]
+        self.assertTrue(all(sentinel not in value for value in durable_values))
+
+    async def test_remote_observe_to_focus_uses_one_shared_satellite_provider(self) -> None:
+        provider = _SharedWindowProvider()
+        agent = WindowsSatelliteAgent(
+            SatelliteAgentConfig(
+                "http://127.0.0.1:8000",
+                self.identity.owner_id,
+                self.identity.identity_id,
+                self.device.device_id,
+                frozenset({"perception.screen", "computer.input"}),
+                protocol_version="2",
+            ),
+            "credential",
+            perception_provider=provider,
+        )
+        context = await agent.execute_command(
+            SatelliteCommand(
+                "perception-shared",
+                "perception",
+                "perception.screen",
+                {"operation": "observe_desktop_context"},
+                True,
+                "2",
+            )
+        )
+        self.assertEqual(context.status, "completed")
+        self.assertEqual(context.output["active_window"]["window_ref"], "window-shared")
+        with patch("jarvis.computer.service.platform.system", return_value="Windows"):
+            focus = await agent.execute_command(
+                SatelliteCommand(
+                    "focus-shared",
+                    "input",
+                    "computer.input",
+                    {"operation": "focus_window", "window_ref": "window-shared"},
+                    False,
+                )
+            )
+        self.assertEqual(focus.status, "completed")
+        self.assertEqual(provider.focused, "window-shared")
+        self.assertIs(agent._controller.perception_provider, provider)
+
+    async def test_legacy_window_capture_uses_canonical_privacy_and_capability_authority(self) -> None:
+        provider = _CountingProvider()
+        self._use_provider(provider)
+        accepted = await CoreApplication(self.runtime).perception_window(self.identity, self.device, "window-test")
+        self.assertEqual(accepted["status"], "completed")
+        self.assertEqual(provider.capture_calls, 1)
+
+        missing_capability = replace(self.device, capabilities=frozenset({"computer.observe"}))
+        denied = await self.runtime.perception.capture_window(self.identity, missing_capability, "window-test")
+        self.assertEqual(denied.error_code, "target_capability_missing")
+        self.assertEqual(provider.capture_calls, 1)
+
+        sensitive = _CountingProvider(process_name="credential-manager.exe", title="Private password vault")
+        self._use_provider(sensitive)
+        self.runtime.perception.privacy = PerceptionPrivacyPolicy(denied_processes=frozenset({"credential-manager.exe"}))
+        privacy_denied = await CoreApplication(self.runtime).perception_window(self.identity, self.device, "window-test")
+        self.assertEqual(privacy_denied["error_code"], "privacy_policy_denied")
+        self.assertEqual(sensitive.capture_calls, 0)
+
+    async def test_screen_latest_resolves_remote_target_and_rejects_wrong_target_or_owner(self) -> None:
+        target = await self._enroll_device("Remote Perception", ("perception.screen",))
+        application, session_id = await self._connect_satellite(target)
+        try:
+            observation_task = asyncio.create_task(
+                self.runtime.perception.observe_screen(
+                    self.identity,
+                    self.device,
+                    target_device=target,
+                    mode="screen",
+                    session_id="remote-latest",
+                )
+            )
+            observed = await self._complete_satellite_perception(
+                target,
+                session_id,
+                observation_task,
+                (
+                    {
+                        "snapshot_id": "snapshot-remote-latest",
+                        "device_id": target.device_id,
+                        "observed_at": datetime.now(UTC).isoformat(),
+                        "windows": [],
+                        "source": "satellite",
+                        "confidence": 1.0,
+                    },
+                    {
+                        "observation_id": "observation-remote-latest",
+                        "device_id": target.device_id,
+                        "captured_at": datetime.now(UTC).isoformat(),
+                        "source": "satellite",
+                        "width": 1280,
+                        "height": 720,
+                        "raw_retained": False,
+                        "confidence": 1.0,
+                        "metadata": {},
+                    },
+                ),
+            )
+            self.assertEqual(observed.status, "completed")
+            observation_id = observed.observation.observation_id
+            tool_context = ToolContext(self.identity, self.device, "remote-latest", "remote-latest")
+            latest = await self.runtime.tool_service.execute(
+                "screen.latest",
+                {"target_device_id": target.device_id, "observation_id": observation_id},
+                tool_context,
+            )
+            self.assertEqual(latest.status.value, "completed")
+            self.assertEqual(latest.output["observation"]["device_id"], target.device_id)
+
+            wrong_target = await self.runtime.tool_service.execute(
+                "screen.latest", {"observation_id": observation_id}, tool_context
+            )
+            self.assertEqual(wrong_target.status.value, "failed")
+            self.assertEqual(wrong_target.error_code, "observation_not_found_or_expired")
+
+            wrong_owner = replace(target, owner_id="owner-not-the-requester")
+            cross_owner = await self.runtime.perception.latest_observation(
+                self.identity,
+                self.device,
+                target_device=wrong_owner,
+                observation_id=observation_id,
+                session_id="remote-latest",
+            )
+            self.assertEqual(cross_owner.error_code, "target_owner_mismatch")
+        finally:
+            await application.satellite_disconnect(DemoPrincipal(self.identity, target), session_id)
+
+    async def test_window_ref_rejects_hwnd_reuse_by_pid_or_class_change(self) -> None:
+        provider = WindowsDesktopProvider.__new__(WindowsDesktopProvider)
+        provider._window_refs = {
+            "window-reused": _WindowHandle(
+                100,
+                10,
+                "title-digest",
+                "Notepad",
+                datetime.now(UTC) + timedelta(seconds=30),
+            )
+        }
+        provider._user32 = _WindowIdentityUser32(99, "Notepad")
+        with self.assertRaisesRegex(ValueError, "window_ref_expired"):
+            provider.resolve_window_ref("window-reused")
+        self.assertNotIn("window-reused", provider._window_refs)
+
+        provider._window_refs = {
+            "window-changed": _WindowHandle(
+                100,
+                10,
+                "title-digest",
+                "Notepad",
+                datetime.now(UTC) + timedelta(seconds=30),
+            )
+        }
+        provider._user32 = _WindowIdentityUser32(10, "Calculator")
+        with self.assertRaisesRegex(ValueError, "window_ref_changed"):
+            provider.resolve_window_ref("window-changed")
+        self.assertNotIn("window-changed", provider._window_refs)
 
 
 if __name__ == "__main__":

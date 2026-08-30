@@ -205,7 +205,12 @@ class CoreHttpServer:
                         self._respond(HTTPStatus.OK, asyncio.run(application.perception_context(principal.identity, principal.device, values)))
                     elif route.startswith("/perception/observations/"):
                         observation_id = route.rsplit("/", 1)[-1]
-                        self._respond(HTTPStatus.OK, asyncio.run(application.perception_latest(principal.identity, principal.device, {"observation_id": observation_id})))
+                        latest_values = {"observation_id": observation_id}
+                        if "target_device_id" in values:
+                            latest_values["target_device_id"] = values["target_device_id"]
+                        if "session_id" in values:
+                            latest_values["session_id"] = values["session_id"]
+                        self._respond(HTTPStatus.OK, asyncio.run(application.perception_latest(principal.identity, principal.device, latest_values)))
                     elif route == "/workers/developer/providers":
                         self._respond(HTTPStatus.OK, {"providers": application.developer_providers()})
                     elif route == "/missions":

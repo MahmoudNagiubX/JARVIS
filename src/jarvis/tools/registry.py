@@ -200,13 +200,23 @@ def register_perception_tools(registry: ToolRegistry, perception: object) -> Non
     async def latest_screen(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
         if context.identity is None or context.device is None:
             return ToolResult(ToolResultStatus.DENIED, error_code="identity_or_device_missing")
-        result = await perception.latest_observation(context.identity, context.device, observation_id=arguments.get("observation_id") if isinstance(arguments.get("observation_id"), str) else None, session_id=context.session_id)
+        target = await perception.resolve_target(context.identity, context.device, arguments.get("target_device_id"))
+        if target is None:
+            return ToolResult(ToolResultStatus.DENIED, error_code="target_device_missing")
+        result = await perception.latest_observation(
+            context.identity,
+            context.device,
+            target_device=target,
+            observation_id=arguments.get("observation_id") if isinstance(arguments.get("observation_id"), str) else None,
+            session_id=context.session_id,
+        )
         return ToolResult(_tool_status(result.status), _json_safe(result), result.error_code, verified=result.status == "completed")
 
     registry.register(ToolSpec(
         "tool-desktop-context-read-v1", "desktop.context.read", "1", "Read bounded active desktop metadata.",
         "read", "tool.request", frozenset(), 10.0, True, desktop_context,
         parameters_schema={"type": "object", "properties": {"target_device_id": {"type": "string", "maxLength": 200}}, "additionalProperties": False},
+        retention=ToolResultRetention.EPHEMERAL,
     ))
     registry.register(ToolSpec(
         "tool-screen-observe-v1", "screen.observe", "1", "Observe the current screen on demand using safe structured perception.",
@@ -217,7 +227,7 @@ def register_perception_tools(registry: ToolRegistry, perception: object) -> Non
     registry.register(ToolSpec(
         "tool-screen-latest-v1", "screen.latest", "1", "Read a still-valid cached screen observation.",
         "read", "tool.request", frozenset(), 5.0, True, latest_screen,
-        parameters_schema={"type": "object", "properties": {"observation_id": {"type": "string", "maxLength": 200}}, "additionalProperties": False},
+        parameters_schema={"type": "object", "properties": {"observation_id": {"type": "string", "maxLength": 200}, "target_device_id": {"type": "string", "maxLength": 200}}, "additionalProperties": False},
         retention=ToolResultRetention.EPHEMERAL,
     ))
 
