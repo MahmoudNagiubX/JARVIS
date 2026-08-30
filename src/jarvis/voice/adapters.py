@@ -126,8 +126,11 @@ class SoundDeviceInput:
 class SoundDevicePlayback:
     """Explicit local playback with no hidden playback in synthesis."""
 
-    def __init__(self, selector: VoiceDeviceSelector) -> None:
+    def __init__(self, selector: VoiceDeviceSelector, *, max_duration_seconds: float = 60.0) -> None:
+        if max_duration_seconds <= 0:
+            raise ValueError("voice playback duration bound must be positive")
         self.selector = selector
+        self.max_duration_seconds = max_duration_seconds
         self.sample_rate = 0
         self._sounddevice: object | None = None
         self._device_index: int | None = None
@@ -154,6 +157,9 @@ class SoundDevicePlayback:
         output = resample_pcm_16le(audio, sample_rate, self.sample_rate)
         if not output:
             return
+        if len(output) > int(self.sample_rate * 2 * self.max_duration_seconds):
+            del output
+            raise VoiceDeviceError("voice_playback_too_long")
         samples = np.frombuffer(output, dtype=np.int16)
         try:
             self._sounddevice.play(samples, samplerate=self.sample_rate, device=self._device_index, blocking=False)  # type: ignore[union-attr]
@@ -299,6 +305,12 @@ class SpeechEndpointDetector:
         self._active = False
         self._speech_ms = 0.0
         self._silence_ms = 0.0
+
+    @property
+    def speech_active(self) -> bool:
+        """Whether VAD has started the current in-memory utterance."""
+
+        return self._active
 
     def feed(self, audio: bytes) -> bytes | None:
         if not audio or len(audio) % 2:

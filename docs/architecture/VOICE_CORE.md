@@ -15,11 +15,27 @@ at the TTS boundary and does not alter typed chat.
 
 The explicit Phase 13 local runner starts a context in `sleeping`, detects a
 local wake word, then moves through `wake_detected` to `listening`. A
-follow-up window accepts a second turn without another wake; its expiry returns
-a wake-enabled session to `sleeping`. Owner/device/context checks happen
-before STT. Voice cannot decide an approval: spoken confirmation is ordinary
-input and existing approval routes still require their explicit durable
-decision context.
+bounded wake-command timer then requires VAD speech to start within the
+configured window; otherwise the endpoint buffer is discarded, no agent turn
+is created, and the session returns to `sleeping`. A follow-up window accepts
+a second turn without another wake. Its old timer is cancelled when a valid
+transcript starts, every successful completion receives a fresh full interval,
+and expiry returns a wake-enabled session to `sleeping`.
+
+Empty STT has state-specific semantics without creating a user message or
+agent run: initial wake listening returns to `sleeping`, follow-up restores its
+existing bounded deadline, and historical non-wake voice returns to
+`listening`. Owner/device/context checks still happen before STT. A paused
+agent run emits a safe `voice.approval_required` event, speaks only a fixed
+product message, leaves the durable approval pending, and bounds a wake session
+back to `sleeping`. Spoken confirmation remains ordinary input and cannot
+decide an approval. Failed wake turns likewise return to `sleeping`.
+
+Automated cancellation coverage blocks a real AgentRuntime model generation,
+barges in during `thinking`, proves the run is cancelled before TTS/playback,
+and proves a subsequent turn is clean. Speaker PCM is resampled first and then
+rejected before the device call when it exceeds the hard 60-second playback
+bound (`voice_playback_too_long`).
 
 Normal bootstrap remains no-op and opens no hardware or model. Phase 13 adds
 an opt-in `python -m jarvis.voice.live` runner that configures the *existing*

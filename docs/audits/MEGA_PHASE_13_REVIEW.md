@@ -49,3 +49,33 @@ operator matrix in `docs/development/VOICE_ACCEPTANCE.md`.
 - Full repository suite: **232 passed, 0 failed**.
 - `python -m compileall src tests`: PASS.
 - `git diff --check`: PASS.
+
+## Independent GitHub Review Remediation
+
+The pre-physical review gaps were closed without changing the Phase 13
+authority shape. `LocalVoiceRuntime` now owns one bounded wake-command timer;
+`VoiceCore` preserves state-specific empty-STT and renewed follow-up semantics,
+handles PAUSED and FAILED wake turns safely, and retains the existing
+AgentRuntime cancellation boundary. Playback rejects post-resample PCM over
+60 seconds before a sound-device call. No VoiceAgent, second AgentRuntime,
+second ModelGateway, second Qwen server, scheduler, EventBus, schema migration,
+cloud speech path, or broad cleanup was added.
+
+The focused tests prove false-wake timeout with zero agent runs, VAD-start and
+lifecycle cancellation, timer replacement, empty-STT restoration, fresh
+follow-up timing, pending approval safety and spoof resistance, real thinking
+cancellation with a clean next turn, and the playback hard bound.
+
+- Phase 13 focused/total matrix: **25 passed, 0 failed**.
+- Phase 12 focused regression: **11 passed, 0 failed**.
+- Phase 11 regression: **26 passed, 0 failed**.
+- Phase 10 regression: **31 passed, 0 failed**.
+- Phase 09 regression: **39 passed, 0 failed**.
+- Phase 08 regression: **13 passed, 0 failed**.
+- Full repository suite: **243 passed, 0 failed**.
+- `python -m compileall src tests`: PASS.
+- `git diff --check`: PASS.
+
+Physical status remains **PARTIAL**. Automated lifecycle proof does not claim
+human wake detection, transcription quality, audibility, live physical
+barge-in, or physical device-loss recovery.

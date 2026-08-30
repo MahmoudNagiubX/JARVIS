@@ -67,6 +67,7 @@ class VoiceRuntimeConfig:
     tts_en_model_path: Path | None = None
     tts_ar_model_path: Path | None = None
     follow_up_seconds: float = 30.0
+    wake_command_timeout_seconds: float = 5.0
 
     @classmethod
     def from_env(cls) -> "VoiceRuntimeConfig":
@@ -91,6 +92,7 @@ class VoiceRuntimeConfig:
             tts_en_model_path=_path("JARVIS_VOICE_TTS_EN_MODEL_PATH"),
             tts_ar_model_path=_path("JARVIS_VOICE_TTS_AR_MODEL_PATH"),
             follow_up_seconds=_float("JARVIS_VOICE_FOLLOW_UP_SECONDS", 30.0),
+            wake_command_timeout_seconds=_float("JARVIS_VOICE_WAKE_COMMAND_TIMEOUT_SECONDS", 5.0),
         ).validated()
 
     def validated(self) -> "VoiceRuntimeConfig":
@@ -102,6 +104,8 @@ class VoiceRuntimeConfig:
             raise ValueError("JARVIS_VOICE_VAD_END_SILENCE_MS must be between 600 and 900")
         if not 1 <= self.follow_up_seconds <= 120:
             raise ValueError("JARVIS_VOICE_FOLLOW_UP_SECONDS must be between 1 and 120")
+        if not 1 <= self.wake_command_timeout_seconds <= 15:
+            raise ValueError("JARVIS_VOICE_WAKE_COMMAND_TIMEOUT_SECONDS must be between 1 and 15")
         if self.stt_device not in {"cpu", "cuda"}:
             raise ValueError("JARVIS_VOICE_STT_DEVICE must be cpu or cuda")
         if self.tts_engine != "piper":

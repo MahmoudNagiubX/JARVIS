@@ -65,12 +65,15 @@ class LocalVoiceRuntime:
         audio_output: AudioOutput,
         wake: OpenWakeWordDetector,
         endpointing: SpeechEndpointDetector,
+        *,
+        wake_command_timeout_seconds: float = 5.0,
     ) -> None:
         self.voice = voice
         self.audio_input = audio_input
         self.audio_output = audio_output
         self.wake = wake
         self.endpointing = endpointing
+        self.wake_command_timeout_seconds = wake_command_timeout_seconds
         self._state = VoiceRunnerState.CREATED
         self._identity: Identity | None = None
         self._device: DeviceIdentity | None = None
@@ -79,6 +82,7 @@ class LocalVoiceRuntime:
         self._total_queue_overruns = 0
         self._consumer_task: asyncio.Task[None] | None = None
         self._turn_task: asyncio.Task[None] | None = None
+        self._wake_command_task: asyncio.Task[None] | None = None
 
     @property
     def state(self) -> VoiceRunnerState:
@@ -87,6 +91,11 @@ class LocalVoiceRuntime:
     @property
     def queue_overruns(self) -> int:
         return self._total_queue_overruns
+
+    @property
+    def wake_command_timer_active(self) -> bool:
+        task = self._wake_command_task
+        return task is not None and not task.done()
 
     async def start(
         self,
@@ -121,6 +130,7 @@ class LocalVoiceRuntime:
         if self._state in {VoiceRunnerState.STOPPED, VoiceRunnerState.STOPPING}:
             return
         self._state = VoiceRunnerState.STOPPING
+        await self._cancel_wake_command_timer()
         if self._consumer_task is not None:
             self._consumer_task.cancel()
             await asyncio.gather(self._consumer_task, return_exceptions=True)
@@ -142,6 +152,7 @@ class LocalVoiceRuntime:
         if self._state is VoiceRunnerState.STOPPED:
             return False
         self._state = VoiceRunnerState.DEGRADED
+        await self._cancel_wake_command_timer()
         self.endpointing.discard()
         self.audio_input.stop()
         await self.voice.barge_in()
@@ -209,11 +220,20 @@ class LocalVoiceRuntime:
         if state in {VoiceSessionState.SLEEPING, VoiceSessionState.THINKING, VoiceSessionState.SPEAKING}:
             if self.wake.detect_pcm(pcm):
                 self.endpointing.discard()
-                await self.voice.wake_detected()
+                await self._cancel_wake_command_timer()
+                if await self.voice.wake_detected():
+                    await self._arm_wake_command_timer()
             return
         if state not in {VoiceSessionState.LISTENING, VoiceSessionState.FOLLOW_UP}:
             return
+        if state is VoiceSessionState.LISTENING and self.wake_command_timer_active and self.wake.detect_pcm(pcm):
+            self.endpointing.discard()
+            await self._arm_wake_command_timer()
+            return
+        speech_was_active = self.endpointing.speech_active
         utterance = self.endpointing.feed(pcm)
+        if not speech_was_active and self.endpointing.speech_active:
+            await self._cancel_wake_command_timer()
         if utterance is None or self._turn_task is not None and not self._turn_task.done():
             return
         self._turn_task = asyncio.create_task(self._dispatch(utterance))
@@ -240,6 +260,7 @@ class LocalVoiceRuntime:
         if self._state is VoiceRunnerState.STOPPED:
             return False
         self._state = VoiceRunnerState.DEGRADED
+        await self._cancel_wake_command_timer()
         await self.audio_output.stop()
         self.audio_output.close()
         await self.voice.barge_in()
@@ -266,6 +287,35 @@ class LocalVoiceRuntime:
             payload={"reason": "configured_output_unavailable"},
         )
         return False
+
+    async def _arm_wake_command_timer(self) -> None:
+        await self._cancel_wake_command_timer()
+        self._wake_command_task = asyncio.create_task(self._expire_wake_command())
+
+    async def _cancel_wake_command_timer(self) -> None:
+        task = self._wake_command_task
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._wake_command_task = None
+
+    async def _expire_wake_command(self) -> None:
+        current = asyncio.current_task()
+        try:
+            await asyncio.sleep(self.wake_command_timeout_seconds)
+            if (
+                self._state is VoiceRunnerState.RUNNING
+                and self.voice.state is VoiceSessionState.LISTENING
+                and not self.endpointing.speech_active
+            ):
+                self.endpointing.discard()
+                await self.voice.return_to_sleeping()
+                await self.voice.report_runtime_event("voice.wake_timeout", state=EventState.COMPLETED)
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._wake_command_task is current:
+                self._wake_command_task = None
 
     def _drain_queue(self) -> None:
         while True:
@@ -302,6 +352,7 @@ def build_local_voice_runtime(voice: VoiceCore, config: VoiceRuntimeConfig) -> L
         playback,
         OpenWakeWordDetector(config.wake_model_path, config.wake_threshold),
         SpeechEndpointDetector(vad, end_silence_ms=config.vad_end_silence_ms),
+        wake_command_timeout_seconds=config.wake_command_timeout_seconds,
     )
 
 

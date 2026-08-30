@@ -25,6 +25,13 @@ microphone -> local wake/VAD -> local STT -> same VoiceCore -> same AgentRuntime
 
 No normal voice runtime code downloads assets or calls cloud speech APIs.
 `JARVIS_VOICE_ENABLED` defaults to false; missing local assets fail startup.
+`JARVIS_VOICE_WAKE_COMMAND_TIMEOUT_SECONDS` defaults to 5 seconds and is
+validated from 1 through 15 seconds. The runner owns exactly one such timer:
+it replaces the timer on a new wake and cancels it on VAD speech start, stop,
+configured-device recovery, or transition back to sleep. Expiry discards only
+the in-memory endpoint buffer, emits safe `voice.wake_timeout`, and creates no
+agent turn. Resampled playback is capped at 60 seconds before the selected
+speaker is called.
 Use `docs/development/LOCAL_VOICE_SETUP.md` for the environment-only identity
 and device configuration.
 

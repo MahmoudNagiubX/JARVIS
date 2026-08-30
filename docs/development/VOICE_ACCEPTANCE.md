@@ -17,6 +17,20 @@ python -m unittest tests.test_phase_thirteen_physical_voice -v
 It proves authority, privacy, bounded queue, state, and adapter contracts; it
 does not prove a human can hear or be understood by the selected hardware.
 
+The pre-physical matrix currently contains 25 passing tests. It also proves
+that wake listening times out without speech or an agent run; actual VAD speech
+cancels that timeout; a new wake replaces it; and stop or configured-device
+recovery cancels it. Empty STT sleeps after an initial wake, preserves the
+existing bounded follow-up expiry, and restores historical non-wake listening.
+Every successful follow-up turn receives a fresh full interval.
+
+Approval-required voice turns keep the durable approval pending, emit only a
+safe approval event, speak a fixed product message, and bound wake mode back to
+sleep. The matrix cancels an actual blocked AgentRuntime generation during
+thinking and verifies that no old TTS/playback survives into the next turn.
+It also verifies the typed `voice_playback_too_long` failure occurs after
+resampling and before any device call for PCM over the 60-second hard bound.
+
 The normal runtime still defaults to `NoOpSpeechToText` and
 `NoOpTextToSpeech`. The local runner is opt-in and retains no raw input or
 generated audio. Arabic `ar_JO-kareem-low` only establishes Arabic routing;
