@@ -1,0 +1,23 @@
+{
+  "phase": 13,
+  "status": "PARTIAL",
+  "date": "2026-08-31",
+  "safe_checks": {
+    "wake_silence_rejected": true,
+    "vad_silence_rejected": true,
+    "stt_local_silence_final": true,
+    "english_tts_local_pcm": true,
+    "arabic_tts_local_pcm": true,
+    "configured_input_opened_drop_only": true,
+    "configured_output_format_resolved": true
+  },
+  "not_claimed": [
+    "human_wake_detection",
+    "human_stt_english_arabic_mixed",
+    "speaker_audibility",
+    "egyptian_arabic_intelligibility",
+    "full_barge_in_observation",
+    "physical_device_loss_recovery"
+  ],
+  "privacy": "No raw audio, transcript, generated audio, credential, window title, or absolute path is present."
+}

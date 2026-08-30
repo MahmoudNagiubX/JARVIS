@@ -104,3 +104,11 @@ class SpeechToText(Protocol):
 
 class TextToSpeech(Protocol):
     def synthesize(self, text: str) -> Awaitable[bytes]: ...
+
+
+class AudioPlayback(Protocol):
+    """Ephemeral speaker boundary owned by the physical voice runner."""
+
+    def play(self, audio: bytes, sample_rate: int) -> Awaitable[None]: ...
+
+    def stop(self) -> Awaitable[None]: ...

@@ -90,6 +90,7 @@ from .research import (
 )
 from .tools import Tool, ToolContext, ToolRegistry, ToolResult, ToolResultRetention, ToolResultStatus
 from .voice import (
+    AudioPlayback,
     RealtimeVoiceSession,
     SpeechToText,
     TextToSpeech,
@@ -119,6 +120,7 @@ __all__ = [
     "ApprovalStatus",
     "AuditRecord",
     "AuditService",
+    "AudioPlayback",
     "AgentContextSnapshot",
     "AutonomyDecision",
     "AutonomyLevel",

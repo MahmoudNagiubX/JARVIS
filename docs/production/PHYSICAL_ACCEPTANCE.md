@@ -37,3 +37,12 @@ visible-window enumeration, and a real on-demand GDI capture on the inspected
 Windows workstation. The transient frame was released and no screenshot file
 was created. OCR, accessibility packages, local image-model inference, and
 camera remain deferred; see `docs/phase10/evidence/PHYSICAL_DESKTOP_PERCEPTION.json`.
+
+Phase 13 installed an explicit local physical-voice runner outside the normal
+bootstrap. On 2026-08-31, local wake/VAD silence rejection, local STT silence
+finalization, in-memory English/Arabic Piper synthesis, configured microphone
+open with a drop-only callback, and configured speaker-format resolution
+passed. This is **PARTIAL**, not a human physical voice PASS: no human wake,
+English/Arabic/mixed transcription, audible speaker, Egyptian-Arabic quality,
+barge-in observation, or device-loss recovery result is claimed. Sanitized
+metrics-only evidence is in `docs/phase13/evidence/PHYSICAL_LOCAL_VOICE.json`.

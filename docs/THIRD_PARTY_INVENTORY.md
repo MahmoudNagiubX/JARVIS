@@ -14,6 +14,10 @@ surfaces. It is not a final distribution notice.
 | Ollama | Existing local service boundary | No SDK copied | Optional loopback model adapter only; no pull/copy/install/delete |
 | llama.cpp | Official `ggml-org/llama.cpp` release `b10690`; local runtime package checksum-verified | MIT; runtime remains user-local and untracked | Explicit loopback `llama_cpp` provider/supervisor; no model-weight download/copy |
 | Existing local Qwen assets | Local assets observed outside this repository | Exact model license not established here | Alias configuration only; no asset copied |
+| Phase 13 local voice stack | Optional external venv: sounddevice, onnxruntime, openWakeWord, faster-whisper, Piper | Package/model notices are separately documented; no asset is tracked | Explicit local runner only; no normal bootstrap import/download |
+| openWakeWord pre-trained assets | External local ONNX assets | CC-BY-NC-SA-4.0; code Apache-2.0 | Personal/non-commercial only; commercial replacement debt |
+| Silero VAD ONNX | External local ONNX asset | MIT | Local VAD only |
+| Piper English/Arabic voices | External local ONNX assets and model cards | English card cites CC-BY-NC-SA; Arabic card requires source-license review | No commercial or Egyptian-quality claim |
 | Mem0 / Cognee / Graphiti | No runtime package selected | Not introduced | Reference-only evaluation; JARVIS memory remains authoritative |
 | LangGraph | No runtime package selected | Not introduced | Reference-only evaluation; JARVIS goal engine remains authoritative |
 | PostgreSQL / pgvector | Product migration boundary only | No runtime package dependency | Partial/deferred adapter path; no live service claimed |
@@ -39,6 +43,10 @@ surfaces. It is not a final distribution notice.
 - The JARVIS runtime declares no runtime dependencies. Pytest is an optional
   development dependency only; the baseline test command uses the standard
   library `unittest` runner.
+- Phase 13 declares the local speech stack as a `voice` optional dependency.
+  It is deliberately installed in an external venv on the inspected Windows
+  workstation; normal `create_runtime()` imports no optional audio package and
+  opens no audio/model resource.
 
 ## Compliance gates before reuse/distribution
 

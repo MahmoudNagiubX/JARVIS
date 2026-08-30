@@ -1,0 +1,51 @@
+# Mega Phase 13 review: physical realtime voice
+
+## Scope and authority result
+
+Phase 13 adds an opt-in Windows-local physical voice lifecycle runner. It
+extends the existing `VoiceCore`; it does not add a VoiceAgent, AgentRuntime,
+ModelGateway, ToolRegistry, PermissionEngine, ApprovalEngine, scheduler, or
+EventBus. Final STT text takes the existing AgentRuntime/tool authority path.
+Notifications retain the same bootstrap VoiceCore instance.
+
+## Implemented boundaries
+
+- `VoiceRuntimeConfig` is disabled by default and validates exact input/output
+  host API/name selectors plus local wake, VAD, STT, and both Piper model paths.
+- `LocalVoiceRuntime` owns only device/capture lifecycle. Its 80 ms callback
+  copies into a bounded 2-second queue; VAD/STT/TTS/DB/events never run on the
+  audio callback.
+- The configured Realtek WASAPI endpoints are resolved per run. Numeric
+  PortAudio ids are not persisted; missing/ambiguous selectors fail closed and
+  recovery retries only the same selector.
+- Local ONNX wake/VAD, local-directory faster-whisper, and local Piper run on
+  explicit paths. There is no runtime cloud speech API, hub download, raw-audio
+  file, or normal-runtime optional package import.
+- VoiceCore owns cancellation for thinking, synthesis, and playback. Barge-in
+  cannot leave an old answer playing. Wake-enabled follow-up expiry returns to
+  sleeping.
+- PCM, pre-roll, partial STT, and generated TTS are memory-only. Safe events
+  contain only language/ids/counts/reasons. Voice owner/device binding is
+  checked before STT; spoken “yes” does not resume a durable approval.
+
+## Review constraints and open physical work
+
+The protected BMO Phase 10 evidence file was not read, modified, staged, or
+committed. No broad SQL cleanup, schema migration, public binding, model reset,
+or duplicate authority was introduced.
+
+The delivered local smoke evidence is **PARTIAL**. It does not claim human
+wake performance, English/Arabic/mixed STT quality, speaker audibility,
+Egyptian-Arabic intelligibility, live barge-in perception, or real device-loss
+recovery. See `docs/phase13/evidence/PHYSICAL_LOCAL_VOICE.json` and the
+operator matrix in `docs/development/VOICE_ACCEPTANCE.md`.
+
+## Closure validation
+
+- Phase 13 focused matrix: **14 passed, 0 failed**.
+- Phase 12 focused regression: **11 passed, 0 failed**.
+- Phase 08--09 regression: **52 passed, 0 failed**.
+- Phase 10--11 regression: **57 passed, 0 failed**.
+- Full repository suite: **232 passed, 0 failed**.
+- `python -m compileall src tests`: PASS.
+- `git diff --check`: PASS.

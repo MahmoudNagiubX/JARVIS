@@ -14,6 +14,7 @@ from ..bus import InMemoryEventBus
 from ..contracts import (
     DeviceIdentity,
     Identity,
+    AudioPlayback,
     SpeechToText,
     TextToSpeech,
     VoiceSessionContext,
@@ -34,16 +35,23 @@ class VoiceCore:
         stt: SpeechToText,
         tts: TextToSpeech,
         *,
+        playback: AudioPlayback | None = None,
         follow_up_seconds: float = 30.0,
     ) -> None:
         self.agent = agent
         self.event_bus = event_bus
         self.stt = stt
         self.tts = tts
+        self.playback = playback
         self._state = VoiceSessionState.IDLE
         self._context: VoiceSessionContext | None = None
         self._tts_task: asyncio.Task[bytes] | None = None
+        self._agent_task: asyncio.Task | None = None
+        self._playback_task: asyncio.Task[None] | None = None
         self._active_run_id: str | None = None
+        self._wake_enabled = False
+        self._turn_generation = 0
+        self._barge_generation = -1
         self.follow_up_seconds = max(0.0, follow_up_seconds)
         self._follow_up_task: asyncio.Task[None] | None = None
 
@@ -55,7 +63,12 @@ class VoiceCore:
     def context(self) -> VoiceSessionContext | None:
         return self._context
 
-    async def start(self, context: VoiceSessionContext | None = None) -> None:
+    async def start(
+        self,
+        context: VoiceSessionContext | None = None,
+        *,
+        wake_enabled: bool = False,
+    ) -> None:
         if self._follow_up_task and not self._follow_up_task.done():
             self._follow_up_task.cancel()
             await asyncio.gather(self._follow_up_task, return_exceptions=True)
@@ -72,22 +85,75 @@ class VoiceCore:
             return
         if self._state is VoiceSessionState.STOPPED:
             raise RuntimeError("voice session cannot restart after stop")
-        self._state = VoiceSessionState.LISTENING
-        await self._emit("voice.listening", EventState.ACCEPTED)
+        self._wake_enabled = wake_enabled
+        self._state = VoiceSessionState.SLEEPING if wake_enabled else VoiceSessionState.LISTENING
+        await self._emit(
+            "voice.sleeping" if wake_enabled else "voice.listening",
+            EventState.ACCEPTED,
+        )
 
     async def stop(self) -> None:
         if self._follow_up_task and not self._follow_up_task.done():
             self._follow_up_task.cancel()
             await asyncio.gather(self._follow_up_task, return_exceptions=True)
         self._follow_up_task = None
-        if self._tts_task and not self._tts_task.done():
-            self._tts_task.cancel()
-            await asyncio.gather(self._tts_task, return_exceptions=True)
-        self._tts_task = None
+        await self._cancel_active_turn()
         self._active_run_id = None
         if self._context is not None:
             await self._emit("voice.stopped", EventState.COMPLETED)
         self._state = VoiceSessionState.STOPPED
+
+    def configure_adapters(
+        self,
+        stt: SpeechToText,
+        tts: TextToSpeech,
+        playback: AudioPlayback | None = None,
+    ) -> None:
+        """Bind optional physical adapters to this existing authority instance.
+
+        The bootstrap keeps one ``VoiceCore`` for notifications and live voice;
+        the explicit physical runner calls this only before a session starts.
+        """
+
+        if self._state is not VoiceSessionState.IDLE:
+            raise RuntimeError("voice adapters can only be configured before start")
+        self.stt = stt
+        self.tts = tts
+        self.playback = playback
+
+    async def wake_detected(self) -> bool:
+        """Transition a wake-enabled session to listening, interrupting safely."""
+
+        if not self._wake_enabled:
+            return False
+        if self._state in {VoiceSessionState.THINKING, VoiceSessionState.SPEAKING}:
+            await self.barge_in()
+        if self._state is not VoiceSessionState.SLEEPING:
+            return False
+        self._state = VoiceSessionState.WAKE_DETECTED
+        await self._emit("voice.wake_detected", EventState.ACCEPTED)
+        self._state = VoiceSessionState.LISTENING
+        await self._emit("voice.listening", EventState.ACCEPTED)
+        return True
+
+    async def return_to_sleeping(self) -> None:
+        """Discard an incomplete physical turn and re-arm its wake boundary."""
+
+        if not self._wake_enabled or self._state is VoiceSessionState.STOPPED:
+            return
+        self._state = VoiceSessionState.SLEEPING
+        await self._emit("voice.sleeping", EventState.ACCEPTED)
+
+    async def report_runtime_event(
+        self,
+        event_type: str,
+        *,
+        state: EventState = EventState.EMITTED,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        """Publish a runner lifecycle observation through the same voice context."""
+
+        await self._emit(event_type, state, payload)
 
     async def process_audio(
         self,
@@ -95,7 +161,7 @@ class VoiceCore:
         identity: Identity,
         device: DeviceIdentity,
     ) -> VoiceTurnResult | None:
-        self._check_context(device)
+        self._check_context(device, identity)
         if self._state not in {VoiceSessionState.LISTENING, VoiceSessionState.FOLLOW_UP}:
             raise RuntimeError(f"voice session is not listening: {self._state.value}")
         if not audio:
@@ -114,18 +180,31 @@ class VoiceCore:
         identity: Identity,
         device: DeviceIdentity,
     ) -> VoiceTurnResult:
-        self._check_context(device)
+        self._check_context(device, identity)
         if not transcript.text.strip():
             raise ValueError("voice transcript cannot be blank")
+        self._turn_generation += 1
+        turn_generation = self._turn_generation
+        self._active_run_id = None
         self._state = VoiceSessionState.THINKING
         await self._emit("voice.transcript_final", EventState.ACCEPTED, {"language": transcript.language})
-        outcome = await self.agent.process_text(
-            transcript.text,
-            identity,
-            device,
-            session_id=self._context.session_id if self._context else None,
-            conversation_id=self._context.conversation_id if self._context else None,
+        self._agent_task = asyncio.create_task(
+            self.agent.process_text(
+                transcript.text,
+                identity,
+                device,
+                session_id=self._context.session_id if self._context else None,
+                conversation_id=self._context.conversation_id if self._context else None,
+            )
         )
+        try:
+            outcome = await self._agent_task
+        except asyncio.CancelledError:
+            return await self._interrupted_result(transcript, None, None)
+        finally:
+            self._agent_task = None
+        if self._barge_generation == turn_generation:
+            return VoiceTurnResult(transcript, None, None, self._state, interrupted=True)
         self._active_run_id = outcome.run_id
         if outcome.state is not AgentRunState.SUCCEEDED or not outcome.response:
             self._state = VoiceSessionState.LISTENING if outcome.state is not AgentRunState.CANCELLED else VoiceSessionState.INTERRUPTED
@@ -133,15 +212,27 @@ class VoiceCore:
             return VoiceTurnResult(transcript, outcome.response, outcome.run_id, self._state)
         self._state = VoiceSessionState.SPEAKING
         await self._emit("voice.speaking", EventState.ACCEPTED, {"run_id": outcome.run_id})
-        self._tts_task = asyncio.create_task(self.tts.synthesize(outcome.response))
+        self._tts_task = asyncio.create_task(self.tts.synthesize(self._spoken_text(outcome.response)))
         try:
             audio = await self._tts_task
         except asyncio.CancelledError:
-            self._state = VoiceSessionState.INTERRUPTED
-            await self._emit("voice.cancelled", EventState.COMPLETED, {"run_id": outcome.run_id})
-            return VoiceTurnResult(transcript, outcome.response, outcome.run_id, self._state, interrupted=True)
+            return await self._interrupted_result(transcript, outcome.response, outcome.run_id)
         finally:
             self._tts_task = None
+        if self._barge_generation == turn_generation:
+            return VoiceTurnResult(transcript, outcome.response, outcome.run_id, self._state, interrupted=True)
+        if self.playback is not None and audio:
+            self._playback_task = asyncio.create_task(
+                self.playback.play(audio, int(getattr(self.tts, "sample_rate", 16_000)))
+            )
+            try:
+                await self._playback_task
+            except asyncio.CancelledError:
+                return await self._interrupted_result(transcript, outcome.response, outcome.run_id)
+            finally:
+                self._playback_task = None
+            if self._barge_generation == turn_generation:
+                return VoiceTurnResult(transcript, outcome.response, outcome.run_id, self._state, interrupted=True)
         self._state = VoiceSessionState.FOLLOW_UP
         await self._emit("voice.turn_completed", EventState.COMPLETED, {"run_id": outcome.run_id})
         if self.follow_up_seconds:
@@ -149,12 +240,22 @@ class VoiceCore:
         return VoiceTurnResult(transcript, outcome.response, outcome.run_id, self._state, audio=audio)
 
     async def barge_in(self) -> bool:
-        task = self._tts_task
-        if task is None or task.done():
+        tasks = tuple(
+            task
+            for task in (self._agent_task, self._tts_task, self._playback_task)
+            if task is not None and not task.done()
+        )
+        if not tasks:
             return False
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        self._barge_generation = self._turn_generation
+        for task in tasks:
+            task.cancel()
+        if self.playback is not None:
+            await self.playback.stop()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._agent_task = None
         self._tts_task = None
+        self._playback_task = None
         self._state = VoiceSessionState.INTERRUPTED
         await self._emit("voice.barge_in", EventState.ACCEPTED, {"run_id": self._active_run_id})
         self._state = VoiceSessionState.LISTENING
@@ -167,16 +268,51 @@ class VoiceCore:
         except asyncio.CancelledError:
             return
         if self._state is VoiceSessionState.FOLLOW_UP:
-            self._state = VoiceSessionState.LISTENING
+            self._state = VoiceSessionState.SLEEPING if self._wake_enabled else VoiceSessionState.LISTENING
             await self._emit("voice.follow_up_expired", EventState.COMPLETED, {"run_id": run_id})
 
-    def _check_context(self, device: DeviceIdentity) -> None:
+    async def _cancel_active_turn(self) -> None:
+        tasks = tuple(
+            task
+            for task in (self._agent_task, self._tts_task, self._playback_task)
+            if task is not None and not task.done()
+        )
+        for task in tasks:
+            task.cancel()
+        if self.playback is not None:
+            await self.playback.stop()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._agent_task = None
+        self._tts_task = None
+        self._playback_task = None
+
+    async def _interrupted_result(
+        self,
+        transcript: VoiceTranscript,
+        response: str | None,
+        run_id: str | None,
+    ) -> VoiceTurnResult:
+        if self._barge_generation != self._turn_generation:
+            self._state = VoiceSessionState.INTERRUPTED
+            await self._emit("voice.cancelled", EventState.COMPLETED, {"run_id": run_id})
+        return VoiceTurnResult(transcript, response, run_id, self._state, interrupted=True)
+
+    @staticmethod
+    def _spoken_text(response: str) -> str:
+        """Keep only the spoken presentation bounded; typed output is unchanged."""
+
+        return response[:1200]
+
+    def _check_context(self, device: DeviceIdentity, identity: Identity | None = None) -> None:
         if self._context is None:
             raise RuntimeError("voice session has not started")
         if self._context.device_id != device.device_id:
             raise ValueError("voice device does not match session context")
         if self._context.owner_id is not None and self._context.owner_id != device.owner_id:
             raise ValueError("voice owner does not match session context")
+        if identity is not None and identity.owner_id != device.owner_id:
+            raise ValueError("voice identity/device owner binding mismatch")
 
     async def _emit(
         self,

@@ -103,3 +103,9 @@ existing runtime. Active metadata may be projected safely; visual text and
 pixels remain current-turn/ephemeral data. The implementation keeps one
 PerceptionService, one scheduler, one EventBus, and the existing computer and
 satellite authorities.
+
+Phase 13 adds a Windows-local physical voice lifecycle adapter. It binds local
+wake, VAD, STT, TTS, and speaker implementations to the already-composed
+VoiceCore only at explicit live-runner startup. The adapter cannot execute an
+AgentRuntime, model, tool, permission, approval, scheduler, or EventBus path
+of its own; final transcripts use the ordinary AgentRuntime authority path.
