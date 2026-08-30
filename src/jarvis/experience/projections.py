@@ -260,6 +260,8 @@ class ExperienceProjection:
                 offline=bool(external_system.get("offline", system.offline)),
                 model_provider=external_system.get("model_provider", system.model_provider),
                 model_available=bool(external_system.get("model_available", system.model_available)),
+                model_alias=external_system.get("model_alias", system.model_alias),
+                model_latency_ms=external_system.get("model_latency_ms", system.model_latency_ms),
                 topology=dict(external_system.get("topology", system.topology)) if isinstance(external_system.get("topology", system.topology), Mapping) else system.topology,
             )
             if system.offline and system.runtime_state == "ready" and system.state not in {ExperienceState.ERROR, ExperienceState.PROACTIVE_ALERT}:

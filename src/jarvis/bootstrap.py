@@ -190,6 +190,7 @@ class JarvisRuntime:
         if self.state is not RuntimeState.CREATED:
             raise RuntimeError(f"cannot start runtime from {self.state.value}")
         self.state = RuntimeState.STARTING
+        await self.models.start()
         reconciled = self.repository.reconcile_active_runs()
         if reconciled:
             recovery = Event.create(
@@ -227,6 +228,7 @@ class JarvisRuntime:
             raise RuntimeError(f"cannot shut down runtime from {self.state.value}")
         self.state = RuntimeState.STOPPING
         await self.scheduler.stop()
+        await self.models.shutdown()
         await self.perception.shutdown()
         self.computer_actions.close()
         self.tool_service.close()
@@ -274,7 +276,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     audit = DurableAuditService(repository)
     registry = default_registry()
     tool_service = ToolExecutionService(repository, event_bus, registry, permission, approval, audit)
-    models = ModelGateway(effective_config)
+    models = ModelGateway(effective_config, event_bus=event_bus, repository=repository)
     satellite = WindowsSatelliteRegistry()
     satellite_transport = SatelliteTransportService(
         satellite,
@@ -422,6 +424,8 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
                 "offline": not offline.state.online,
                 "model_provider": model.provider,
                 "model_available": model.available,
+                "model_alias": model.model,
+                "model_latency_ms": model.latency_ms,
                 "perception": perception.health(),
                 "topology": {
                     "profile": effective_config.deployment_profile,

@@ -24,7 +24,12 @@ produced matching audit metadata. The bounded evidence is stored at
 `docs/phase09/evidence/PHYSICAL_COMPUTER_AUTHORITY_ACCEPTANCE.json`.
 
 This proves the Windows authority path on the inspected host; it does not
-claim an authorized second physical node. Physical voice, local model, Venom,
+claim an authorized second physical node. Phase 12 also loaded the existing
+external Qwen GGUF through one loopback llama.cpp server and passed real
+English, Arabic-script, mixed-language, provider-tool, AgentRuntime-text,
+offline, and restart checks. The real AgentRuntime `desktop.context.read`
+turn did not emit a tool event and remains `PARTIAL`; see
+`docs/phase12/evidence/PHYSICAL_LOCAL_BRAIN.json`. Physical voice, Venom,
 browser, and external services remain deferred.
 
 Phase 10 desktop perception passed native active-window metadata, bounded

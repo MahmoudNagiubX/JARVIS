@@ -40,7 +40,7 @@ capability directly.
 | Audit | Core authority | Append/query security and execution records with correlation | Storing arbitrary secrets or raw unredacted arguments |
 | Event bus | Core runtime | Dispatch normalized events in-process and persist event rows | Durable queue and retry guarantees |
 | Conversation/agent | Runtime | Plan turns, manage goals, coordinate workers and tool proposals | Owning credentials or bypassing approval |
-| Model gateway | Capability adapter | Route provider-neutral requests and report model identity/health | Authorizing tool calls |
+| Model gateway | Capability adapter | Route provider-neutral requests, report model identity/health, and delegate one bounded local runtime | Authorizing tool calls, downloading/copying weights, or silently falling back |
 | Tools | Capability adapter | Validate and execute one capability under a `ToolContext` | Deciding its own authority |
 | Memory/world state | Capability adapter | Store/retrieve records and observations | Becoming hidden conversational state |
 | Voice | Capability adapter | STT/TTS/realtime session and interruption state | Executing tools outside the common authority path |
@@ -81,7 +81,9 @@ local authority, SQLite, model, tool, satellite,
 computer/browser/device/home/communication/notification, voice routing,
 experience, engineering, research, perception, and developer-worker
 boundaries, but performs no model load, audio-hardware open, capture loop, or
-non-loopback network bind.
+non-loopback network bind unless the explicitly configured local-model
+autostart lifecycle is enabled. The local model remains behind the existing
+gateway/supervisor boundary and uses loopback only.
 
 ## Security ordering
 

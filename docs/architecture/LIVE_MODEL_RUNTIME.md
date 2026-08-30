@@ -1,15 +1,16 @@
 # Live model runtime
 
-Model access remains behind the existing `ModelGateway`. Phase 09 adds only
-profile naming and an explicit `model_loopback_endpoint` alias for the
-existing Ollama configuration. The gateway may inspect or call an already
-running local provider; it never downloads, pulls, copies, or starts a model
-runtime as a side effect of bootstrap.
+Model access remains behind the existing `ModelGateway`. Phase 12 adds an
+explicit `llama_cpp` provider and a bounded `LlamaCppRuntimeSupervisor` for an
+already available external GGUF. The gateway never downloads, pulls, copies,
+or starts a model runtime as a side effect of import or ordinary composition;
+autostart requires explicit `JARVIS_LOCAL_MODEL_AUTOSTART=true` and validated
+paths.
 
 The default provider is deterministic mock mode. A live probe is opt-in and
-reports provider, alias, health, generation check, latency, and failure. On
-this workstation no Ollama executable or listener was found, so no live model
-PASS is claimed. The existing Ollama directory was not opened or modified.
+reports provider, alias, health, generation check, latency, and failure. The
+llama.cpp path is loopback-only and has no cloud/paid fallback. Phase 12
+physical evidence is in `docs/phase12/evidence/PHYSICAL_LOCAL_BRAIN.json`.
 
 ```powershell
 $env:JARVIS_MODEL_PROVIDER = "ollama"
@@ -17,6 +18,18 @@ $env:JARVIS_MODEL_LOOPBACK_ENDPOINT = "http://127.0.0.1:11434"
 python -m jarvis --model-smoke
 ```
 
+For an explicitly configured llama.cpp runtime:
+
+```powershell
+$env:JARVIS_MODEL_PROVIDER = "llama_cpp"
+$env:JARVIS_LLAMA_CPP_SERVER_PATH = "<user-local-runtime>\llama-server.exe"
+$env:JARVIS_LLAMA_CPP_MODEL_PATH = "<external-model-directory>\model.gguf"
+$env:JARVIS_MODEL_LOOPBACK_ENDPOINT = "http://127.0.0.1:18765"
+$env:JARVIS_LOCAL_MODEL_AUTOSTART = "true"
+python -m jarvis --model-smoke
+```
+
 The endpoint must remain a loopback HTTP origin with an explicit port. Heavy
 inference and model storage are deployment-owned and must not create duplicate
-stores on the constrained workstation.
+stores on the constrained workstation. Model weights remain operator-owned;
+Phase 12 does not download or copy them.

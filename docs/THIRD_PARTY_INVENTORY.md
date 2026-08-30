@@ -12,6 +12,7 @@ surfaces. It is not a final distribution notice.
 | JARVIS runtime | this repository `pyproject.toml` | Private development metadata; no final product license selected | Original product-owned contracts and tests |
 | Python standard library | Python runtime | Python Software Foundation License | SQLite, HTTP, CLI, hashing, and async orchestration |
 | Ollama | Existing local service boundary | No SDK copied | Optional loopback model adapter only; no pull/copy/install/delete |
+| llama.cpp | Official `ggml-org/llama.cpp` release `b10690`; local runtime package checksum-verified | MIT; runtime remains user-local and untracked | Explicit loopback `llama_cpp` provider/supervisor; no model-weight download/copy |
 | Existing local Qwen assets | Local assets observed outside this repository | Exact model license not established here | Alias configuration only; no asset copied |
 | Mem0 / Cognee / Graphiti | No runtime package selected | Not introduced | Reference-only evaluation; JARVIS memory remains authoritative |
 | LangGraph | No runtime package selected | Not introduced | Reference-only evaluation; JARVIS goal engine remains authoritative |

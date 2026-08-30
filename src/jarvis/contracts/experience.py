@@ -33,6 +33,8 @@ class SystemStatusProjection:
     offline: bool = True
     model_provider: str | None = None
     model_available: bool = False
+    model_alias: str | None = None
+    model_latency_ms: float | None = None
     event_count: int = 0
     active_runs: int = 0
     active_workers: int = 0

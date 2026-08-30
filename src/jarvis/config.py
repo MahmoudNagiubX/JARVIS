@@ -25,6 +25,12 @@ class JarvisConfig:
     primary_model: str = "qwen3.5:4b"
     fallback_model: str = "qwen3.5-heretic:9b-q4km"
     ollama_base_url: str = "http://127.0.0.1:11434"
+    llama_cpp_server_path: str | None = None
+    llama_cpp_model_path: str | None = None
+    llama_cpp_context_size: int = 4096
+    llama_cpp_threads: int = 8
+    llama_cpp_gpu_layers: int | None = None
+    local_model_autostart: bool = False
     max_agent_steps: int = 3
     deployment_profile: str = "development"
     runtime_role: str = "core"
@@ -55,6 +61,12 @@ class JarvisConfig:
             "JARVIS_MODEL_LOOPBACK_ENDPOINT",
             os.getenv("JARVIS_OLLAMA_BASE_URL", defaults.ollama_base_url),
         ).strip()
+        llama_cpp_server_path = os.getenv("JARVIS_LLAMA_CPP_SERVER_PATH", "").strip() or None
+        llama_cpp_model_path = os.getenv("JARVIS_LLAMA_CPP_MODEL_PATH", "").strip() or None
+        context_text = os.getenv("JARVIS_LLAMA_CPP_CONTEXT_SIZE", str(defaults.llama_cpp_context_size)).strip()
+        threads_text = os.getenv("JARVIS_LLAMA_CPP_THREADS", str(defaults.llama_cpp_threads)).strip()
+        gpu_layers_text = os.getenv("JARVIS_LLAMA_CPP_GPU_LAYERS", "").strip()
+        autostart_text = os.getenv("JARVIS_LOCAL_MODEL_AUTOSTART", "false").strip().lower()
         max_steps_text = os.getenv("JARVIS_MAX_AGENT_STEPS", str(defaults.max_agent_steps))
         deployment_profile = os.getenv("JARVIS_DEPLOYMENT_PROFILE", defaults.deployment_profile).strip().lower()
         runtime_role = os.getenv("JARVIS_RUNTIME_ROLE", defaults.runtime_role).strip().lower()
@@ -74,6 +86,12 @@ class JarvisConfig:
         except ValueError as exc:
             raise ValueError("JARVIS_MAX_AGENT_STEPS must be an integer") from exc
         try:
+            llama_cpp_context_size = int(context_text)
+            llama_cpp_threads = int(threads_text)
+            llama_cpp_gpu_layers = int(gpu_layers_text) if gpu_layers_text else None
+        except ValueError as exc:
+            raise ValueError("llama.cpp context, threads, and gpu layers must be integers") from exc
+        try:
             satellite_poll_interval = float(poll_text)
             heartbeat_interval = float(heartbeat_text)
         except ValueError as exc:
@@ -92,6 +110,15 @@ class JarvisConfig:
             raise ValueError("JARVIS_MODEL_PROVIDER must be mock, ollama, gguf, or llama_cpp")
         if not primary_model or not fallback_model:
             raise ValueError("model aliases cannot be empty")
+        if not 1024 <= llama_cpp_context_size <= 32768:
+            raise ValueError("JARVIS_LLAMA_CPP_CONTEXT_SIZE must be between 1024 and 32768")
+        logical_cpus = os.cpu_count() or 1
+        if not 1 <= llama_cpp_threads <= logical_cpus:
+            raise ValueError("JARVIS_LLAMA_CPP_THREADS must be within logical CPU count")
+        if llama_cpp_gpu_layers is not None and not -1 <= llama_cpp_gpu_layers <= 256:
+            raise ValueError("JARVIS_LLAMA_CPP_GPU_LAYERS must be -1 or between 0 and 256")
+        if autostart_text not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+            raise ValueError("JARVIS_LOCAL_MODEL_AUTOSTART must be boolean")
         _validate_loopback_http_url(ollama_base_url)
         if not 1 <= max_agent_steps <= 10:
             raise ValueError("max_agent_steps must be between 1 and 10")
@@ -105,6 +132,12 @@ class JarvisConfig:
             primary_model=primary_model,
             fallback_model=fallback_model,
             ollama_base_url=ollama_base_url,
+            llama_cpp_server_path=llama_cpp_server_path,
+            llama_cpp_model_path=llama_cpp_model_path,
+            llama_cpp_context_size=llama_cpp_context_size,
+            llama_cpp_threads=llama_cpp_threads,
+            llama_cpp_gpu_layers=llama_cpp_gpu_layers,
+            local_model_autostart=autostart_text in {"true", "1", "yes", "on"},
             max_agent_steps=max_agent_steps,
             deployment_profile=deployment_profile,
             runtime_role=runtime_role,
@@ -136,6 +169,23 @@ def _validate_loopback_http_url(value: str) -> None:
         raise ValueError("JARVIS_OLLAMA_BASE_URL must use a loopback IP literal") from exc
     if not address.is_loopback:
         raise ValueError("JARVIS_OLLAMA_BASE_URL must remain loopback-only")
+
+
+def validate_loopback_http_origin(value: str) -> tuple[str, int]:
+    """Validate and return a literal loopback HTTP host/port pair."""
+
+    parsed = urlsplit(value)
+    if parsed.scheme != "http" or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise ValueError("llama.cpp endpoint must be a loopback HTTP origin")
+    if parsed.hostname is None or parsed.port is None:
+        raise ValueError("llama.cpp endpoint must include a loopback host and port")
+    try:
+        address = ip_address(parsed.hostname)
+    except ValueError as exc:
+        raise ValueError("llama.cpp endpoint must use a loopback IP literal") from exc
+    if not address.is_loopback:
+        raise ValueError("llama.cpp endpoint must remain loopback-only")
+    return parsed.hostname, parsed.port
 
 
 def _validate_profile(

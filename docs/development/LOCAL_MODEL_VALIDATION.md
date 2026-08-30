@@ -2,7 +2,8 @@
 
 The gateway defaults to `mock`. The opt-in probe checks the configured health
 endpoint and, only with `--model-exercise`, sends one bounded chat request. It
-never pulls, installs, copies, or deletes a model.
+never pulls, installs, copies, or deletes a model. `llama_cpp` is the canonical
+local GGUF provider; `gguf` is a compatibility alias.
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -14,7 +15,20 @@ python -m jarvis --model-probe
 python -m jarvis --model-probe --model-exercise
 ```
 
-Record `ollama list`, endpoint health, exact aliases, generation result,
-latency, timeout behavior, and offline fallback. Phase 06 preflight found no
-Ollama executable or listener on the workstation, so Qwen/Ollama live
-acceptance is not claimed.
+For the product-owned llama.cpp boundary, configure an existing external
+GGUF and user-local runtime:
+
+```powershell
+$env:JARVIS_MODEL_PROVIDER = "llama_cpp"
+$env:JARVIS_LLAMA_CPP_SERVER_PATH = "<user-local-runtime>\llama-server.exe"
+$env:JARVIS_LLAMA_CPP_MODEL_PATH = "<external-model-directory>\model.gguf"
+$env:JARVIS_MODEL_LOOPBACK_ENDPOINT = "http://127.0.0.1:18765"
+$env:JARVIS_LOCAL_MODEL_AUTOSTART = "true"
+python -m jarvis --model-probe --model-exercise
+```
+
+Record endpoint health, exact aliases, generation result, latency, timeout
+behavior, offline failure, and restart recovery. Do not record absolute
+personal paths, private prompts, or raw model output. Phase 12 evidence is
+bounded in `docs/phase12/evidence/PHYSICAL_LOCAL_BRAIN.json`; its live text
+brain is PASS and its real AgentRuntime tool turn is PARTIAL.

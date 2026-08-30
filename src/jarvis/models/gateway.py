@@ -3,30 +3,86 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
 from ..config import JarvisConfig
 from ..contracts import LLMRequest, LLMResponse
+from ..events import Event, EventCategory, EventState
 from .config import ModelGatewayConfig
 from .health import ModelHealth
-from .providers import MockModelProvider, ModelProviderError, OllamaProvider, UnavailableModelProvider
+from .llama_runtime import LlamaCppRuntimeConfig, LlamaCppRuntimeSupervisor, LlamaRuntimeStatus
+from .providers import LlamaCppProvider, MockModelProvider, ModelProviderError, OllamaProvider, UnavailableModelProvider
 from .routing import ModelRoute, ModelSelection, default_selections
 
 
 class ModelGateway:
-    def __init__(self, config: JarvisConfig, providers: Mapping[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        config: JarvisConfig,
+        providers: Mapping[str, object] | None = None,
+        *,
+        event_bus: Any | None = None,
+        repository: Any | None = None,
+    ) -> None:
         gateway_config = ModelGatewayConfig.from_config(config)
         self.config = gateway_config
+        self._event_bus = event_bus
+        self._repository = repository
+        self.runtime_supervisor: LlamaCppRuntimeSupervisor | None = None
+        provider_name = "llama_cpp" if gateway_config.provider == "gguf" else gateway_config.provider
         self.providers = dict(providers or {})
+        if provider_name not in self.providers and gateway_config.provider in self.providers:
+            self.providers[provider_name] = self.providers[gateway_config.provider]
         if not self.providers:
-            if gateway_config.provider == "mock":
+            if provider_name == "mock":
                 self.providers["mock"] = MockModelProvider()
-            elif gateway_config.provider == "ollama":
+            elif provider_name == "ollama":
                 self.providers["ollama"] = OllamaProvider(gateway_config.ollama_base_url)
+            elif provider_name == "llama_cpp":
+                try:
+                    runtime_config = LlamaCppRuntimeConfig.from_config(
+                        config,
+                        repository_root=Path.cwd(),
+                    )
+                except ValueError as exc:
+                    self.providers["llama_cpp"] = UnavailableModelProvider(str(exc))
+                else:
+                    self.runtime_supervisor = LlamaCppRuntimeSupervisor(runtime_config)
+                    self.providers["llama_cpp"] = LlamaCppProvider(
+                        runtime_config.endpoint,
+                        model_alias=runtime_config.model_alias,
+                    )
             else:
-                self.providers[gateway_config.provider] = UnavailableModelProvider("provider_adapter_not_configured")
+                self.providers[provider_name] = UnavailableModelProvider("provider_adapter_not_configured")
         self.selections = default_selections(
-            gateway_config.provider, gateway_config.primary_model, gateway_config.fallback_model
+            provider_name, gateway_config.primary_model, gateway_config.fallback_model
         )
+
+    async def start(self) -> LlamaRuntimeStatus | None:
+        """Optionally start an explicitly configured live local model."""
+
+        if self.runtime_supervisor is None or not self.config.local_model_autostart:
+            return None
+        status = await self.runtime_supervisor.start()
+        await self._emit_runtime("model.runtime.started", status, EventState.ACCEPTED)
+        if status.ready:
+            await self._emit_runtime("model.runtime.ready", status, EventState.COMPLETED)
+        else:
+            await self._emit_runtime("model.runtime.unavailable", status, EventState.FAILED)
+        return status
+
+    async def shutdown(self) -> LlamaRuntimeStatus | None:
+        if self.runtime_supervisor is None:
+            return None
+        status = await self.runtime_supervisor.stop()
+        await self._emit_runtime("model.runtime.stopped", status, EventState.COMPLETED)
+        return status
+
+    async def runtime_health(self) -> LlamaRuntimeStatus | None:
+        if self.runtime_supervisor is None:
+            return None
+        return await self.runtime_supervisor.health()
 
     def selection(self, route: ModelRoute) -> ModelSelection:
         return self.selections[route]
@@ -58,3 +114,17 @@ class ModelGateway:
         if provider is None or not hasattr(provider, "health"):
             return ModelHealth.unavailable(selection.provider, "health_not_supported")
         return await provider.health(selection.model)
+
+    async def _emit_runtime(self, event_type: str, status: LlamaRuntimeStatus, state: EventState) -> None:
+        payload = {
+            "provider": status.provider,
+            "ready": status.ready,
+            "model_alias": status.model_alias,
+            "owned": status.owned,
+            "reason": status.reason,
+        }
+        event = Event.create(event_type, EventCategory.MODEL, correlation_id="model-runtime", payload=payload, state=state)
+        if self._repository is not None:
+            self._repository.append_event(event)
+        if self._event_bus is not None:
+            await self._event_bus.publish(event)

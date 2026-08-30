@@ -212,7 +212,19 @@ class AgentRuntime:
                     output_usage=response.usage.get("output_tokens"),
                     latency_ms=(datetime.now(UTC) - started).total_seconds() * 1000,
                 )
-                await self._emit("model.completed", EventCategory.MODEL, run, {"request_id": request_id, "model": response.model}, state=EventState.COMPLETED)
+                await self._emit(
+                    "model.completed",
+                    EventCategory.MODEL,
+                    run,
+                    {
+                        "request_id": request_id,
+                        "model": response.model,
+                        "provider": response.provider,
+                        "tool_call_count": len(response.tool_calls),
+                        "latency_ms": (datetime.now(UTC) - started).total_seconds() * 1000,
+                    },
+                    state=EventState.COMPLETED,
+                )
                 if not response.tool_calls:
                     assistant = self.repository.create_message(run.conversation_id, run.session_id, run.id, None, "assistant", response.text)
                     self.repository.update_run(run_id, status="succeeded", completed_at=datetime.now(UTC), context_json=self._run_context(messages, context_snapshot, ephemeral_results))

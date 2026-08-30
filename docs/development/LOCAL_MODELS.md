@@ -14,3 +14,25 @@ python -m jarvis --model-smoke
 The smoke test only checks `/api/tags` and sends one bounded chat request. It
 does not run `ollama pull`, change the model store, copy GGUF files, or start
 Ollama. Existing local Qwen assets are referenced by alias only.
+
+## llama.cpp / GGUF
+
+The explicit local path uses the existing `ModelGateway` and one bounded
+`LlamaCppRuntimeSupervisor`; it does not create a second model manager:
+
+```powershell
+$env:JARVIS_MODEL_PROVIDER = "llama_cpp"
+$env:JARVIS_LLAMA_CPP_SERVER_PATH = "<user-local-runtime>\llama-server.exe"
+$env:JARVIS_LLAMA_CPP_MODEL_PATH = "<external-model-directory>\model.gguf"
+$env:JARVIS_MODEL_LOOPBACK_ENDPOINT = "http://127.0.0.1:18765"
+$env:JARVIS_LLAMA_CPP_CONTEXT_SIZE = "4096"
+$env:JARVIS_LLAMA_CPP_THREADS = "8"
+$env:JARVIS_LLAMA_CPP_GPU_LAYERS = "99"
+$env:JARVIS_LOCAL_MODEL_AUTOSTART = "true"
+python -m jarvis --model-smoke
+```
+
+The executable must already exist and the model must be an existing external
+`.gguf`. Paths are validated; model weights are never downloaded, copied,
+imported, or deleted. `JARVIS_LOCAL_MODEL_AUTOSTART` defaults to false, so
+test/development composition does not launch a heavy model.

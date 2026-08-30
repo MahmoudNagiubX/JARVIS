@@ -13,6 +13,7 @@ class ModelHealth:
     checked_at: datetime
     reason: str
     model: str | None = None
+    latency_ms: float | None = None
 
     @classmethod
     def unavailable(cls, provider: str, reason: str) -> "ModelHealth":

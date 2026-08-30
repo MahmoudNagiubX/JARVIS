@@ -188,7 +188,13 @@ class CoreApplication:
             "model": asdict(model),
             "offline": asdict(self.runtime.offline.state),
             "internet": asdict(self.runtime.offline.state),
-            "local_model": {"available": model.available, "provider": model.provider, "reason": model.reason},
+            "local_model": {
+                "available": model.available,
+                "provider": model.provider,
+                "model_alias": model.model,
+                "latency_ms": model.latency_ms,
+                "reason": model.reason,
+            },
             "venom": asdict(self.runtime.venom.health()),
             "perception": self.runtime.perception.health(),
             "runtime_profile": {
