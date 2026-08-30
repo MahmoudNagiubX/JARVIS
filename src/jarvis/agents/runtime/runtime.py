@@ -299,7 +299,7 @@ class AgentRuntime:
             self._cancelled.discard(run_id)
 
     def _history(self, run: RunRecord) -> list[LLMMessage]:
-        history = [LLMMessage(LLMRole.SYSTEM, "You are JARVIS. Use only declared tools and report factual outcomes. When the user explicitly refers to the current screen/window/page and a perception tool is available, observe before answering. Never guess visual state.")]
+        history = [LLMMessage(LLMRole.SYSTEM, "You are JARVIS. Use only declared tools and report factual outcomes. When the user explicitly refers to the current screen/window/page and a perception tool is available, observe before answering. For active application or window metadata, use desktop.context.read; use screen.observe or screen.latest only when pixels, a region, or a cached screen observation is explicitly requested. Arabic metadata requests such as 'شوف الشاشة', 'إيه اللي قدامي؟', and 'بص على الشاشة' and mixed requests such as 'شوف الscreen' must use desktop.context.read first. Never guess visual state.")]
         for message in self.repository.messages(run.conversation_id):
             if message.role in {"user", "assistant"}:
                 history.append(LLMMessage(LLMRole(message.role), message.content))

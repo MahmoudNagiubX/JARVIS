@@ -43,4 +43,10 @@ the real text path, provider tool normalization, and three fresh real
 AgentRuntime desktop-tool turns passed. The local text model truthfully
 reports `model_route_unsupported` for vision, requires its configured alias in
 `/v1/models`, and serializes generation with one active request plus eight
-bounded waiters.
+bounded waiters. Tool-schema selection is deterministic and selector-only:
+conservative Unicode normalization preserves reachability for English,
+Egyptian-Arabic Arabic-script, and mixed intents. Arabic or mixed requests
+for active application/window metadata expose the bounded
+`desktop.context.read` schema; English visual requests retain the existing
+visual group. Explicit pixel, region, or cached-observation requests remain
+the only reason to expose `screen.observe` or `screen.latest`.

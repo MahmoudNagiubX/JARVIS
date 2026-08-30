@@ -17,6 +17,14 @@ structured tool evidence before sending it to a local context window. Empty
 no-tool responses fail as `model_empty_response`; a blank response with a
 valid tool call remains executable.
 
+The selector's bilingual closure is deliberately small and does not translate
+or reinterpret user text. It case-folds Latin text, removes Arabic tatweel and
+diacritics, normalizes common Arabic letter variants, and matches only the
+registered production tool groups. Arabic and mixed active-window metadata
+requests select `desktop.context.read`; English visual requests retain the
+existing visual schema group. Tool output is never used to expand a later
+turn's selection.
+
 ```powershell
 $env:JARVIS_MODEL_PROVIDER = "ollama"
 $env:JARVIS_MODEL_LOOPBACK_ENDPOINT = "http://127.0.0.1:11434"

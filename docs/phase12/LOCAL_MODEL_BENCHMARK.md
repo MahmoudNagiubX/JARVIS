@@ -27,14 +27,22 @@ The standalone provider tool request for the harmless synthetic
 dictionary argument. The real `AgentRuntime` text turn succeeded with model
 id `jarvis-local-qwen` and did not return a mock response.
 
-The final remediation selected three visual schemas for the desktop intent
-(`desktop.context.read`, `screen.observe`, and `screen.latest`; 943 bytes).
-Three fresh real `AgentRuntime` desktop turns each emitted
-`desktop.context.read` followed by `tool.requested`, `tool.started`, and
-`tool.completed`, then completed a second model turn. The harmless
+The bilingual closure keeps English visual intent at three visual schemas
+(`desktop.context.read`, `screen.observe`, and `screen.latest`; 943 bytes),
+while Arabic and mixed active-window metadata intent exposes the bounded
+`desktop.context.read` schema only. Three fresh real Arabic `AgentRuntime`
+desktop turns and one mixed Arabic/English turn each emitted
+`desktop.context.read` followed by the complete tool lifecycle, then completed
+a second model turn with a non-empty final response. The harmless Arabic
 `status.read` turn also passed. The follow-up path omits duplicate grounding
 context and bounds the structured tool evidence to 6,000 characters, keeping
 the measured 2,048-token configuration usable.
+
+The selector closure is conservative: it normalizes only its matching view,
+does not alter stored user text, keeps ordinary Arabic and English chat
+tool-free, rejects the `what type of ...` keyboard false positive, and never
+uses tool output to expand a second-turn schema selection. The focused closure
+matrix passed 45/0; the full repository suite passed 218/0.
 
 The strict model identity check requires the configured alias in `/v1/models`;
 vision is reported as `model_route_unsupported`, and local generation is

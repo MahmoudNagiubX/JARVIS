@@ -12,7 +12,7 @@ from jarvis.contracts import LLMMessage, LLMRequest, LLMResponse, LLMRole, Voice
 from jarvis.models.gateway import ModelGateway
 from jarvis.models.providers import LlamaCppProvider, MockModelProvider, ModelProviderError
 from jarvis.models.routing import ModelRoute
-from jarvis.tools.selection import ToolSchemaSelector
+from jarvis.tools.selection import ToolSchemaSelector, normalize_intent
 
 
 class PhaseTwelveFinalClosureTests(unittest.IsolatedAsyncioTestCase):
@@ -54,6 +54,67 @@ class PhaseTwelveFinalClosureTests(unittest.IsolatedAsyncioTestCase):
             )
 
         return ModelGateway(self.runtime.config, {"mock": MockModelProvider(handler)})
+
+    @staticmethod
+    def _names(schemas: tuple[dict[str, object], ...]) -> tuple[str, ...]:
+        return tuple(schema["function"]["name"] for schema in schemas)
+
+    def test_bilingual_selector_matrix_is_bounded_and_keeps_ordinary_chat_tool_free(self) -> None:
+        selector = ToolSchemaSelector(self.runtime.tools)
+        visual_cases = (
+            "شوف الشاشة",
+            "إيه اللي قدامي؟",
+            "أيه اللي قدامي؟",
+            "شوف الscreen",
+        )
+        for intent in visual_cases:
+            with self.subTest(intent=intent):
+                self.assertEqual(self._names(selector.select(intent)), ToolSchemaSelector.ARABIC_METADATA_TOOLS)
+        desktop_schema = selector.select("شوف الشاشة")[0]
+        self.assertIn("current screen's active application", desktop_schema["function"]["description"])
+        english_visual = selector.select("what is on my current screen")
+        self.assertEqual(self._names(english_visual), ToolSchemaSelector.VISUAL_TOOLS)
+        self.assertIn("Do not call this for identifying the active application or window", english_visual[1]["function"]["description"])
+
+        mixed_visual = self._names(selector.select("بص على الwindow"))
+        self.assertLessEqual(len(mixed_visual), ToolSchemaSelector.MAX_MODEL_TOOLS)
+        self.assertIn("desktop.context.read", mixed_visual)
+        self.assertIn("computer.window.control", mixed_visual)
+
+        computer_cases = ("اكتب الكلام ده", "type الكلام ده")
+        for intent in computer_cases:
+            with self.subTest(intent=intent):
+                self.assertEqual(self._names(selector.select(intent)), ToolSchemaSelector.COMPUTER_TOOLS)
+        self.assertEqual(self._names(selector.select("what type of network is this?")), ())
+
+        self.assertIn("computer.audio.adjust", self._names(selector.select("وطي الصوت")))
+        self.assertIn("computer.audio.adjust", self._names(selector.select("علي الvolume")))
+        self.assertIn("computer.clipboard.read", self._names(selector.select("حط في الكليب بورد")))
+        self.assertIn("computer.clipboard.write", self._names(selector.select("حطه في الclipboard")))
+        self.assertEqual(self._names(selector.select("قولي حالتك")), ToolSchemaSelector.STATUS_TOOLS)
+        self.assertEqual(self._names(selector.select("check الstatus")), ToolSchemaSelector.STATUS_TOOLS)
+
+        for intent in ("run the tests", "run tests", "test the project", "execute tests", "unit tests", "شغل التستات", "رن التستات", "شغل tests", "اعمل test للمشروع", "اختبر المشروع", "شغل الunit tests"):
+            with self.subTest(intent=intent):
+                self.assertEqual(self._names(selector.select(intent)), ToolSchemaSelector.ENGINEERING_TOOLS)
+
+        for intent in ("شوف الشاشة وقولي الحالة", "شوف الscreen and check الstatus", "type الكلام ده في الwindow"):
+            with self.subTest(intent=intent):
+                self.assertLessEqual(len(selector.select(intent)), ToolSchemaSelector.MAX_MODEL_TOOLS)
+        for intent in ("عامل ايه؟", "احكيلي نكتة", "اشرحلي machine learning", "صباح الخير", "tell me a joke"):
+            with self.subTest(intent=intent):
+                self.assertEqual(selector.select(intent), ())
+
+    def test_selector_normalization_is_conservative_and_does_not_change_user_text(self) -> None:
+        original = "  إيه الــشَّاشة؟  "
+        self.assertEqual(normalize_intent(original), "ايه الشاشة؟")
+        self.assertEqual(original, "  إيه الــشَّاشة؟  ")
+
+    def test_tool_output_cannot_expand_second_turn_schema_selection(self) -> None:
+        user_intent = LLMMessage(LLMRole.USER, "tell me a joke")
+        tool_output = LLMMessage(LLMRole.TOOL, "clipboard اكتب screen")
+        messages = [LLMMessage(LLMRole.SYSTEM, "system"), user_intent, tool_output]
+        self.assertEqual(self._names(self.runtime.agent._selected_tool_schemas(messages)), ())
 
     async def test_selector_is_bounded_exact_registered_and_stable_for_tool_turn(self) -> None:
         selector = ToolSchemaSelector(self.runtime.tools)

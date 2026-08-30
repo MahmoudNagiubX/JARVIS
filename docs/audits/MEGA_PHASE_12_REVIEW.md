@@ -167,3 +167,62 @@ context/evidence fix, strict local model identity and route checks, bounded
 provider concurrency, and their tests/docs. It contains no duplicate
 scheduler, EventBus, VoiceCore, ModelGateway, or tool registry, no broad SQL
 cleanup, no migration change, and no protected BMO evidence change.
+
+## Bilingual Agentic Brain Closure
+
+The remaining Phase 12 review gap was an English-only intent selector that
+could hide the existing production tools from Egyptian-Arabic and mixed
+Arabic/English requests. The closure stayed within the existing
+`ToolSchemaSelector` and AgentRuntime prompt boundary. It added no model,
+llama.cpp, context-size, `tool_choice`, authority, migration, or new parser
+surface.
+
+### Selector behavior
+
+- The matching view trims and collapses whitespace, removes tatweel and
+  Arabic diacritics, case-folds Latin text, and normalizes only the common
+  Arabic letter variants `أ/إ/آ` to `ا` and `ى` to `ي`. The original user text
+  is unchanged.
+- Arabic and mixed active-window metadata phrases such as `شوف الشاشة`,
+  `إيه اللي قدامي؟`, `بص على الشاشة`, and `شوف الscreen` expose the bounded
+  registered `desktop.context.read` schema. English visual intent retains the
+  existing visual group of `desktop.context.read`, `screen.observe`, and
+  `screen.latest`.
+- `screen.observe` and `screen.latest` remain described as pixel, region, or
+  cached-observation tools. Computer, clipboard, audio, status, and
+  `project.tests.run` groups are reachable for bilingual and mixed intent.
+  The `what type of network ...` false positive remains tool-free.
+- Selection is still capped at `MAX_MODEL_TOOLS <= 8`, uses exact enabled
+  registry names, and reads only the latest meaningful user message. Tool
+  output cannot expand a later-turn schema selection. Ordinary Arabic and
+  English chat remains tool-free.
+
+### Closure validation
+
+- Focused Phase 12 closure matrix: **45 passed, 0 failed**.
+- Phase 08 regression: **13 passed, 0 failed**.
+- Phase 09 regression: **39 passed, 0 failed**.
+- Phase 10 regression: **31 passed, 0 failed**.
+- Phase 11 regression: **26 passed, 0 failed**.
+- Full repository suite: **218 passed, 0 failed**.
+- `python -m compileall src tests`: PASS.
+- `git diff --check`: PASS.
+
+### Physical bilingual closure
+
+With the existing external Qwen GGUF, existing llama.cpp `b10690` binary,
+one loopback server, and context size 2,048:
+
+- Arabic visual AgentRuntime turns: **3/3 PASS**.
+- Mixed Arabic/English visual AgentRuntime turn: **1/1 PASS**.
+- Arabic status AgentRuntime turn: **PASS**.
+- Every physical tool turn emitted the expected tool, complete requested /
+  permission-checked / started / completed lifecycle, and completed a second
+  model turn with a non-empty final response.
+- The Arabic and mixed metadata turns selected one schema,
+  `desktop.context.read`; English visual selection remains three schemas.
+
+The sanitized evidence is recorded in
+`docs/phase12/evidence/PHYSICAL_LOCAL_BRAIN.json`. No prompts, raw model
+output, window titles, tool results, absolute paths, model copy/download, or
+protected BMO evidence were added to the evidence.
