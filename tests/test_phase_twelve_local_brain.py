@@ -16,10 +16,12 @@ from urllib.request import Request
 from jarvis.authority.identity.service import EnrollmentGrant
 from jarvis.bootstrap import create_runtime
 from jarvis.config import JarvisConfig
-from jarvis.contracts import LLMMessage, LLMRequest, LLMRole
+from jarvis.contracts import LLMMessage, LLMRequest, LLMResponse, LLMRole, ToolResult, ToolResultStatus
 from jarvis.models.gateway import ModelGateway
 from jarvis.models.llama_runtime import LlamaCppRuntimeConfig, LlamaCppRuntimeSupervisor, LlamaRuntimeState
 from jarvis.models.providers import LlamaCppProvider, ModelOfflineError, ModelProviderError
+from jarvis.tools.registry import ToolRegistry, ToolSpec
+from jarvis.tools.selection import ToolSchemaSelector
 
 
 class _Response:
@@ -159,6 +161,70 @@ class LlamaProviderTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(fake.timeouts, [180.0])
 
+    async def test_provider_health_requires_the_expected_alias(self) -> None:
+        fake = _FakeOpen([
+            _Response(b'{"status":"ok"}'),
+            _Response(b'{"object":"list","data":[{"id":"other-model"},{"id":"jarvis-local-qwen"}]}'),
+        ])
+        health = await LlamaCppProvider("http://127.0.0.1:8080", urlopen=fake).health()
+        self.assertTrue(health.available)
+        wrong = _FakeOpen([
+            _Response(b'{"status":"ok"}'),
+            _Response(b'{"object":"list","data":[{"id":"other-model"}]}'),
+        ])
+        health = await LlamaCppProvider("http://127.0.0.1:8080", urlopen=wrong).health()
+        self.assertFalse(health.available)
+        self.assertEqual(health.reason, "llama_cpp_model_mismatch")
+
+    async def test_provider_concurrency_allows_one_active_generation_and_eight_waiters(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        calls = 0
+        lock = threading.Lock()
+
+        def blocking_open(request: Request, *, timeout: float) -> _Response:
+            del request, timeout
+            nonlocal calls
+            with lock:
+                calls += 1
+                current = calls
+            if current == 1:
+                entered.set()
+                self.assertTrue(release.wait(3))
+            return _completion({"role": "assistant", "content": "ready"})
+
+        provider = LlamaCppProvider("http://127.0.0.1:8080", urlopen=blocking_open)
+        tasks = [asyncio.create_task(provider.generate(self._request())) for _ in range(10)]
+        await asyncio.to_thread(entered.wait, 2)
+        await asyncio.sleep(0.1)
+        self.assertLessEqual(provider._waiting_generations, provider.MAX_WAITERS)
+        release.set()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        self.assertEqual(sum(isinstance(item, ModelProviderError) and str(item) == "local_model_busy" for item in results), 1)
+        self.assertEqual(sum(isinstance(item, LLMResponse) for item in results), 9)
+
+    async def test_provider_waiter_timeout_is_removed_without_leaking_slot(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocking_open(request: Request, *, timeout: float) -> _Response:
+            del request, timeout
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return _completion({"role": "assistant", "content": "ready"})
+
+        provider = LlamaCppProvider("http://127.0.0.1:8080", urlopen=blocking_open)
+        first = asyncio.create_task(provider.generate(self._request()))
+        await asyncio.to_thread(entered.wait, 2)
+        timed_out = asyncio.create_task(provider.generate(LLMRequest(
+            "request-timeout", (LLMMessage(LLMRole.USER, "hello"),), timeout_seconds=1.0,
+        )))
+        with self.assertRaisesRegex(ModelProviderError, "local_model_busy"):
+            await timed_out
+        self.assertEqual(provider._waiting_generations, 0)
+        release.set()
+        await first
+
     async def test_real_stdlib_http_boundary_covers_health_models_and_generation(self) -> None:
         received: list[dict[str, object]] = []
 
@@ -281,7 +347,12 @@ class LlamaSupervisorTests(unittest.IsolatedAsyncioTestCase):
             calls.append((argv, kwargs))
             return process
 
-        fake = _FakeOpen([_Response(b'{"status":"ok"}'), _Response(b'{"status":"ok"}')])
+        fake = _FakeOpen([
+            _Response(b'{"status":"ok"}'),
+            _Response(b'{"object":"list","data":[{"id":"jarvis-local-qwen"}]}'),
+            _Response(b'{"status":"ok"}'),
+            _Response(b'{"object":"list","data":[{"id":"jarvis-local-qwen"}]}'),
+        ])
         supervisor = LlamaCppRuntimeSupervisor(self._config(), popen_factory=popen, urlopen=fake)
         first = await supervisor.start()
         second = await supervisor.start()
@@ -292,6 +363,23 @@ class LlamaSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][0][0], str(self.executable.resolve()))
         await supervisor.stop()
         self.assertTrue(process.terminated)
+
+    async def test_close_cleans_owned_process(self) -> None:
+        process = _FakeProcess()
+        fake = _FakeOpen([
+            _Response(b'{"status":"ok"}'),
+            _Response(b'{"object":"list","data":[{"id":"jarvis-local-qwen"}]}'),
+        ])
+        supervisor = LlamaCppRuntimeSupervisor(
+            self._config(port=18905),
+            popen_factory=lambda *_args, **_kwargs: process,
+            urlopen=fake,
+        )
+        status = await supervisor.start()
+        self.assertTrue(status.ready)
+        await supervisor.close()
+        self.assertTrue(process.terminated)
+        self.assertEqual(supervisor.status.state, LlamaRuntimeState.STOPPED)
 
     async def test_start_exited_process_and_readiness_timeout_are_bounded(self) -> None:
         exited = _FakeProcess(exited=True)
@@ -310,9 +398,11 @@ class LlamaSupervisorTests(unittest.IsolatedAsyncioTestCase):
     async def test_attached_server_is_not_owned_or_stopped(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
-                self.send_response(200)
+                body = b'{"status":"ok"}' if self.path == "/health" else b'{"object":"list","data":[{"id":"jarvis-local-qwen"}]}'
+                self.send_response(200 if self.path in {"/health", "/v1/models"} else 404)
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(b'{"status":"ok"}')
+                self.wfile.write(body)
 
             def log_message(self, *_args: object) -> None:
                 return None
@@ -335,7 +425,10 @@ class LlamaSupervisorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_503_loading_response_is_compatible_but_not_ready(self) -> None:
         process = _FakeProcess()
-        loading = _FakeOpen([_Response(b'{"status":"loading model"}', status=503)])
+        loading = _FakeOpen([
+            _Response(b'{"status":"loading model"}', status=503),
+            _Response(b'{"object":"list","data":[{"id":"jarvis-local-qwen"}]}'),
+        ])
         supervisor = LlamaCppRuntimeSupervisor(
             self._config(port=18904),
             popen_factory=lambda *_args, **_kwargs: process,
@@ -366,11 +459,111 @@ class LlamaSupervisorTests(unittest.IsolatedAsyncioTestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    async def test_wrong_model_listener_is_not_attached_or_killed(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                if self.path == "/health":
+                    body = b'{"status":"ok"}'
+                elif self.path == "/v1/models":
+                    body = b'{"object":"list","data":[{"id":"other-model"}]}'
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args: object) -> None:
+                return None
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status = await LlamaCppRuntimeSupervisor(
+                self._config(port=server.server_address[1]),
+                popen_factory=lambda *_args, **_kwargs: self.fail("must not attach or spawn"),
+            ).start()
+            self.assertEqual(status.state, LlamaRuntimeState.PORT_CONFLICT)
+            self.assertEqual(status.reason, "model_mismatch")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     async def test_restart_is_refused_for_attached_server(self) -> None:
         supervisor = LlamaCppRuntimeSupervisor(self._config(), popen_factory=lambda *_args, **_kwargs: _FakeProcess())
         supervisor._attached = True
         with self.assertRaisesRegex(RuntimeError, "attached_not_owned"):
             await supervisor.restart()
+
+
+class ToolSchemaSelectorTests(unittest.TestCase):
+    NAMES = (
+        "status.read",
+        "desktop.context.read",
+        "screen.observe",
+        "screen.latest",
+        "computer.window.control",
+        "computer.keyboard.type",
+        "computer.clipboard.read",
+        "computer.clipboard.write",
+        "computer.audio.adjust",
+        "echo.reversible",
+        "project.tests.run",
+        "workspace.read",
+    )
+
+    @staticmethod
+    def _noop(_arguments: object, _context: object) -> ToolResult:
+        return ToolResult(ToolResultStatus.SUCCEEDED)
+
+    def _selector(self, disabled: tuple[str, ...] = ()) -> ToolSchemaSelector:
+        registry = ToolRegistry(tuple(
+            ToolSpec(
+                f"test-{name}", name, "1", f"Test {name}", "read", "tool.request", frozenset(),
+                5.0, True, self._noop, enabled=name not in disabled,
+            )
+            for name in self.NAMES
+        ))
+        return ToolSchemaSelector(registry)
+
+    @staticmethod
+    def _names(schemas: tuple[dict[str, object], ...]) -> tuple[str, ...]:
+        return tuple(schema["function"]["name"] for schema in schemas)
+
+    def test_ordinary_chat_gets_no_tools(self) -> None:
+        self.assertEqual(self._names(self._selector().select("tell me a short joke")), ())
+
+    def test_exact_visual_tool_and_visual_intent_select_registered_group(self) -> None:
+        exact = self._names(self._selector().select("Use desktop.context.read exactly once"))
+        visual = self._names(self._selector().select("what is on my current screen"))
+        self.assertIn("desktop.context.read", exact)
+        self.assertEqual(visual, ToolSchemaSelector.VISUAL_TOOLS)
+
+    def test_computer_and_status_intents_are_bounded(self) -> None:
+        computer = self._names(self._selector().select("type this with the keyboard"))
+        status = self._names(self._selector().select("read status"))
+        self.assertEqual(computer, ToolSchemaSelector.COMPUTER_TOOLS)
+        self.assertEqual(status, ToolSchemaSelector.STATUS_TOOLS)
+        self.assertLessEqual(len(computer), ToolSchemaSelector.MAX_MODEL_TOOLS)
+
+    def test_disabled_and_unknown_tools_cannot_bypass_registry(self) -> None:
+        selected = self._names(self._selector(disabled=("desktop.context.read",)).select("desktop.context.read"))
+        self.assertNotIn("desktop.context.read", selected)
+        self.assertEqual(self._names(self._selector().select("please use made.up.tool now")), ())
+
+    def test_maximum_count_and_second_turn_selection_are_stable(self) -> None:
+        intent = " ".join(self.NAMES)
+        selected = self._selector().select(intent)
+        self.assertEqual(len(selected), ToolSchemaSelector.MAX_MODEL_TOOLS)
+        self.assertEqual(self._names(selected), self._names(self._selector().select(intent)))
+        original = self._names(self._selector().select("what is on my desktop"))
+        tool_output = '{"result":"completed"}'
+        self.assertEqual(original, self._names(self._selector().select("what is on my desktop")))
+        self.assertEqual(self._names(self._selector().select(tool_output)), ())
 
 
 class ModelGatewayAndAgentTests(unittest.IsolatedAsyncioTestCase):
@@ -452,6 +645,9 @@ class ModelGatewayAndAgentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(outcome.response, "The local tool reported ready.")
             self.assertEqual(len(fake.requests), 2)
             self.assertEqual(runtime.repository.run(outcome.run_id).model_id, "jarvis-local-qwen")
+            first_tools = json.loads(fake.requests[0].data.decode())["tools"]
+            second_tools = json.loads(fake.requests[1].data.decode())["tools"]
+            self.assertEqual(first_tools, second_tools)
         finally:
             await runtime.shutdown()
 

@@ -11,6 +11,11 @@ The default provider is deterministic mock mode. A live probe is opt-in and
 reports provider, alias, health, generation check, latency, and failure. The
 llama.cpp path is loopback-only and has no cloud/paid fallback. Phase 12
 physical evidence is in `docs/phase12/evidence/PHYSICAL_LOCAL_BRAIN.json`.
+AgentRuntime supplies deterministic, intent-scoped tool schemas (maximum
+eight), omits the full context snapshot on tool-result follow-ups, and bounds
+structured tool evidence before sending it to a local context window. Empty
+no-tool responses fail as `model_empty_response`; a blank response with a
+valid tool call remains executable.
 
 ```powershell
 $env:JARVIS_MODEL_PROVIDER = "ollama"

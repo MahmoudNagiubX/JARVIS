@@ -161,11 +161,14 @@ class LlamaCppRuntimeSupervisor:
         if self._attached:
             return await self._refresh_status()
         if await asyncio.to_thread(self._port_is_occupied):
-            compatible, ready = await asyncio.to_thread(self._probe_compatibility)
+            compatible, ready, reason = await asyncio.to_thread(self._probe_compatibility)
             if compatible:
+                if reason == "model_mismatch":
+                    self._set_status(LlamaRuntimeState.PORT_CONFLICT, False, reason)
+                    return self._status
                 self._attached = True
                 self._owned = False
-                self._set_status(LlamaRuntimeState.ATTACHED, ready, "attached_ready" if ready else "attached_loading")
+                self._set_status(LlamaRuntimeState.ATTACHED, ready, "attached_ready" if ready else reason)
                 return self._status
             self._set_status(LlamaRuntimeState.PORT_CONFLICT, False, "incompatible_listener")
             return self._status
@@ -191,7 +194,7 @@ class LlamaCppRuntimeSupervisor:
                 self._process = None
                 self._owned = False
                 return self._status
-            compatible, ready = await asyncio.to_thread(self._probe_compatibility)
+            compatible, ready, _reason = await asyncio.to_thread(self._probe_compatibility)
             if compatible and ready:
                 self._set_status(LlamaRuntimeState.READY, True, "ready")
                 return self._status
@@ -201,14 +204,14 @@ class LlamaCppRuntimeSupervisor:
         return self._status
 
     async def health(self) -> LlamaRuntimeStatus:
-        compatible, ready = await asyncio.to_thread(self._probe_compatibility)
+        compatible, ready, reason = await asyncio.to_thread(self._probe_compatibility)
         if ready:
             state = LlamaRuntimeState.ATTACHED if self._attached else LlamaRuntimeState.READY
             self._set_status(state, True, "ready")
         elif self._owned and self._process is not None and self._process.poll() is None:
-            self._set_status(LlamaRuntimeState.PROCESS_RUNNING, False, "model_not_ready")
+            self._set_status(LlamaRuntimeState.PROCESS_RUNNING, False, reason)
         elif compatible and self._attached:
-            self._set_status(LlamaRuntimeState.ATTACHED, False, "attached_unavailable")
+            self._set_status(LlamaRuntimeState.ATTACHED, False, reason)
         else:
             self._set_status(LlamaRuntimeState.UNAVAILABLE, False, "unavailable")
         return self._status
@@ -245,11 +248,11 @@ class LlamaCppRuntimeSupervisor:
         )
 
     async def _refresh_status(self) -> LlamaRuntimeStatus:
-        compatible, ready = await asyncio.to_thread(self._probe_compatibility)
+        compatible, ready, reason = await asyncio.to_thread(self._probe_compatibility)
         if ready:
             self._set_status(LlamaRuntimeState.READY if self._owned else LlamaRuntimeState.ATTACHED, True, "ready")
         elif compatible:
-            self._set_status(LlamaRuntimeState.PROCESS_RUNNING if self._owned else LlamaRuntimeState.ATTACHED, False, "model_not_ready")
+            self._set_status(LlamaRuntimeState.PROCESS_RUNNING if self._owned else LlamaRuntimeState.ATTACHED, False, reason)
         else:
             self._set_status(LlamaRuntimeState.UNAVAILABLE, False, "unavailable")
         return self._status
@@ -277,25 +280,43 @@ class LlamaCppRuntimeSupervisor:
         except OSError:
             return False
 
-    def _probe_compatibility(self) -> tuple[bool, bool]:
-        status, body = self._get("/health")
-        if status == 200:
-            try:
-                decoded = json.loads(body.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                decoded = None
-            if isinstance(decoded, dict) and isinstance(decoded.get("status"), str):
-                return True, True
-        if status == 503 and b"status" in body.lower():
-            return True, False
+    def _probe_compatibility(self) -> tuple[bool, bool, str]:
+        health_status, health_body = self._get("/health")
+        health_valid = health_status in {200, 503} and self._health_body_valid(health_body)
         models_status, models_body = self._get("/v1/models")
-        if models_status == 200:
-            try:
-                decoded = json.loads(models_body.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                return False, False
-            return isinstance(decoded, dict) and isinstance(decoded.get("data"), list), True
-        return False, False
+        models_valid, expected_model = self._models_valid(models_status, models_body)
+        if expected_model:
+            if health_status == 200 and health_valid:
+                return True, True, "ready"
+            return True, False, "model_loading"
+        if health_valid or models_valid:
+            return True, False, "model_mismatch"
+        return False, False, "unavailable"
+
+    @staticmethod
+    def _health_body_valid(body: bytes) -> bool:
+        try:
+            decoded = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        return isinstance(decoded, dict) and isinstance(decoded.get("status"), str)
+
+    def _models_valid(self, status: int | None, body: bytes) -> tuple[bool, bool]:
+        if status != 200:
+            return False, False
+        try:
+            decoded = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False, False
+        data = decoded.get("data") if isinstance(decoded, dict) else None
+        if not isinstance(data, list):
+            return False, False
+        aliases = {
+            item.get("id")
+            for item in data
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+        return True, self.config.model_alias in aliases
 
     def _get(self, path: str) -> tuple[int | None, bytes]:
         parsed = urlsplit(self.config.endpoint)

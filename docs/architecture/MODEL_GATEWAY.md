@@ -39,5 +39,8 @@ inject mock providers and can verify routing without GPU or model state.
 `model_loopback_endpoint` is the profile-neutral health/configuration name.
 Live model validation is documented in `LIVE_MODEL_RUNTIME.md` and remains
 opt-in. Phase 12 validated one existing external Qwen GGUF through llama.cpp;
-the real text path and provider tool normalization passed, while the real
-AgentRuntime desktop-tool turn remains explicitly partial.
+the real text path, provider tool normalization, and three fresh real
+AgentRuntime desktop-tool turns passed. The local text model truthfully
+reports `model_route_unsupported` for vision, requires its configured alias in
+`/v1/models`, and serializes generation with one active request plus eight
+bounded waiters.

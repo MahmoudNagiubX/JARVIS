@@ -31,4 +31,4 @@ Record endpoint health, exact aliases, generation result, latency, timeout
 behavior, offline failure, and restart recovery. Do not record absolute
 personal paths, private prompts, or raw model output. Phase 12 evidence is
 bounded in `docs/phase12/evidence/PHYSICAL_LOCAL_BRAIN.json`; its live text
-brain is PASS and its real AgentRuntime tool turn is PARTIAL.
+brain and three real AgentRuntime desktop-tool turns are PASS.

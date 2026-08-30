@@ -27,12 +27,23 @@ The standalone provider tool request for the harmless synthetic
 dictionary argument. The real `AgentRuntime` text turn succeeded with model
 id `jarvis-local-qwen` and did not return a mock response.
 
-The real `AgentRuntime` desktop-context request did not emit a tool call or a
-`tool.completed` event; it returned an empty assistant turn. This is recorded
-as `agent_tool_call=PARTIAL`, so Phase 12 is not claimed as a full live-agent
-PASS. No regex or text heuristic was used to promote it.
+The final remediation selected three visual schemas for the desktop intent
+(`desktop.context.read`, `screen.observe`, and `screen.latest`; 943 bytes).
+Three fresh real `AgentRuntime` desktop turns each emitted
+`desktop.context.read` followed by `tool.requested`, `tool.started`, and
+`tool.completed`, then completed a second model turn. The harmless
+`status.read` turn also passed. The follow-up path omits duplicate grounding
+context and bounds the structured tool evidence to 6,000 characters, keeping
+the measured 2,048-token configuration usable.
+
+The strict model identity check requires the configured alias in `/v1/models`;
+vision is reported as `model_route_unsupported`, and local generation is
+serialized with one active request plus eight bounded waiters. No `tool_choice`
+flag was added because schema filtering was sufficient, and no regex/free-text
+tool parser was introduced.
 
 After the owned server was stopped, an AgentRuntime request failed with the
 normalized offline provider error. Restarting the same supervisor restored
 `ready`. The owned process was stopped during cleanup and no second model
-server was used.
+server was used. A 4,096-token comparison was skipped because the available
+workstation memory did not make a safe comparison appropriate.

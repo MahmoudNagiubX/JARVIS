@@ -92,6 +92,8 @@ class ModelGateway:
         provider = self.providers.get(selection.provider)
         if provider is None:
             raise ModelProviderError("provider_not_registered")
+        if hasattr(provider, "supports_route") and not provider.supports_route(route):
+            raise ModelProviderError("model_route_unsupported")
         routed = request if request.model == selection.model else request.__class__(
             request_id=request.request_id,
             messages=request.messages,

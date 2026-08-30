@@ -77,6 +77,7 @@ class LlamaCppProvider:
     MAX_RESPONSE_BYTES = 4 * 1024 * 1024
     MIN_TIMEOUT_SECONDS = 1.0
     MAX_TIMEOUT_SECONDS = 180.0
+    MAX_WAITERS = 8
     MODEL_ALIAS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@+\-]{0,99}\Z")
 
     def __init__(
@@ -95,18 +96,42 @@ class LlamaCppProvider:
         self.requests = 0
         self.failures = 0
         self.last_latency_ms: float | None = None
+        self._generation_slot = asyncio.Semaphore(1)
+        self._waiting_generations = 0
+
+    @staticmethod
+    def supports_route(route: object) -> bool:
+        return getattr(route, "value", route) != "vision"
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
         started = time.perf_counter()
         self.requests += 1
         try:
-            response = await asyncio.to_thread(self._generate_sync, request)
+            await self._acquire_generation_slot(self._timeout(request.timeout_seconds))
+            try:
+                response = await asyncio.to_thread(self._generate_sync, request)
+            finally:
+                self._generation_slot.release()
         except ModelProviderError:
             self.failures += 1
             raise
         finally:
             self.last_latency_ms = (time.perf_counter() - started) * 1000
         return response
+
+    async def _acquire_generation_slot(self, timeout: float) -> None:
+        if not self._generation_slot.locked():
+            await self._generation_slot.acquire()
+            return
+        if self._waiting_generations >= self.MAX_WAITERS:
+            raise ModelProviderError("local_model_busy")
+        self._waiting_generations += 1
+        try:
+            await asyncio.wait_for(self._generation_slot.acquire(), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            raise ModelProviderError("local_model_busy") from exc
+        finally:
+            self._waiting_generations -= 1
 
     def _generate_sync(self, request: LLMRequest) -> LLMResponse:
         payload: dict[str, Any] = {
@@ -176,24 +201,30 @@ class LlamaCppProvider:
             return ModelHealth(self.name, False, checked, "llama_cpp_model_not_ready", model, self.last_latency_ms)
         if status != 200:
             return ModelHealth(self.name, False, checked, "llama_cpp_unavailable", model, self.last_latency_ms)
-        reported = self._reported_model()
-        return ModelHealth(self.name, True, checked, "llama_cpp_ready", reported or model, self.last_latency_ms)
+        reported = self._reported_models()
+        if self.model_alias not in reported:
+            return ModelHealth(self.name, False, checked, "llama_cpp_model_mismatch", model, self.last_latency_ms)
+        return ModelHealth(self.name, True, checked, "llama_cpp_ready", self.model_alias, self.last_latency_ms)
 
-    def _reported_model(self) -> str | None:
+    def _reported_models(self) -> tuple[str, ...]:
         request = urllib.request.Request(f"{self.base_url}/v1/models", headers={"Accept": "application/json"}, method="GET")
         try:
             status, body = self._request_bytes(request, 2.0, allow_http_error=True)
             if status != 200:
-                return None
+                return ()
             decoded = json.loads(body.decode("utf-8"))
             data = decoded.get("data") if isinstance(decoded, dict) else None
-            if isinstance(data, list) and data and isinstance(data[0], dict) and isinstance(data[0].get("id"), str):
-                reported = data[0]["id"]
-                if self.MODEL_ALIAS_PATTERN.fullmatch(reported):
-                    return reported
+            if not isinstance(data, list):
+                return ()
+            return tuple(
+                item["id"]
+                for item in data
+                if isinstance(item, dict)
+                and isinstance(item.get("id"), str)
+                and self.MODEL_ALIAS_PATTERN.fullmatch(item["id"])
+            )
         except (ModelProviderError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        return None
+            return ()
 
     @classmethod
     def _timeout(cls, value: float | None) -> float:

@@ -20,6 +20,7 @@ from ...models.routing import ModelRoute
 from ...persistence.models import RunRecord
 from ...persistence.repositories import RuntimeRepository
 from ...tools.service import ToolCallResult, ToolExecutionService, ToolExecutionStatus
+from ...tools.selection import ToolSchemaSelector
 from ..routing.router import RequestRouter
 
 
@@ -47,6 +48,8 @@ class AgentRunOutcome:
 class AgentRuntime:
     """The only text path permitted to reach the model and tool services."""
 
+    MAX_TOOL_MESSAGE_CHARS = 6000
+
     def __init__(
         self,
         repository: RuntimeRepository,
@@ -64,6 +67,7 @@ class AgentRuntime:
         self.router = RequestRouter()
         self.max_steps = max(1, min(max_steps, 10))
         self.context_assembler = context_assembler
+        self.tool_selector = ToolSchemaSelector(tools.registry)
         self._tasks: dict[str, asyncio.Task[AgentRunOutcome]] = {}
         self._cancelled: set[str] = set()
 
@@ -80,6 +84,8 @@ class AgentRuntime:
         content = text.strip()
         if not content:
             raise ValueError("message cannot be blank")
+        if identity.owner_id != device.owner_id:
+            raise ValueError("identity/device owner binding mismatch")
         if client_message_id:
             previous = self.repository.message_by_client_id(client_message_id)
             if previous is not None and previous.run_id:
@@ -123,6 +129,8 @@ class AgentRuntime:
         run = self.repository.run(run_id)
         if run is None:
             raise KeyError(run_id)
+        if identity.owner_id != device.owner_id:
+            raise ValueError("identity/device owner binding mismatch")
         if run.request_device_id != device.device_id or run.status != "paused" or run.pending_approval_id is None:
             raise ValueError("run is not awaiting approval for this device")
         decision = await self.tools.approvals.get(run.pending_approval_id)
@@ -145,7 +153,7 @@ class AgentRuntime:
             )
             for item in run.context.get("messages", [])
         ]
-        messages.append(LLMMessage(LLMRole.TOOL, json.dumps(tool_result.output, ensure_ascii=False, default=str)))
+        messages.append(LLMMessage(LLMRole.TOOL, self._bounded_tool_message(tool_result.output, tool_result.error_code)))
         ephemeral = {len(messages) - 1: tool_result} if tool_result.retention is ToolResultRetention.EPHEMERAL else {}
         self.repository.update_run(run_id, status="running", pending_approval_id=None, context_json=self._run_context(messages, None, ephemeral))
         return await self._execute(run_id, identity, device, messages_override=messages, ephemeral_results=ephemeral)
@@ -186,14 +194,28 @@ class AgentRuntime:
                 if run_id in self._cancelled:
                     raise asyncio.CancelledError
                 request_id = f"model-request-{uuid4()}"
-                request_messages = self._with_context(messages, context_snapshot)
+                # The first turn receives the bounded grounding snapshot. A
+                # tool-result follow-up already carries fresh, structured
+                # evidence; re-injecting the full snapshot can exceed a small
+                # local model context window.
+                request_snapshot = context_snapshot if not any(message.role is LLMRole.TOOL for message in messages) else None
+                request_messages = self._with_context(messages, request_snapshot)
                 request = LLMRequest(
                     request_id,
                     tuple(request_messages),
                     max_output_tokens=512,
-                    tools=self._tool_schemas(),
+                    tools=self._selected_tool_schemas(messages),
                 )
-                await self._emit("model.requested", EventCategory.MODEL, run, {"request_id": request_id})
+                await self._emit(
+                    "model.requested",
+                    EventCategory.MODEL,
+                    run,
+                    {
+                        "request_id": request_id,
+                        "selected_tool_count": len(request.tools),
+                        "selected_tool_schema_bytes": ToolSchemaSelector.schema_bytes(request.tools),
+                    },
+                )
                 started = datetime.now(UTC)
                 try:
                     route = ModelRoute.TOOL_ORCHESTRATION if any(message.role is LLMRole.TOOL for message in messages) else self.router.classify(messages[-1].content).model_route
@@ -226,6 +248,30 @@ class AgentRuntime:
                     state=EventState.COMPLETED,
                 )
                 if not response.tool_calls:
+                    if not response.text.strip():
+                        failure_code = "model_empty_response"
+                        self.repository.update_run(
+                            run_id,
+                            status="failed",
+                            completed_at=datetime.now(UTC),
+                            failure_code=failure_code,
+                            context_json=self._run_context(messages, context_snapshot, ephemeral_results),
+                        )
+                        await self._emit(
+                            "run.failed",
+                            EventCategory.AGENT,
+                            run,
+                            {"reason": failure_code},
+                            state=EventState.FAILED,
+                        )
+                        return AgentRunOutcome(
+                            run.id,
+                            run.conversation_id,
+                            run.session_id,
+                            AgentRunState.FAILED,
+                            error_code=failure_code,
+                            context_snapshot=context_snapshot,
+                        )
                     assistant = self.repository.create_message(run.conversation_id, run.session_id, run.id, None, "assistant", response.text)
                     self.repository.update_run(run_id, status="succeeded", completed_at=datetime.now(UTC), context_json=self._run_context(messages, context_snapshot, ephemeral_results))
                     await self._emit("run.completed", EventCategory.AGENT, run, {"assistant_message_id": assistant.id}, state=EventState.COMPLETED)
@@ -239,7 +285,7 @@ class AgentRuntime:
                         self.repository.update_run(run_id, status="paused", pending_approval_id=tool_result.approval_id, context_json=context_json)
                         await self._emit("run.paused", EventCategory.AGENT, run, {"approval_id": tool_result.approval_id})
                         return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.PAUSED, pending_approval_id=tool_result.approval_id, context_snapshot=context_snapshot)
-                    messages.append(LLMMessage(LLMRole.TOOL, json.dumps(tool_result.output if tool_result.output is not None else {"error": tool_result.error_code}, ensure_ascii=False, default=str)))
+                    messages.append(LLMMessage(LLMRole.TOOL, self._bounded_tool_message(tool_result.output, tool_result.error_code)))
                     if tool_result.retention is ToolResultRetention.EPHEMERAL:
                         ephemeral_results[len(messages) - 1] = tool_result
             self.repository.update_run(run_id, status="failed", completed_at=datetime.now(UTC), failure_code="max_agent_steps", context_json=self._run_context(messages, context_snapshot, ephemeral_results))
@@ -271,17 +317,43 @@ class AgentRuntime:
         return name, arguments
 
     def _tool_schemas(self) -> tuple[dict[str, object], ...]:
-        return tuple(
-            {
-                "type": "function",
-                "function": {
-                    "name": spec.name,
-                    "description": spec.description,
-                    "parameters": spec.json_schema(),
-                },
+        return tuple(ToolSchemaSelector._schema(spec) for spec in self.tools.registry.list())
+
+    def _selected_tool_schemas(self, messages: list[LLMMessage]) -> tuple[dict[str, object], ...]:
+        intent = next((message.content for message in reversed(messages) if message.role is LLMRole.USER), "")
+        return self.tool_selector.select(intent)
+
+    @classmethod
+    def _bounded_tool_message(cls, output: object, error_code: str | None = None) -> str:
+        """Keep tool evidence useful without overflowing a local model context."""
+
+        value = output if output is not None else {"error": error_code or "tool_failed"}
+        compact = cls._compact_tool_value(value)
+        serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"), default=str)
+        if len(serialized) <= cls.MAX_TOOL_MESSAGE_CHARS:
+            return serialized
+        prefix_length = cls.MAX_TOOL_MESSAGE_CHARS - 80
+        while prefix_length >= 0:
+            bounded = json.dumps(
+                {"truncated": True, "content_prefix": serialized[:prefix_length]},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if len(bounded) <= cls.MAX_TOOL_MESSAGE_CHARS:
+                return bounded
+            prefix_length -= max(1, len(bounded) - cls.MAX_TOOL_MESSAGE_CHARS)
+        return '{"truncated":true}'
+
+    @classmethod
+    def _compact_tool_value(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                str(key): {"count": len(item)} if key == "windows" and isinstance(item, (list, tuple)) else cls._compact_tool_value(item)
+                for key, item in value.items()
             }
-            for spec in self.tools.registry.list()
-        )
+        if isinstance(value, (list, tuple)):
+            return [cls._compact_tool_value(item) for item in value]
+        return value
 
     @staticmethod
     def _with_context(messages: list[LLMMessage], snapshot: object | None) -> list[LLMMessage]:

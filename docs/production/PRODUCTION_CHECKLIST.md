@@ -7,7 +7,7 @@
 | SQLite backup/restore | PASS | Online backup, integrity verification, explicit CLI |
 | PostgreSQL | PARTIAL | Injected adapter and reconnect health; no local listener/client |
 | pgvector | DEFERRED | No PostgreSQL deployment or extension available |
-| llama.cpp/Qwen local brain | PARTIAL | Existing external GGUF loaded through one loopback llama.cpp server; text/provider-tool/offline/restart PASS; real AgentRuntime desktop-tool turn remains PARTIAL; bounded evidence in `docs/phase12/evidence/PHYSICAL_LOCAL_BRAIN.json` |
+| llama.cpp/Qwen local brain | PASS | Existing external GGUF loaded through one loopback llama.cpp server; text/provider-tool/three real AgentRuntime desktop turns/status tool/offline/restart PASS; bounded evidence in `docs/phase12/evidence/PHYSICAL_LOCAL_BRAIN.json` |
 | Physical voice | DEFERRED | No physical voice session run; NoOp defaults |
 | Windows satellite | PASS | Same-host process-separated Core/typed agent authority-path observation passed; second-host deployment not claimed; bounded evidence in `docs/phase09/evidence/PHYSICAL_COMPUTER_AUTHORITY_ACCEPTANCE.json` |
 | Computer control | PASS | Phase 11 grounded window, clipboard, and literal keyboard acceptance; bounded media-key volume; mute-state query remains explicitly unavailable |
