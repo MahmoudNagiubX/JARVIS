@@ -49,6 +49,13 @@ class WindowsSatelliteAgent:
         "open_application",
         "stop_safe_process",
         "focus_window",
+        "window_action",
+        "change_volume",
+        "mute",
+        "unmute",
+        "clipboard_read",
+        "clipboard_write",
+        "keyboard_action",
     })
 
     def __init__(
@@ -166,6 +173,10 @@ class WindowsSatelliteAgent:
         if not isinstance(operation, str) or operation not in self.ALLOWED_OPERATIONS:
             return CommandObservation(command.command_id, "denied", error_code="unsupported_typed_operation")
         parameters = {key: value for key, value in command.parameters.items() if key != "operation"}
+        if operation == "keyboard_action":
+            parameters["operation"] = parameters.pop("keyboard_operation", "type_text")
+        elif operation == "window_action":
+            parameters["operation"] = parameters.pop("window_operation", "")
         identity = Identity(self.config.identity_id, "JARVIS satellite", self.config.owner_id, frozenset({"owner"}))
         device = DeviceIdentity(
             self.config.device_id,

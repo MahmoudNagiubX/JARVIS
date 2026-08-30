@@ -10,7 +10,7 @@
 | Ollama/Qwen live | PARTIAL | Opt-in probe exists; no local Ollama/listener |
 | Physical voice | DEFERRED | No physical voice session run; NoOp defaults |
 | Windows satellite | PASS | Same-host process-separated Core/typed agent authority-path observation passed; second-host deployment not claimed; bounded evidence in `docs/phase09/evidence/PHYSICAL_COMPUTER_AUTHORITY_ACCEPTANCE.json` |
-| Computer control | PARTIAL | Windows-safe/dry-run boundaries tested; no physical destructive actions |
+| Computer control | PASS | Phase 11 grounded window, clipboard, and literal keyboard acceptance; bounded media-key volume; mute-state query remains explicitly unavailable |
 | Browser/Playwright | PARTIAL | Deterministic controller tested; no Node/Playwright |
 | Authenticated WebSocket | PARTIAL | Loopback handshake, auth, topic allowlist, bounded queue/lifetime; no full client-frame adapter |
 | Jupyter/KiCad | DEFERRED | Adapter boundaries only |
@@ -33,3 +33,11 @@ Phase 10 desktop perception: native metadata/capture is on-demand,
 owner/device/session-bound, raw-frame-free, and loopback-only. Metadata
 awareness is disabled by default and must never enable pixel polling. Keep
 OCR, vision, and camera deferred until an actual local capability is verified.
+
+Phase 11 grounded desktop interaction: window actions are restricted to
+minimize/maximize/restore over revalidated Phase 10 references; clipboard text
+and keyboard arguments are bounded and ephemeral; keyboard execution rechecks
+the foreground window for every chunk; mouse coordinates, arbitrary keys,
+accessibility automation, and truthful mute-state control remain deferred.
+Sanitized same-host physical evidence is in
+`docs/phase11/evidence/PHYSICAL_DESKTOP_INTERACTION.json`.

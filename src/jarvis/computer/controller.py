@@ -34,10 +34,23 @@ class WindowsComputerController:
             "open_application",
             "stop_safe_process",
             "focus_window",
+            "window_action",
+            "change_volume",
+            "mute",
+            "unmute",
+            "clipboard_read",
+            "clipboard_write",
+            "keyboard_action",
         }:
-            transport_action = "observe" if action.action in {"list_processes", "inspect_file", "search_files"} else "input"
+            transport_action = "observe" if action.action in {"list_processes", "inspect_file", "search_files", "clipboard_read"} else "input"
             transport_capability = f"computer.{transport_action}"
             parameters = {"operation": action.action, **dict(action.parameters)}
+            if action.action == "keyboard_action":
+                parameters["keyboard_operation"] = parameters.pop("operation", "type_text")
+                parameters["operation"] = action.action
+            elif action.action == "window_action":
+                parameters["window_operation"] = parameters.pop("operation", "")
+                parameters["operation"] = action.action
         else:
             return ToolResult(ToolResultStatus.DENIED, error_code="unsupported_computer_action")
         if transport_capability not in context.device.capabilities:

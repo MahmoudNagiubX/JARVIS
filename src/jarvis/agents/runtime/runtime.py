@@ -129,19 +129,15 @@ class AgentRuntime:
         if decision is None:
             raise ValueError("approval not found")
         context = ToolContext(identity, device, run.session_id, run.correlation_id)
-        if decision.status.value == "pending":
-            if approved is None:
-                raise ValueError("approval decision is required before resume")
-            decision = await self.tools.approvals.decide(run.pending_approval_id, approved, decided_by)
-        approved_result = decision.status.value == "approved"
-        if not approved_result:
-            self.repository.update_run(run_id, status="failed", completed_at=datetime.now(UTC), failure_code="approval_denied", pending_approval_id=None)
-            await self._emit("run.failed", EventCategory.AGENT, run, {"reason": "approval_denied"}, state=EventState.FAILED)
-            return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.FAILED, error_code="approval_denied")
-        tool_result = await self.tools.decide_and_resume(run.pending_approval_id, True, decided_by, context)
+        if decision.status.value == "pending" and approved is None:
+            raise ValueError("approval decision is required before resume")
+        requested_approval = approved if decision.status.value == "pending" else decision.status.value == "approved"
+        tool_result = await self.tools.decide_and_resume(run.pending_approval_id, bool(requested_approval), decided_by, context)
         if tool_result.status is not ToolExecutionStatus.COMPLETED:
-            self.repository.update_run(run_id, status="failed", completed_at=datetime.now(UTC), failure_code=tool_result.error_code, pending_approval_id=None)
-            return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.FAILED, error_code=tool_result.error_code)
+            failure_code = tool_result.error_code or "approval_denied"
+            self.repository.update_run(run_id, status="failed", completed_at=datetime.now(UTC), failure_code=failure_code, pending_approval_id=None)
+            await self._emit("run.failed", EventCategory.AGENT, run, {"reason": failure_code}, state=EventState.FAILED)
+            return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.FAILED, error_code=failure_code)
         messages = [
             LLMMessage(
                 LLMRole(item["role"]),

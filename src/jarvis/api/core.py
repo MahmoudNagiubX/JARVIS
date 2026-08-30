@@ -733,8 +733,15 @@ class CoreApplication:
         )
         return asdict(result)
 
-    async def decide_computer_action(self, approval_id: str, approved: bool, decided_by: str) -> dict[str, Any]:
-        return asdict(await self.runtime.computer_actions.decide(approval_id, approved, decided_by))
+    async def decide_computer_action(
+        self,
+        approval_id: str,
+        approved: bool,
+        decided_by: str,
+        identity: Identity | None = None,
+        device: DeviceIdentity | None = None,
+    ) -> dict[str, Any]:
+        return asdict(await self.runtime.computer_actions.decide(approval_id, approved, decided_by, identity=identity, device=device))
 
     async def browser_action(
         self,

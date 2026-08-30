@@ -28,6 +28,7 @@ from .contracts import (
     BrowserController,
     CommunicationChannel,
     ComputerController,
+    DeviceIdentity,
     GoalEngine,
     MemoryService,
     PermissionEngine,
@@ -59,7 +60,7 @@ from .proactive.service import DurableProactiveService
 from .notifications.service import NotificationService
 from .runtime.noop import NoOpSpeechToText, NoOpTextToSpeech
 from .scheduler.service import BackgroundScheduler
-from .tools.registry import ToolRegistry, default_registry, register_perception_tools
+from .tools.registry import ToolRegistry, default_registry, register_computer_tools, register_perception_tools
 from .tools.service import ToolExecutionService
 from .voice.core import VoiceCore
 from .voice.routing.service import VoiceRoutingService
@@ -227,6 +228,8 @@ class JarvisRuntime:
         self.state = RuntimeState.STOPPING
         await self.scheduler.stop()
         await self.perception.shutdown()
+        self.computer_actions.close()
+        self.tool_service.close()
         if getattr(self.voice.state, "value", None) != "stopped":
             try:
                 await self.voice.stop()
@@ -293,6 +296,22 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     satellite_computer_controller = WindowsComputerController(satellite)
     computer_router = ComputerExecutionRouter(local_computer_controller, satellite_computer_controller)
     computer_actions = ComputerActionService(computer_router, repository, event_bus, permission, audit, approval)
+    tool_service.set_delegated_approval_resumer(computer_actions.decide)
+
+    async def resolve_computer_target(owner_id: str, device_id: str) -> tuple[DeviceIdentity, str | None] | None:
+        record = await device_fabric.get(owner_id, device_id)
+        if record is None or record.status == "revoked":
+            return None
+        target = DeviceIdentity(
+            record.device_id,
+            record.owner_id,
+            record.role,
+            "windows",
+            record.capabilities,
+            frozenset({"tool.request"}),
+        )
+        adapter = "satellite" if record.transport == "http-long-poll" or satellite.status(device_id) != "unknown" else "local"
+        return target, adapter
     browser_controller = LocalBrowserController()
     browser_actions = BrowserActionService(browser_controller, repository, event_bus, permission, audit, approval)
     home = HomeActionService(None, repository, event_bus, permission, audit, RestrictedMQTTTransport())
@@ -443,9 +462,11 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     perception = PerceptionService(
         repository, event_bus, permission, audit, provider=windows_perception_provider,
         router=perception_router, desktop_context=desktop_context, device_lookup=device_fabric.get,
+        privacy=windows_perception_provider.privacy_policy,
         browser_dom=BrowserDomPerceptionBridge(browser_actions),
     )
     register_perception_tools(registry, perception)
+    register_computer_tools(registry, computer_actions, target_resolver=resolve_computer_target)
     if effective_config.desktop_awareness_enabled:
         scheduler.add("desktop-metadata-awareness", 10.0, perception.poll_metadata_awareness)
     developer_workers = DeveloperWorkerGateway()
@@ -650,7 +671,8 @@ def _register_capabilities(capabilities: CapabilityRegistry) -> None:
     computer = (
         "computer.open_application", "computer.open_file", "computer.open_folder",
         "computer.list_processes", "computer.inspect_file", "computer.search_files",
-        "computer.stop_safe_process",
+        "computer.stop_safe_process", "computer.change_volume", "computer.mute", "computer.unmute",
+        "computer.window_action", "computer.clipboard_read", "computer.clipboard_write", "computer.keyboard_action",
     )
     for capability in computer:
         capabilities.register(CapabilityDescriptor(capability, "windows-native", None, windows, "safe"))

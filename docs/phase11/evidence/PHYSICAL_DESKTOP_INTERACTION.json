@@ -1,0 +1,29 @@
+{
+  "phase": 11,
+  "host_scope": "same-host interactive Windows session",
+  "private_payloads_persisted": false,
+  "window": {
+    "open_status": "succeeded",
+    "minimize_status": "succeeded",
+    "minimize_verified": true,
+    "restore_status": "succeeded",
+    "restore_verified": true
+  },
+  "clipboard": {
+    "write_status": "succeeded",
+    "write_verified": true,
+    "read_status": "succeeded",
+    "read_matches_marker": true,
+    "original_restored": true
+  },
+  "keyboard": {
+    "focus_status": "succeeded",
+    "type_status": "succeeded",
+    "type_verified": false,
+    "verification_note": "execution success is recorded; no readback is claimed"
+  },
+  "audio": {
+    "status": "deferred",
+    "reason": "not exercised to avoid changing user volume"
+  }
+}

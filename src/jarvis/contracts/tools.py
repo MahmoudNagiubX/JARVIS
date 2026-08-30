@@ -13,6 +13,7 @@ from .identity import DeviceIdentity, Identity
 
 class ToolResultStatus(StrEnum):
     SUCCEEDED = "succeeded"
+    APPROVAL_REQUIRED = "approval_required"
     FAILED = "failed"
     DENIED = "denied"
     CANCELLED = "cancelled"
@@ -39,6 +40,7 @@ class ToolResult:
     output: Any = None
     error_code: str | None = None
     verified: bool = False
+    approval_id: str | None = None
 
 
 class Tool(Protocol):

@@ -30,12 +30,17 @@ class PerceptionPrivacyPolicy:
         if not self.allows_metadata():
             return "privacy_policy_denied"
         for window in snapshot.windows:
-            process = (window.process_name or "").casefold()
-            title = (window.title or "").casefold()
-            if process in {item.casefold() for item in self.denied_processes}:
+            if self.check_window(window.process_name, window.title):
                 return "privacy_policy_denied"
-            if any(re.search(pattern, title, re.IGNORECASE) for pattern in self.denied_title_patterns):
-                return "privacy_policy_denied"
+        return None
+
+    def check_window(self, process_name: str | None, title: str | None) -> str | None:
+        process = (process_name or "").casefold()
+        value = (title or "").casefold()
+        if process in {item.casefold() for item in self.denied_processes}:
+            return "privacy_policy_denied"
+        if any(re.search(pattern, value, re.IGNORECASE) for pattern in self.denied_title_patterns):
+            return "privacy_policy_denied"
         return None
 
     def check_capture(self) -> str | None:

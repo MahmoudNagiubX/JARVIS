@@ -32,6 +32,7 @@ class ToolSpec:
     autonomy_level: int = 1
     parameters_schema: Mapping[str, object] = field(default_factory=lambda: {"type": "object", "additionalProperties": False})
     retention: ToolResultRetention = ToolResultRetention.DURABLE
+    argument_retention: ToolResultRetention = ToolResultRetention.DURABLE
 
     def json_schema(self) -> dict[str, object]:
         return dict(self.parameters_schema)
@@ -229,6 +230,127 @@ def register_perception_tools(registry: ToolRegistry, perception: object) -> Non
         "read", "tool.request", frozenset(), 5.0, True, latest_screen,
         parameters_schema={"type": "object", "properties": {"observation_id": {"type": "string", "maxLength": 200}, "target_device_id": {"type": "string", "maxLength": 200}}, "additionalProperties": False},
         retention=ToolResultRetention.EPHEMERAL,
+    ))
+
+
+def register_computer_tools(
+    registry: ToolRegistry,
+    computer_actions: object,
+    *,
+    target_resolver: Callable[[str, str], Awaitable[tuple[object, str | None] | None]] | None = None,
+) -> None:
+    """Expose only the grounded computer actions through the existing registry."""
+
+    from ..contracts import ComputerAction
+
+    async def target_for(arguments: Mapping[str, Any], context: ToolContext) -> tuple[object, str | None] | None:
+        if context.identity is None or context.device is None:
+            return None
+        target_id = arguments.get("target_device_id")
+        if target_id is None:
+            return context.device, None
+        if not isinstance(target_id, str) or not target_id.strip():
+            return None
+        if target_resolver is None:
+            return (context.device, None) if target_id == context.device.device_id else None
+        resolved = await target_resolver(context.identity.owner_id, target_id)
+        return resolved
+
+    async def execute_action(
+        action: str,
+        parameters: Mapping[str, object],
+        arguments: Mapping[str, Any],
+        context: ToolContext,
+    ) -> ToolResult:
+        if context.identity is None or context.device is None:
+            return ToolResult(ToolResultStatus.DENIED, error_code="identity_or_device_missing")
+        resolved = await target_for(arguments, context)
+        if resolved is None:
+            return ToolResult(ToolResultStatus.DENIED, error_code="target_device_missing")
+        target, adapter = resolved
+        result = await computer_actions.execute(
+            ComputerAction(action, dict(parameters), False),
+            context.identity,
+            context.device,
+            target_device=target,
+            execution_adapter=adapter,
+            session_id=context.session_id,
+            correlation_id=context.correlation_id,
+        )
+        try:
+            status = ToolResultStatus(result.status)
+        except ValueError:
+            status = ToolResultStatus.FAILED
+        if status is ToolResultStatus.APPROVAL_REQUIRED:
+            return ToolResult(status, error_code=result.error_code, approval_id=result.approval_id)
+        return ToolResult(status, dict(result.output), result.error_code, result.verified, result.approval_id)
+
+    async def audio(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        operation = arguments.get("operation")
+        if operation in {"volume_up", "volume_down"}:
+            steps = arguments.get("steps", 1)
+            if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 10:
+                return ToolResult(ToolResultStatus.DENIED, error_code="audio_steps_invalid")
+            return await execute_action("change_volume", {"direction": operation.removeprefix("volume_"), "steps": steps}, arguments, context)
+        if operation in {"mute", "unmute"}:
+            if set(arguments) - {"operation", "target_device_id"}:
+                return ToolResult(ToolResultStatus.DENIED, error_code="unknown_arguments")
+            return await execute_action(operation, {}, arguments, context)
+        return ToolResult(ToolResultStatus.DENIED, error_code="audio_operation_invalid")
+
+    async def window(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        if arguments.get("operation") not in {"minimize", "maximize", "restore"}:
+            return ToolResult(ToolResultStatus.DENIED, error_code="window_operation_invalid")
+        if not isinstance(arguments.get("window_ref"), str) or not str(arguments["window_ref"]).startswith("window-"):
+            return ToolResult(ToolResultStatus.DENIED, error_code="window_ref_required")
+        return await execute_action("window_action", {"operation": arguments["operation"], "window_ref": arguments["window_ref"]}, arguments, context)
+
+    async def clipboard_read(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        return await execute_action("clipboard_read", {}, arguments, context)
+
+    async def clipboard_write(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        value = arguments.get("text")
+        if not isinstance(value, str) or not value or len(value) > 16_000 or "\x00" in value:
+            return ToolResult(ToolResultStatus.DENIED, error_code="clipboard_text_invalid")
+        return await execute_action("clipboard_write", {"text": value}, arguments, context)
+
+    async def keyboard_type(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        value = arguments.get("text")
+        window_ref = arguments.get("window_ref")
+        if not isinstance(window_ref, str) or not window_ref.startswith("window-"):
+            return ToolResult(ToolResultStatus.DENIED, error_code="window_ref_required")
+        if not isinstance(value, str) or not value or len(value) > 2_000 or "\x00" in value:
+            return ToolResult(ToolResultStatus.DENIED, error_code="keyboard_text_invalid")
+        return await execute_action("keyboard_action", {"operation": "type_text", "window_ref": window_ref, "text": value}, arguments, context)
+
+    registry.register(ToolSpec(
+        "tool-computer-audio-adjust-v1", "computer.audio.adjust", "1", "Adjust local Windows audio by bounded media-key steps.",
+        "safe", "tool.request", frozenset({"computer.input"}), 10.0, True, audio,
+        parameters_schema={"type": "object", "properties": {"operation": {"type": "string", "enum": ["volume_up", "volume_down", "mute", "unmute"]}, "steps": {"type": "integer", "minimum": 1, "maximum": 10}, "target_device_id": {"type": "string", "maxLength": 200}}, "required": ["operation"], "additionalProperties": False},
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-window-control-v1", "computer.window.control", "1", "Control one previously observed Windows window.",
+        "safe", "tool.request", frozenset({"computer.input"}), 15.0, False, window,
+        parameters_schema={"type": "object", "properties": {"operation": {"type": "string", "enum": ["minimize", "maximize", "restore"]}, "window_ref": {"type": "string", "maxLength": 100}, "target_device_id": {"type": "string", "maxLength": 200}}, "required": ["operation", "window_ref"], "additionalProperties": False},
+        argument_retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-clipboard-read-v1", "computer.clipboard.read", "1", "Read transient Unicode clipboard text.",
+        "read", "tool.request", frozenset({"computer.observe"}), 10.0, True, clipboard_read,
+        parameters_schema={"type": "object", "properties": {"target_device_id": {"type": "string", "maxLength": 200}}, "additionalProperties": False},
+        retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-clipboard-write-v1", "computer.clipboard.write", "1", "Write bounded transient Unicode clipboard text.",
+        "safe", "tool.request", frozenset({"computer.input"}), 15.0, False, clipboard_write,
+        parameters_schema={"type": "object", "properties": {"text": {"type": "string", "maxLength": 16000}, "target_device_id": {"type": "string", "maxLength": 200}}, "required": ["text"], "additionalProperties": False},
+        argument_retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-keyboard-type-v1", "computer.keyboard.type", "1", "Type literal text into one grounded Windows window.",
+        "safe", "tool.request", frozenset({"computer.input"}), 15.0, False, keyboard_type,
+        parameters_schema={"type": "object", "properties": {"window_ref": {"type": "string", "maxLength": 100}, "text": {"type": "string", "maxLength": 2000}, "target_device_id": {"type": "string", "maxLength": 200}}, "required": ["window_ref", "text"], "additionalProperties": False},
+        argument_retention=ToolResultRetention.EPHEMERAL,
     ))
 
 

@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from ..contracts import DesktopContextSnapshot, DesktopWindow, ScreenObservation, VisualRegion
 from .frame import TransientFrame, frame_metadata
+from .privacy import PerceptionPrivacyPolicy
 
 
 class WindowsDesktopProvider:
@@ -21,12 +22,14 @@ class WindowsDesktopProvider:
     name = "windows-native"
     FRAME_MAX_PIXELS = 12_000_000
     WINDOW_REF_TTL_SECONDS = 45
+    MAX_WINDOW_REFS = 256
 
-    def __init__(self, *, window_ref_ttl_seconds: int = WINDOW_REF_TTL_SECONDS) -> None:
+    def __init__(self, *, window_ref_ttl_seconds: int = WINDOW_REF_TTL_SECONDS, privacy_policy: PerceptionPrivacyPolicy | None = None) -> None:
         self.available = platform.system().casefold() == "windows"
         self.reason = None if self.available else "windows_desktop_unavailable"
         self.window_ref_ttl_seconds = max(30, min(60, window_ref_ttl_seconds))
         self._window_refs: dict[str, _WindowHandle] = {}
+        self.privacy_policy = privacy_policy or PerceptionPrivacyPolicy()
         self._user32 = None
         self._gdi32 = None
         self._kernel32 = None
@@ -109,6 +112,34 @@ class WindowsDesktopProvider:
             return False
         return int(self._user32.GetForegroundWindow() or 0) == hwnd
 
+    def is_foreground(self, hwnd: int) -> bool:
+        return self.available and int(self._user32.GetForegroundWindow() or 0) == int(hwnd)
+
+    def validate_input_window(self, window_ref: str) -> int:
+        hwnd = self.resolve_window_ref(window_ref)
+        process_id = wintypes.DWORD()
+        self._user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        process_name = self._process_name(int(process_id.value))
+        title_length = min(300, max(0, int(self._user32.GetWindowTextLengthW(hwnd))))
+        title_buffer = ctypes.create_unicode_buffer(title_length + 1)
+        self._user32.GetWindowTextW(hwnd, title_buffer, len(title_buffer))
+        if self.privacy_policy.check_window(process_name, title_buffer.value):
+            raise ValueError("sensitive_window_denied")
+        return hwnd
+
+    def window_action(self, window_ref: str, operation: str) -> bool:
+        if not self.available:
+            return False
+        if operation not in {"minimize", "maximize", "restore"}:
+            raise ValueError("window_operation_invalid")
+        hwnd = self._resolve_window_ref(window_ref)
+        self._user32.ShowWindow(hwnd, {"minimize": 6, "maximize": 3, "restore": 9}[operation])
+        if operation == "minimize":
+            return bool(self._user32.IsIconic(hwnd))
+        if operation == "maximize":
+            return bool(self._user32.IsZoomed(hwnd))
+        return not bool(self._user32.IsIconic(hwnd)) and not bool(self._user32.IsZoomed(hwnd))
+
     def resolve_window_ref(self, window_ref: str) -> int:
         """Resolve only an internally issued, unexpired reference; raw HWND is rejected."""
 
@@ -165,6 +196,12 @@ class WindowsDesktopProvider:
         self._user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
         self._user32.SetForegroundWindow.argtypes = [wintypes.HWND]
         self._user32.SetForegroundWindow.restype = wintypes.BOOL
+        self._user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        self._user32.ShowWindow.restype = wintypes.BOOL
+        self._user32.IsIconic.argtypes = [wintypes.HWND]
+        self._user32.IsIconic.restype = wintypes.BOOL
+        self._user32.IsZoomed.argtypes = [wintypes.HWND]
+        self._user32.IsZoomed.restype = wintypes.BOOL
         self._user32.GetDC.argtypes = [wintypes.HWND]
         self._user32.GetDC.restype = ctypes.c_void_p
         self._user32.ReleaseDC.argtypes = [wintypes.HWND, ctypes.c_void_p]
@@ -205,10 +242,19 @@ class WindowsDesktopProvider:
         if rect[2] <= 0 or rect[3] <= 0:
             return None
         window_ref = f"window-{uuid4()}"
+        self._prune_window_refs(now)
         self._window_refs[window_ref] = _WindowHandle(
             hwnd, int(process_id.value), _fingerprint(title), window_class, now + timedelta(seconds=self.window_ref_ttl_seconds)
         )
         return DesktopWindow(window_ref, title, process_name, int(process_id.value) or None, window_class, VisualRegion(*rect), True, active)
+
+    def _prune_window_refs(self, now: datetime | None = None) -> None:
+        current = now or datetime.now(UTC)
+        for reference, entry in tuple(self._window_refs.items()):
+            if entry.expires_at <= current:
+                self._window_refs.pop(reference, None)
+        while len(self._window_refs) >= self.MAX_WINDOW_REFS:
+            self._window_refs.pop(next(iter(self._window_refs)))
 
     def _process_name(self, process_id: int) -> str | None:
         if not process_id:
