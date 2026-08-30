@@ -3,7 +3,7 @@
   "status": "PARTIAL",
   "date": "2026-08-31",
   "automated_pre_physical_matrix": {
-    "passed": 25,
+    "passed": 30,
     "failed": 0
   },
   "safe_checks": {

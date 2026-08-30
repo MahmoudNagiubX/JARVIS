@@ -31,6 +31,14 @@ product message, leaves the durable approval pending, and bounds a wake session
 back to `sleeping`. Spoken confirmation remains ordinary input and cannot
 decide an approval. Failed wake turns likewise return to `sleeping`.
 
+Physical speech start reserves an active follow-up immediately: VoiceCore
+holds its expiry task while preserving the original deadline and run id. A
+rejected endpoint candidate restores only the remaining original window, while
+an accepted candidate stays reserved through STT and receives a fresh full
+window only after a successful completed turn. Rejected initial wake noise
+returns to `sleeping` and requires a fresh wake without invoking STT or the
+agent.
+
 Automated cancellation coverage blocks a real AgentRuntime model generation,
 barges in during `thinking`, proves the run is cancelled before TTS/playback,
 and proves a subsequent turn is clean. Speaker PCM is resampled first and then

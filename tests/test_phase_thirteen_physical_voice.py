@@ -140,6 +140,7 @@ class _Endpoint:
         self.next_utterance: bytes | None = None
         self.discarded = 0
         self.start_speech = False
+        self.reject_speech = False
         self._speech_active = False
 
     @property
@@ -151,6 +152,10 @@ class _Endpoint:
         if self.start_speech:
             self.start_speech = False
             self._speech_active = True
+        if self.reject_speech:
+            self.reject_speech = False
+            self._speech_active = False
+            return None
         result, self.next_utterance = self.next_utterance, None
         if result is not None:
             self._speech_active = False
@@ -320,6 +325,52 @@ class PhaseThirteenPhysicalVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(row["event_type"] == "voice.wake_timeout" for row in self.runtime.repository.events()))
         await runner.stop()
 
+    async def test_rejected_initial_speech_sleeps_without_stt_or_agent_and_requires_fresh_wake(self) -> None:
+        stt = _StaticStt()
+        voice = self._voice(stt)
+        input_device, playback, wake = _Input(), _Playback(), _Wake()
+        endpoint = SpeechEndpointDetector(
+            _SequenceVad([True] + [False] * 10),
+            preroll_ms=320,
+            min_speech_ms=240,
+            end_silence_ms=800,
+        )
+        runner = LocalVoiceRuntime(
+            voice,
+            input_device,
+            playback,
+            wake,
+            endpoint,
+            wake_command_timeout_seconds=0.50,
+        )
+        frame = b"\x00\x00" * 1_280  # 80 ms at 16 kHz.
+        run_count = self.runtime.database.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+        await runner.start(self.context, self.identity, self.device)
+        wake.detected = True
+        await runner._process_pcm(frame)
+        self.assertEqual(voice.state, VoiceSessionState.LISTENING)
+
+        await runner._process_pcm(frame)
+        self.assertTrue(endpoint.speech_active)
+        self.assertFalse(runner.wake_command_timer_active)
+        for _ in range(10):
+            await runner._process_pcm(frame)
+
+        self.assertEqual(voice.state, VoiceSessionState.SLEEPING)
+        self.assertFalse(endpoint.speech_active)
+        self.assertFalse(runner.wake_command_timer_active)
+        self.assertEqual(stt.calls, 0)
+        self.assertEqual(self.runtime.database.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0], run_count)
+        self.assertTrue(any(row["event_type"] == "voice.utterance_rejected" for row in self.runtime.repository.events()))
+
+        await runner._process_pcm(frame)
+        self.assertEqual(voice.state, VoiceSessionState.SLEEPING)
+        self.assertEqual(stt.calls, 0)
+        wake.detected = True
+        await runner._process_pcm(frame)
+        self.assertEqual(voice.state, VoiceSessionState.LISTENING)
+        await runner.stop()
+
     async def test_new_wake_replaces_stale_command_timer(self) -> None:
         voice = self._voice()
         input_device, playback, wake, endpoint = _Input(), _Playback(), _Wake(), _Endpoint()
@@ -454,6 +505,120 @@ class PhaseThirteenPhysicalVoiceTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.11)
         self.assertEqual(voice.state, VoiceSessionState.SLEEPING)
         await voice.stop()
+
+    async def test_follow_up_speech_start_holds_expiry_until_accepted_turn_gets_fresh_window(self) -> None:
+        stt = _StaticStt()
+        voice = self._voice(stt)
+        voice.follow_up_seconds = 0.16
+        input_device, playback, wake, endpoint = _Input(), _Playback(), _Wake(), _Endpoint()
+        runner = LocalVoiceRuntime(voice, input_device, playback, wake, endpoint)
+        await runner.start(self.context, self.identity, self.device)
+        await voice.wake_detected()
+        await voice.process_transcript(VoiceTranscript("first", True, "en"), self.identity, self.device)
+
+        await asyncio.sleep(0.11)
+        endpoint.start_speech = True
+        await runner._process_pcm(b"speech-start")
+        self.assertTrue(endpoint.speech_active)
+        await asyncio.sleep(0.08)
+        self.assertEqual(voice.state, VoiceSessionState.FOLLOW_UP)
+
+        endpoint.next_utterance = b"SECOND_FINAL_PCM"
+        await runner._process_pcm(b"speech-end")
+        assert runner._turn_task is not None
+        await runner._turn_task
+        self.assertEqual(stt.calls, 1)
+        self.assertEqual(voice.state, VoiceSessionState.FOLLOW_UP)
+        await asyncio.sleep(0.10)
+        self.assertEqual(voice.state, VoiceSessionState.FOLLOW_UP)
+        await asyncio.sleep(0.09)
+        self.assertEqual(voice.state, VoiceSessionState.SLEEPING)
+        await runner.stop()
+
+    async def test_rejected_follow_up_restores_only_original_remaining_deadline(self) -> None:
+        stt = _StaticStt()
+        voice = self._voice(stt)
+        voice.follow_up_seconds = 0.18
+        input_device, playback, wake, endpoint = _Input(), _Playback(), _Wake(), _Endpoint()
+        runner = LocalVoiceRuntime(voice, input_device, playback, wake, endpoint)
+        await runner.start(self.context, self.identity, self.device)
+        await voice.wake_detected()
+        await voice.process_transcript(VoiceTranscript("first", True, "en"), self.identity, self.device)
+        run_count = self.runtime.database.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+
+        await asyncio.sleep(0.11)
+        endpoint.start_speech = True
+        await runner._process_pcm(b"speech-start")
+        await asyncio.sleep(0.02)
+        endpoint.reject_speech = True
+        await runner._process_pcm(b"rejected-end")
+        self.assertEqual(voice.state, VoiceSessionState.FOLLOW_UP)
+        self.assertEqual(stt.calls, 0)
+        self.assertEqual(self.runtime.database.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0], run_count)
+
+        await asyncio.sleep(0.08)
+        self.assertEqual(voice.state, VoiceSessionState.SLEEPING)
+        expired = [row for row in self.runtime.repository.events() if row["event_type"] == "voice.follow_up_expired"]
+        self.assertEqual(len(expired), 1)
+        await runner.stop()
+
+    async def test_empty_stt_after_reserved_follow_up_restores_remaining_deadline(self) -> None:
+        stt = _StaticStt(VoiceTranscript("", True, "en"))
+        voice = self._voice(stt)
+        voice.follow_up_seconds = 0.18
+        input_device, playback, wake, endpoint = _Input(), _Playback(), _Wake(), _Endpoint()
+        runner = LocalVoiceRuntime(voice, input_device, playback, wake, endpoint)
+        await runner.start(self.context, self.identity, self.device)
+        await voice.wake_detected()
+        await voice.process_transcript(VoiceTranscript("first", True, "en"), self.identity, self.device)
+        run_count = self.runtime.database.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+
+        await asyncio.sleep(0.11)
+        endpoint.start_speech = True
+        await runner._process_pcm(b"speech-start")
+        await asyncio.sleep(0.02)
+        endpoint.next_utterance = b"EMPTY_STT_PCM"
+        await runner._process_pcm(b"speech-end")
+        assert runner._turn_task is not None
+        await runner._turn_task
+        self.assertEqual(stt.calls, 1)
+        self.assertEqual(voice.state, VoiceSessionState.FOLLOW_UP)
+        self.assertEqual(self.runtime.database.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0], run_count)
+
+        await asyncio.sleep(0.08)
+        self.assertEqual(voice.state, VoiceSessionState.SLEEPING)
+        await runner.stop()
+
+    async def test_follow_up_hold_restore_cycles_have_one_expiry_and_stop_leaks_none(self) -> None:
+        voice = self._voice()
+        voice.follow_up_seconds = 0.12
+        input_device, playback, wake, endpoint = _Input(), _Playback(), _Wake(), _Endpoint()
+        runner = LocalVoiceRuntime(voice, input_device, playback, wake, endpoint)
+        await runner.start(self.context, self.identity, self.device)
+        await voice.wake_detected()
+        await voice.process_transcript(VoiceTranscript("first", True, "en"), self.identity, self.device)
+
+        await asyncio.sleep(0.04)
+        for _ in range(2):
+            endpoint.start_speech = True
+            await runner._process_pcm(b"speech-start")
+            endpoint.reject_speech = True
+            await runner._process_pcm(b"rejected-end")
+            self.assertEqual(voice.state, VoiceSessionState.FOLLOW_UP)
+        await asyncio.sleep(0.10)
+        self.assertEqual(voice.state, VoiceSessionState.SLEEPING)
+        expired = [row for row in self.runtime.repository.events() if row["event_type"] == "voice.follow_up_expired"]
+        self.assertEqual(len(expired), 1)
+
+        await voice.wake_detected()
+        await voice.process_transcript(VoiceTranscript("second", True, "en"), self.identity, self.device)
+        endpoint.start_speech = True
+        await runner._process_pcm(b"speech-start")
+        await runner.stop()
+        await asyncio.sleep(0.14)
+        self.assertEqual(voice.state, VoiceSessionState.STOPPED)
+        expired = [row for row in self.runtime.repository.events() if row["event_type"] == "voice.follow_up_expired"]
+        self.assertEqual(len(expired), 1)
 
     async def test_wrong_owner_and_wrong_context_fail_before_stt(self) -> None:
         stt = _StaticStt()

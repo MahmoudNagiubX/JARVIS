@@ -160,6 +160,27 @@ class VoiceCore:
 
         await self._emit(event_type, state, payload)
 
+    async def hold_follow_up_for_speech(self) -> bool:
+        """Reserve an active follow-up while physical endpointing is in progress."""
+
+        if self._state is not VoiceSessionState.FOLLOW_UP:
+            return False
+        task = self._follow_up_task
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if self._follow_up_task is task:
+            self._follow_up_task = None
+        return True
+
+    async def restore_follow_up_after_rejected_speech(self) -> bool:
+        """Resume only the original remaining follow-up window after rejected noise."""
+
+        if self._state is not VoiceSessionState.FOLLOW_UP:
+            return False
+        await self._restore_follow_up()
+        return self._state is VoiceSessionState.FOLLOW_UP
+
     async def process_audio(
         self,
         audio: bytes,

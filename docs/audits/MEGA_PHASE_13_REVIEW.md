@@ -79,3 +79,31 @@ cancellation with a clean next turn, and the playback hard bound.
 Physical status remains **PARTIAL**. Automated lifecycle proof does not claim
 human wake detection, transcription quality, audibility, live physical
 barge-in, or physical device-loss recovery.
+
+## Speech-start liveness closure
+
+The physical runner now treats endpoint speech transitions explicitly without
+owning follow-up timing. Rejected short speech after an initial wake cancels
+any stale command-start timer, returns the session to sleeping, and performs no
+STT or AgentRuntime call, so a fresh wake is required. When speech starts in
+follow-up, VoiceCore holds its existing expiry task while preserving the
+original deadline and run id, preventing expiry in the middle of an active
+utterance.
+
+Rejected follow-up noise restores only the remaining original deadline. An
+accepted candidate remains reserved through STT: empty STT restores that same
+remaining deadline, while a successful completed turn receives one fresh full
+follow-up window. Repeated hold/restore cycles produce one expiry, and stop
+clears a held reservation without a leaked timer.
+
+- Phase 13 focused/total matrix: **30 passed, 0 failed**.
+- Phase 12 focused regression: **11 passed, 0 failed**.
+- Phase 11 regression: **26 passed, 0 failed**.
+- Phase 10 regression: **31 passed, 0 failed**.
+- Phase 09 regression: **39 passed, 0 failed**.
+- Phase 08 regression: **13 passed, 0 failed**.
+- Full repository suite: **248 passed, 0 failed, 0 errors**.
+- Raw PCM, partial STT, and generated-audio retention regression: **ZERO**.
+- `python -m compileall src tests`: **PASS**.
+- `git diff --check`: **PASS**.
+- Physical human acceptance: **PENDING / PARTIAL**.

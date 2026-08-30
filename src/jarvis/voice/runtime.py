@@ -216,24 +216,39 @@ class LocalVoiceRuntime:
                 del captured
 
     async def _process_pcm(self, pcm: bytes) -> None:
-        state = self.voice.state
-        if state in {VoiceSessionState.SLEEPING, VoiceSessionState.THINKING, VoiceSessionState.SPEAKING}:
+        state_before = self.voice.state
+        if state_before in {VoiceSessionState.SLEEPING, VoiceSessionState.THINKING, VoiceSessionState.SPEAKING}:
             if self.wake.detect_pcm(pcm):
                 self.endpointing.discard()
                 await self._cancel_wake_command_timer()
                 if await self.voice.wake_detected():
                     await self._arm_wake_command_timer()
             return
-        if state not in {VoiceSessionState.LISTENING, VoiceSessionState.FOLLOW_UP}:
+        if state_before not in {VoiceSessionState.LISTENING, VoiceSessionState.FOLLOW_UP}:
             return
-        if state is VoiceSessionState.LISTENING and self.wake_command_timer_active and self.wake.detect_pcm(pcm):
+        if state_before is VoiceSessionState.LISTENING and self.wake_command_timer_active and self.wake.detect_pcm(pcm):
             self.endpointing.discard()
             await self._arm_wake_command_timer()
             return
         speech_was_active = self.endpointing.speech_active
         utterance = self.endpointing.feed(pcm)
-        if not speech_was_active and self.endpointing.speech_active:
-            await self._cancel_wake_command_timer()
+        speech_is_active = self.endpointing.speech_active
+        if not speech_was_active and speech_is_active:
+            if state_before is VoiceSessionState.LISTENING:
+                await self._cancel_wake_command_timer()
+            else:
+                await self.voice.hold_follow_up_for_speech()
+        if speech_was_active and not speech_is_active and utterance is None:
+            if state_before is VoiceSessionState.LISTENING:
+                await self._cancel_wake_command_timer()
+                await self.voice.return_to_sleeping()
+                await self.voice.report_runtime_event(
+                    "voice.utterance_rejected",
+                    state=EventState.COMPLETED,
+                )
+            else:
+                await self.voice.restore_follow_up_after_rejected_speech()
+            return
         if utterance is None or self._turn_task is not None and not self._turn_task.done():
             return
         self._turn_task = asyncio.create_task(self._dispatch(utterance))
