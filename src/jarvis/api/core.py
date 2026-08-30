@@ -12,6 +12,7 @@ from ..contracts import (
     BrowserAction,
     ClientSession,
     ComputerAction,
+    ComputerResult,
     DeviceIdentity,
     DeviceRecord,
     Goal,
@@ -741,6 +742,8 @@ class CoreApplication:
         identity: Identity | None = None,
         device: DeviceIdentity | None = None,
     ) -> dict[str, Any]:
+        if self.runtime.repository.tool_call_by_approval(approval_id) is not None:
+            return asdict(ComputerResult("denied", error_code="delegated_approval_requires_run_resume", approval_id=approval_id))
         return asdict(await self.runtime.computer_actions.decide(approval_id, approved, decided_by, identity=identity, device=device))
 
     async def browser_action(

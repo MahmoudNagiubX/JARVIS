@@ -456,11 +456,18 @@ class ComputerActionService:
         )
         if decision.effect.value != "allow":
             if decision.effect.value == "require_approval" and self.approvals is not None:
+                if len(self._pending) >= self.MAX_PENDING:
+                    await self._emit(
+                        "computer.action_failed",
+                        identity.owner_id,
+                        correlation,
+                        {"action": action.action, "reason": "computer_pending_store_full"},
+                        EventState.FAILED,
+                    )
+                    return ComputerResult("failed", error_code="computer_pending_store_full")
                 approval_id = f"approval-{uuid4()}"
                 expires_at = datetime.now(UTC) + timedelta(minutes=10)
                 await self.approvals.request(ApprovalRequest(approval_id, capability, identity.owner_id, device.device_id, "computer action requires approval", datetime.now(UTC), expires_at, self._approval_preview(action)))
-                if len(self._pending) >= self.MAX_PENDING:
-                    self._prune_pending(force_one=True)
                 self._pending[approval_id] = (action, identity, device, target, adapter, expires_at)
                 await self._emit(
                     "computer.action_requested",
@@ -499,6 +506,8 @@ class ComputerActionService:
             raise PermissionError("approval_device_mismatch")
         decision = await self.approvals.decide(approval_id, approved, decided_by)
         self._pending.pop(approval_id, None)
+        if decision.status.value == "expired":
+            return ComputerResult("denied", error_code="approval_expired", approval_id=approval_id)
         if decision.status.value != "approved":
             return ComputerResult("denied", error_code=decision.status.value, approval_id=approval_id)
         return await self._execute_controller(action, pending_identity, pending_device, target, adapter, "computer", f"computer-{approval_id}", approval_id)
@@ -506,13 +515,11 @@ class ComputerActionService:
     def close(self) -> None:
         self._pending.clear()
 
-    def _prune_pending(self, *, force_one: bool = False) -> None:
+    def _prune_pending(self) -> None:
         now = datetime.now(UTC)
         for approval_id, pending in tuple(self._pending.items()):
             if pending[-1] <= now:
                 self._pending.pop(approval_id, None)
-        if force_one and self._pending:
-            self._pending.pop(next(iter(self._pending)))
 
     @staticmethod
     def _approval_preview(action: ComputerAction) -> dict[str, object]:

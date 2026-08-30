@@ -25,5 +25,13 @@
   "audio": {
     "status": "deferred",
     "reason": "not exercised to avoid changing user volume"
+  },
+  "satellite_same_host": {
+    "process_separated": true,
+    "transport": "http-long-poll",
+    "action": "clipboard_write marker + restore",
+    "status": "succeeded",
+    "verified": true,
+    "second_physical_host_claimed": false
   }
 }

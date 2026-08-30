@@ -65,6 +65,7 @@ class _DelegatedApproval:
     run_id: str | None
     digest: str
     retention: ToolResultRetention
+    expires_at: datetime
 
 
 class ToolExecutionService:
@@ -187,11 +188,11 @@ class ToolExecutionService:
         if delegated is not None:
             try:
                 if self._delegated_resumer is None:
-                    return self._delegated_failure(delegated, "delegated_approval_unavailable")
+                    return self._delegated_failure(delegated, "delegated_approval_unavailable", approval_id=approval_id)
                 result = await self._delegated_resumer(approval_id, approved, decided_by)
                 return await self._finish_delegated(delegated, approval_id, result, context)
             except KeyError:
-                return self._delegated_failure(delegated, "ephemeral_arguments_unavailable")
+                return self._delegated_failure(delegated, "ephemeral_arguments_unavailable", approval_id=approval_id)
             finally:
                 self._delegated_approvals.pop(approval_id, None)
         decision = await self.approvals.decide(approval_id, approved, decided_by)
@@ -250,16 +251,33 @@ class ToolExecutionService:
             if not result.approval_id:
                 self.repository.update_tool_call(tool_call_id, "failed", {"retained": False, "error_code": "approval_id_missing"})
                 return ToolCallResult(tool_call_id, spec.name, ToolExecutionStatus.FAILED, error_code="approval_id_missing", argument_digest=digest, retention=spec.retention)
+            approval_id = result.approval_id
+            decision = await self.approvals.get(approval_id)
+            approval_row = self.repository.approval(approval_id)
+            if decision is None or approval_row is None:
+                self.repository.update_tool_call(tool_call_id, "failed", {"retained": False, "error_code": "approval_unavailable"})
+                return ToolCallResult(tool_call_id, spec.name, ToolExecutionStatus.FAILED, error_code="approval_unavailable", argument_digest=digest, retention=spec.retention)
+            if decision.status.value != "pending":
+                error_code = "approval_expired" if decision.status.value == "expired" else f"approval_{decision.status.value}"
+                self.repository.update_tool_call(tool_call_id, "failed", {"retained": False, "error_code": error_code})
+                return ToolCallResult(tool_call_id, spec.name, ToolExecutionStatus.FAILED, error_code=error_code, argument_digest=digest, retention=spec.retention)
+            try:
+                expires_at = datetime.fromisoformat(str(approval_row["expires_at"]))
+            except (TypeError, ValueError):
+                self.repository.update_tool_call(tool_call_id, "failed", {"retained": False, "error_code": "approval_expiry_invalid"})
+                return ToolCallResult(tool_call_id, spec.name, ToolExecutionStatus.FAILED, error_code="approval_expiry_invalid", argument_digest=digest, retention=spec.retention)
+            await self._prune_delegated_approvals()
             if len(self._delegated_approvals) >= self.MAX_EPHEMERAL_ARGUMENTS:
                 self.repository.update_tool_call(tool_call_id, "failed", {"retained": False, "error_code": "delegated_approval_store_full"})
+                await self.approvals.decide(approval_id, False, "system")
                 return ToolCallResult(tool_call_id, spec.name, ToolExecutionStatus.FAILED, error_code="delegated_approval_store_full", argument_digest=digest, retention=spec.retention)
-            self._delegated_approvals[result.approval_id] = _DelegatedApproval(tool_call_id, spec.name, run_id, digest, spec.retention)
+            self._delegated_approvals[approval_id] = _DelegatedApproval(tool_call_id, spec.name, run_id, digest, spec.retention, expires_at)
             self.repository.update_tool_call(tool_call_id, "awaiting_approval")
-            self.repository.set_tool_call_approval(tool_call_id, result.approval_id)
+            self.repository.set_tool_call_approval(tool_call_id, approval_id)
             if run_id:
-                self.repository.update_run(run_id, pending_approval_id=result.approval_id)
-            await self._emit("tool.approval_required", EventCategory.APPROVAL, context, {"approval_id": result.approval_id, "tool_call_id": tool_call_id})
-            return ToolCallResult(tool_call_id, spec.name, ToolExecutionStatus.APPROVAL_REQUIRED, approval_id=result.approval_id, argument_digest=digest, retention=spec.retention)
+                self.repository.update_run(run_id, pending_approval_id=approval_id)
+            await self._emit("tool.approval_required", EventCategory.APPROVAL, context, {"approval_id": approval_id, "tool_call_id": tool_call_id})
+            return ToolCallResult(tool_call_id, spec.name, ToolExecutionStatus.APPROVAL_REQUIRED, approval_id=approval_id, argument_digest=digest, retention=spec.retention)
         if result.status is not ToolResultStatus.SUCCEEDED:
             status = ToolExecutionStatus.DENIED if result.status is ToolResultStatus.DENIED else ToolExecutionStatus.FAILED
             self.repository.update_tool_call(tool_call_id, status.value, _retained_output(spec, result.output))
@@ -297,9 +315,44 @@ class ToolExecutionService:
             self.repository.update_tool_call(pending.tool_call_id, "failed", {"retained": False, "error_code": error_code or "delegated_action_failed"})
         return ToolCallResult(pending.tool_call_id, pending.name, status, output, error_code, approval_id, pending.digest, pending.retention)
 
-    def _delegated_failure(self, pending: _DelegatedApproval, error_code: str) -> ToolCallResult:
-        self.repository.update_tool_call(pending.tool_call_id, "failed", {"retained": False, "error_code": error_code})
+    def _delegated_failure(self, pending: _DelegatedApproval, error_code: str, *, approval_id: str | None = None) -> ToolCallResult:
+        self._reconcile_delegated_failure(pending, error_code, approval_id=approval_id)
         return ToolCallResult(pending.tool_call_id, pending.name, ToolExecutionStatus.FAILED, error_code=error_code, argument_digest=pending.digest, retention=pending.retention)
+
+    async def _prune_delegated_approvals(self) -> int:
+        removed = 0
+        for approval_id, pending in tuple(self._delegated_approvals.items()):
+            decision = await self.approvals.get(approval_id)
+            if decision is not None and decision.status.value == "pending":
+                continue
+            self._delegated_approvals.pop(approval_id, None)
+            if decision is None:
+                error_code = "approval_unavailable"
+            elif decision.status.value == "expired":
+                error_code = "approval_expired"
+            elif decision.status.value == "rejected":
+                error_code = "approval_rejected"
+            else:
+                error_code = "approval_already_decided"
+            self._reconcile_delegated_failure(pending, error_code, approval_id=approval_id)
+            removed += 1
+        return removed
+
+    def _reconcile_delegated_failure(self, pending: _DelegatedApproval, error_code: str, *, approval_id: str | None = None) -> None:
+        tool_call = self.repository.tool_call(pending.tool_call_id)
+        if tool_call is not None and tool_call.get("status") == "awaiting_approval":
+            self.repository.update_tool_call(pending.tool_call_id, "failed", {"retained": False, "error_code": error_code})
+        if pending.run_id is None:
+            return
+        run = self.repository.run(pending.run_id)
+        if run is not None and run.status == "paused" and run.pending_approval_id == approval_id:
+            self.repository.update_run(
+                pending.run_id,
+                status="failed",
+                completed_at=datetime.now(UTC),
+                failure_code=error_code,
+                pending_approval_id=None,
+            )
 
     def _prune_ephemeral_arguments(self) -> None:
         now = datetime.now(UTC)

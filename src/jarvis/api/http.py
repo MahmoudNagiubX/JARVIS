@@ -344,7 +344,7 @@ class CoreHttpServer:
                             return
                         result = asyncio.run(application.resume_approval(
                             approval_id, str(body["run_id"]), principal.identity, principal.device,
-                            bool(body["approved"]), str(body.get("decided_by", principal.identity.identity_id)),
+                            bool(body["approved"]), principal.identity.identity_id,
                         ))
                         self._respond(HTTPStatus.OK, result)
                         return
@@ -483,7 +483,7 @@ class CoreHttpServer:
                         principal = self._authenticated(body)
                         approval_id = route.rsplit("/", 1)[-1]
                         result = asyncio.run(application.decide_computer_action(
-                            approval_id, bool(body["approved"]), str(body.get("decided_by", principal.identity.identity_id)),
+                            approval_id, bool(body["approved"]), principal.identity.identity_id,
                             principal.identity, principal.device,
                         ))
                         self._respond(HTTPStatus.OK, result)
