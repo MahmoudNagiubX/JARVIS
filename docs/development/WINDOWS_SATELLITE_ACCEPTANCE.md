@@ -6,6 +6,8 @@ safe observation, allowlisted action, rejection of unsupported actions,
 revocation, reconnect, timeout, and audit/event records. Keep transport local
 or explicitly authorized; do not enable arbitrary shell execution.
 
-Phase 06 automated tests use the typed in-process registry. No external
-satellite endpoint was available during the workstation audit, so physical
-acceptance is deferred.
+Automated Phase 09 tests cover the authenticated bounded HTTP transport,
+typed agent, replay, limits, reconnect, revocation, and offline recovery.
+No external satellite endpoint was available during the workstation audit, so
+physical acceptance remains deferred; these tests do not claim a real second
+machine.

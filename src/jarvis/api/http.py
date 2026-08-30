@@ -64,6 +64,16 @@ class CoreHttpServer:
                         principal = self._authenticated(values)
                     if route == "/health":
                         self._respond(HTTPStatus.OK, asyncio.run(application.health()))
+                    elif route == "/satellites/commands":
+                        principal = self._authenticated(values)
+                        self._respond(
+                            HTTPStatus.OK,
+                            asyncio.run(application.satellite_poll(
+                                principal,
+                                str(values.get("session_id", "")),
+                                float(values.get("wait_seconds", 20)),
+                            )),
+                        )
                     elif route in {"/hud", "/experience/hud"}:
                         self.send_response(HTTPStatus.OK)
                         encoded = application.experience_hud().encode("utf-8")
@@ -239,6 +249,24 @@ class CoreHttpServer:
                 route = self._route(parsed.path)
                 try:
                     body = self._body()
+                    if route == "/satellites/connect":
+                        principal = self._authenticated(body)
+                        self._respond(HTTPStatus.CREATED, asyncio.run(application.satellite_connect(principal, body)))
+                        return
+                    if route == "/satellites/heartbeat":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.satellite_heartbeat(principal, body))
+                        self._respond(HTTPStatus.OK if result.get("accepted") else HTTPStatus.UNAUTHORIZED, result)
+                        return
+                    if route == "/satellites/results":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.satellite_result(principal, body))
+                        self._respond(HTTPStatus.OK if result.get("accepted") else HTTPStatus.BAD_REQUEST, result)
+                        return
+                    if route == "/satellites/disconnect":
+                        principal = self._authenticated(body)
+                        self._respond(HTTPStatus.OK, asyncio.run(application.satellite_disconnect(principal, str(body.get("session_id", "")))))
+                        return
                     if route == "/auth/stream-ticket":
                         principal = self._authenticated(body)
                         ticket = ticket_service.issue(principal, str(body.get("scope", "events")))

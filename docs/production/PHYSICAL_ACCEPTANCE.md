@@ -14,3 +14,8 @@ The Phase 06 workstation audit detected Windows audio devices but found no
 Ollama, PostgreSQL listener/client, Node/Playwright, FFmpeg, Venom, HA/MQTT, or
 other live listener. Voice, satellite, browser/Playwright, and external-node
 physical acceptance therefore remain deferred or partial in the checklist.
+
+Phase 09 adds a runnable typed Windows satellite and loopback transport, but
+the inspected workstation still has no authorized second-node endpoint. The
+transport and agent tests are contract evidence only; they do not change the
+deferred physical status.

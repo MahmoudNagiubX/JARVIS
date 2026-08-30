@@ -66,6 +66,12 @@ The runtime uses `InMemoryEventBus` plus durable event persistence through the
 repository. Later durable delivery, outbox, or distributed transports are
 adapters and must preserve this envelope.
 
+Phase 09's distributed node transport is such an adapter: it wraps the
+existing Windows satellite registry and preserves the same event, identity,
+permission, device, and audit ownership. It does not add a scheduler, EventBus,
+VoiceCore, or tool registry. See `DISTRIBUTED_RUNTIME.md` and
+`NODE_TRANSPORT.md`.
+
 ## Lifecycle
 
 `created -> starting -> ready -> stopping -> stopped` is explicit. Startup

@@ -25,3 +25,10 @@ Optional local model deployment points only at an already-running Ollama
 endpoint. PostgreSQL, pgvector, Playwright, audio, satellite, engineering,
 Venom, Home Assistant/MQTT, and communications are deployment-owned adapters;
 install/configure them separately and record their acceptance evidence.
+
+For the Phase 09 distributed profile, keep the core and model endpoints on
+loopback and launch an authorized Windows satellite with
+`scripts/phase09/run_windows_satellite.ps1`. Configure host-level restart in
+the existing service/Task Scheduler layer; do not install a new supervisor
+implicitly. See `docs/architecture/NODE_TRANSPORT.md` and
+`docs/architecture/WINDOWS_SATELLITE_LIVE.md`.

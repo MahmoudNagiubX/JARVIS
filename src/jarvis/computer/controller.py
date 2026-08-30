@@ -21,13 +21,28 @@ class WindowsComputerController:
         connection = self.registry.session_for_device(context.device.device_id)
         if connection is None:
             return ToolResult(ToolResultStatus.FAILED, error_code="satellite_offline")
-        if action.action not in {"observe", "input"}:
+        if action.action in {"observe", "input"}:
+            transport_action = action.action
+            transport_capability = f"computer.{action.action}"
+            parameters = dict(action.parameters)
+        elif action.action in {
+            "list_processes",
+            "inspect_file",
+            "search_files",
+            "open_file",
+            "open_folder",
+            "open_application",
+            "stop_safe_process",
+        }:
+            transport_action = "observe" if action.action in {"list_processes", "inspect_file", "search_files"} else "input"
+            transport_capability = f"computer.{transport_action}"
+            parameters = {"operation": action.action, **dict(action.parameters)}
+        else:
             return ToolResult(ToolResultStatus.DENIED, error_code="unsupported_computer_action")
-        capability = f"computer.{action.action}"
-        if capability not in context.device.capabilities:
+        if transport_capability not in context.device.capabilities:
             return ToolResult(ToolResultStatus.DENIED, error_code="device_capability_missing")
         command = SatelliteCommand(
-            f"command-{uuid4()}", action.action, capability, dict(action.parameters), action.dry_run
+            f"command-{uuid4()}", transport_action, transport_capability, parameters, action.dry_run
         )
         observation = await self.registry.execute(connection.session_id, command)
         status = ToolResultStatus.SUCCEEDED if observation.status == "completed" else (

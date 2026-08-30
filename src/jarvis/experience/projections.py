@@ -260,6 +260,7 @@ class ExperienceProjection:
                 offline=bool(external_system.get("offline", system.offline)),
                 model_provider=external_system.get("model_provider", system.model_provider),
                 model_available=bool(external_system.get("model_available", system.model_available)),
+                topology=dict(external_system.get("topology", system.topology)) if isinstance(external_system.get("topology", system.topology), Mapping) else system.topology,
             )
             if system.offline and system.runtime_state == "ready" and system.state not in {ExperienceState.ERROR, ExperienceState.PROACTIVE_ALERT}:
                 system = replace(system, state=ExperienceState.DEGRADED)

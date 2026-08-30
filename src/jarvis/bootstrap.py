@@ -42,6 +42,7 @@ from .contracts import (
     NotificationProjection,
 )
 from .devices.satellite.registry import WindowsSatelliteRegistry
+from .devices.satellite.transport import SatelliteTransportService
 from .devices.fabric import DeviceFabricService
 from .devices.home.service import HomeActionService, RestrictedMQTTTransport
 from .events import Event, EventCategory, EventState
@@ -175,6 +176,7 @@ class JarvisRuntime:
     improvement_policy: ControlledImprovementPolicy
     backup: SQLiteBackupService
     runtime_id: str
+    satellite_transport: SatelliteTransportService
     state: RuntimeState = RuntimeState.CREATED
 
     async def start(self) -> None:
@@ -242,6 +244,7 @@ class JarvisRuntime:
         await self.event_bus.publish(completed)
         self.experience_projection.close()
         self.observability.close()
+        self.satellite_transport.close()
         self.state = RuntimeState.STOPPED
         self.database.close()
         await self.event_bus.close()
@@ -263,6 +266,10 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     tool_service = ToolExecutionService(repository, event_bus, registry, permission, approval, audit)
     models = ModelGateway(effective_config)
     satellite = WindowsSatelliteRegistry()
+    satellite_transport = SatelliteTransportService(
+        satellite,
+        heartbeat_interval_seconds=effective_config.heartbeat_interval_seconds,
+    )
     stt = NoOpSpeechToText()
     tts = NoOpTextToSpeech()
     memory = DurableMemoryService(repository, event_bus, audit)
@@ -363,6 +370,12 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
                 "offline": not offline.state.online,
                 "model_provider": model.provider,
                 "model_available": model.available,
+                "topology": {
+                    "profile": effective_config.deployment_profile,
+                    "node_id": effective_config.node_id,
+                    "core_role": effective_config.runtime_role,
+                    "node_transport": satellite_transport.health(),
+                },
             },
             "devices": devices,
             "goals": goals_view,
@@ -479,6 +492,16 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         owner_id = await maintenance_owner()
         return len(await automation.run_schedule(owner_id)) if owner_id else 0
 
+    async def refresh_satellite_health() -> int:
+        owner_id = await maintenance_owner()
+        if not owner_id:
+            return 0
+        changed = await device_fabric.mark_stale_offline(
+            owner_id,
+            max_age_seconds=max(30, int(effective_config.heartbeat_interval_seconds * 3)),
+        )
+        return len(changed)
+
     async def refresh_health() -> dict[str, object]:
         await offline.refresh()
         model_health = await models.health(ModelRoute.GENERAL_REASONING)
@@ -493,6 +516,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     scheduler.add("goal-proactive-check", 60, detect_proactive)
     scheduler.add("event-intelligence-check", 60, detect_event_intelligence)
     scheduler.add("automation-check", 60, run_automation_tick)
+    scheduler.add("satellite-health", 60, refresh_satellite_health)
     scheduler.add("health-check", 120, refresh_health)
     runtime = JarvisRuntime(
         config=effective_config,
@@ -562,6 +586,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         improvement_policy=improvement_policy,
         backup=backup_service,
         runtime_id=f"runtime-{uuid4()}",
+        satellite_transport=satellite_transport,
     )
     runtime_ref["runtime"] = runtime
     return runtime

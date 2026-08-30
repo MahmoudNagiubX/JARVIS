@@ -11,3 +11,8 @@ conversation references when supplied. `VoiceRoutingService` keeps output on
 the originating room unless deterministic handoff is selected. Speech is
 never implicit approval: durable approval context and an explicit bound
 decision remain required.
+
+Phase 09 profile fields expose the selected input/output adapter names in
+health, while `VoiceCore` remains the one runtime authority. Physical adapter
+selection and acceptance are documented in `LIVE_VOICE.md`; the inventory
+found no installed audio runtime beyond Windows endpoint enumeration.

@@ -38,6 +38,7 @@ class SystemStatusProjection:
     active_workers: int = 0
     error_count: int = 0
     generated_at: datetime | None = None
+    topology: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

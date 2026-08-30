@@ -10,3 +10,6 @@ or deployment layout. It does not remotely deploy, move Qwen assets, probe an
 unknown host, or expose a network endpoint. `VenomNode.health()` therefore
 reports `not_probed` until a later explicitly authorized deployment path exists.
 
+The Phase 09 workstation inventory found no authorized Venom SSH alias, host,
+or user. Tunnel guidance is intentionally placeholder-only in
+`docs/development/TUNNEL_SETUP.md`; no physical Venom acceptance is claimed.

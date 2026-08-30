@@ -37,6 +37,7 @@ class WindowsSatelliteRegistry:
 
     def __init__(self) -> None:
         self._connections: dict[str, SatelliteConnection] = {}
+        self._revoked_devices: set[str] = set()
 
     def register(
         self,
@@ -52,6 +53,8 @@ class WindowsSatelliteRegistry:
             return CoreWelcome(False, None, "device_identity_mismatch")
         if not hello.capabilities.issubset(device.capabilities):
             return CoreWelcome(False, None, "unregistered_capability")
+        if device.device_id in self._revoked_devices:
+            return CoreWelcome(False, None, "device_revoked")
         session_id = f"satellite-session-{uuid4()}"
         self._connections[session_id] = SatelliteConnection(
             session_id, hello, device, handler, datetime.now(UTC)
@@ -119,4 +122,6 @@ class WindowsSatelliteRegistry:
                 connection.online = False
                 connection.revoked = True
                 changed = True
+        if changed:
+            self._revoked_devices.add(device_id)
         return changed

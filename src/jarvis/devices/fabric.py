@@ -48,6 +48,29 @@ class DeviceFabricService:
         await self._emit("device.online", updated, {"heartbeat": heartbeat.timestamp.isoformat()}, EventState.COMPLETED)
         return updated
 
+    async def mark_offline(self, owner_id: str, device_id: str, *, reason: str = "transport_disconnected") -> DeviceRecord:
+        current = await self.get(owner_id, device_id)
+        if current is None:
+            raise KeyError(device_id)
+        if current.status == DeviceStatus.OFFLINE.value:
+            return current
+        updated = DeviceRecord(
+            current.device_id,
+            current.owner_id,
+            current.name,
+            current.role,
+            current.transport,
+            DeviceStatus.OFFLINE.value,
+            current.capabilities,
+            current.trust_level,
+            current.last_seen,
+            current.room_id,
+            dict(current.metadata) | {"offline_reason": reason},
+        )
+        self.repository.upsert_device_fabric(updated)
+        await self._emit("device.offline", updated, {"reason": reason}, EventState.COMPLETED)
+        return updated
+
     async def add_capability(self, owner_id: str, device_id: str, capability: str) -> DeviceRecord:
         if not capability.strip():
             raise ValueError("device capability is required")

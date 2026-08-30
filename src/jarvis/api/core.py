@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from ..authority.identity.service import EnrollmentGrant
@@ -27,7 +27,11 @@ from ..contracts import (
     MemorySensitivity,
     WorldStateSnapshot,
     WorldStateQuery,
+    DeviceHeartbeat,
+    DeviceRole,
+    DeviceStatus,
 )
+from ..devices.satellite.contracts import CommandObservation, SatelliteHeartbeat, SatelliteHello
 from ..models.routing import ModelRoute
 from ..contracts import Mission, MissionBudget, MissionStatus
 from ..automation import AutomationAction, AutomationCondition, AutomationRule, AutomationTrigger
@@ -185,7 +189,134 @@ class CoreApplication:
             "internet": asdict(self.runtime.offline.state),
             "local_model": {"available": model.available, "provider": model.provider, "reason": model.reason},
             "venom": asdict(self.runtime.venom.health()),
+            "runtime_profile": {
+                "deployment_profile": self.runtime.config.deployment_profile,
+                "runtime_role": self.runtime.config.runtime_role,
+                "node_id": self.runtime.config.node_id,
+                "core_url": self.runtime.config.core_url,
+                "model_loopback_endpoint": self.runtime.config.model_loopback_endpoint,
+                "voice_input_adapter": self.runtime.config.voice_input_adapter,
+                "voice_output_adapter": self.runtime.config.voice_output_adapter,
+            },
+            "node_transport": self.runtime.satellite_transport.health(),
         }
+
+    async def satellite_connect(self, principal: DemoPrincipal, values: dict[str, object]) -> dict[str, Any]:
+        capabilities = values.get("capabilities", ())
+        if not isinstance(capabilities, (list, tuple)):
+            raise ValueError("satellite capabilities must be a list")
+        hello = SatelliteHello(
+            str(values.get("device_id", "")),
+            str(values.get("owner_id", principal.identity.owner_id)),
+            str(values.get("platform", "windows")),
+            str(values.get("software_version", "unknown")),
+            frozenset(str(item) for item in capabilities if str(item).strip()),
+            str(values.get("protocol_version", "1")),
+        )
+        welcome = await self.runtime.satellite_transport.connect(principal, hello)
+        if welcome.accepted:
+            await self.runtime.device_fabric.register(
+                DeviceRecord(
+                    hello.device_id,
+                    principal.identity.owner_id,
+                    str(values.get("name", hello.device_id)),
+                    DeviceRole.PRIMARY_PC.value,
+                    "http-long-poll",
+                    DeviceStatus.ONLINE.value,
+                    hello.capabilities,
+                    "verified",
+                    datetime.now(UTC),
+                    metadata={"protocol": "jarvis-satellite-v1", "session_id": welcome.session_id},
+                )
+            )
+            await self.runtime.world_state.set_fact(
+                principal.identity.owner_id,
+                f"device.{hello.device_id}.online",
+                True,
+                source="satellite",
+                source_reference=welcome.session_id,
+                freshness_seconds=self.runtime.config.heartbeat_interval_seconds * 3,
+                device_id=hello.device_id,
+            )
+        return asdict(welcome)
+
+    async def satellite_heartbeat(self, principal: DemoPrincipal, values: dict[str, object]) -> dict[str, object]:
+        session_id = str(values.get("session_id", ""))
+        heartbeat = SatelliteHeartbeat(
+            session_id,
+            principal.device.device_id,
+            int(values.get("sequence", 0)),
+        )
+        accepted = await self.runtime.satellite_transport.heartbeat(
+            principal.identity.owner_id,
+            principal.device.device_id,
+            heartbeat,
+        )
+        if not accepted:
+            return {"accepted": False, "reason": "satellite_session_invalid"}
+        await self.runtime.device_fabric.heartbeat(
+            DeviceHeartbeat(principal.device.device_id, heartbeat.timestamp, {"transport": "http-long-poll", "session_id": session_id}),
+            principal.identity.owner_id,
+        )
+        await self.runtime.world_state.set_fact(
+            principal.identity.owner_id,
+            f"device.{principal.device.device_id}.online",
+            True,
+            source="satellite",
+            source_reference=session_id,
+            freshness_seconds=self.runtime.config.heartbeat_interval_seconds * 3,
+            device_id=principal.device.device_id,
+        )
+        return {"accepted": True, "session_id": session_id, "sequence": heartbeat.sequence}
+
+    async def satellite_poll(self, principal: DemoPrincipal, session_id: str, wait_seconds: float) -> dict[str, Any]:
+        command = await self.runtime.satellite_transport.poll(
+            principal.identity.owner_id,
+            principal.device.device_id,
+            session_id,
+            wait_seconds,
+        )
+        return {"command": asdict(command) if command else None}
+
+    async def satellite_result(self, principal: DemoPrincipal, values: dict[str, object]) -> dict[str, Any]:
+        output = values.get("output", {})
+        if not isinstance(output, dict):
+            raise ValueError("satellite result output must be an object")
+        submission = await self.runtime.satellite_transport.submit_result(
+            principal.identity.owner_id,
+            principal.device.device_id,
+            str(values.get("session_id", "")),
+            CommandObservation(
+                str(values.get("command_id", "")),
+                str(values.get("status", "")),
+                output,
+                str(values["error_code"]) if values.get("error_code") is not None else None,
+            ),
+        )
+        return asdict(submission)
+
+    async def satellite_disconnect(self, principal: DemoPrincipal, session_id: str) -> dict[str, object]:
+        disconnected = await self.runtime.satellite_transport.disconnect(
+            principal.identity.owner_id,
+            principal.device.device_id,
+            session_id,
+        )
+        if disconnected:
+            await self.runtime.device_fabric.mark_offline(
+                principal.identity.owner_id,
+                principal.device.device_id,
+                reason="satellite_disconnected",
+            )
+            await self.runtime.world_state.set_fact(
+                principal.identity.owner_id,
+                f"device.{principal.device.device_id}.online",
+                False,
+                source="satellite",
+                source_reference=session_id,
+                freshness_seconds=self.runtime.config.heartbeat_interval_seconds * 3,
+                device_id=principal.device.device_id,
+            )
+        return {"accepted": disconnected, "session_id": session_id}
 
     # Core application use cases ----------------------------------------
     async def list_memory(
