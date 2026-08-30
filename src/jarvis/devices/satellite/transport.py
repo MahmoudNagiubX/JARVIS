@@ -131,7 +131,7 @@ class SatelliteTransportService:
                 "transport": "http-long-poll",
                 "available": online > 0,
                 "online_sessions": online,
-                "degraded": total > online,
+                "degraded": online == 0 and total > 0,
             }
 
     def health(self, *, include_owner: bool = False) -> dict[str, object]:
@@ -287,6 +287,7 @@ class SatelliteTransportService:
                 self.registry.disconnect(session.session_id)
                 if self._device_sessions.get(session.device_id) == session.session_id:
                     self._device_sessions.pop(session.device_id, None)
+                self.registry.retire(session.session_id)
                 expired.append(ExpiredSatelliteSession(session.session_id, session.owner_id, session.device_id))
             self._prune_inactive_sessions()
         return tuple(expired)
@@ -324,6 +325,7 @@ class SatelliteTransportService:
             self._fail_pending(session, "satellite_disconnected")
             session.online = False
             self.registry.disconnect(session_id)
+            self.registry.retire(session_id)
             if self._device_sessions.get(device_id) == session_id:
                 self._device_sessions.pop(device_id, None)
             return True
@@ -336,6 +338,7 @@ class SatelliteTransportService:
             if session:
                 self._fail_pending(session, "device_revoked")
                 session.online = False
+                self.registry.retire(session.session_id)
             self._device_sessions.pop(device_id, None)
             self._prune_inactive_sessions()
             return changed or session is not None
@@ -363,6 +366,7 @@ class SatelliteTransportService:
         inactive = [session for session in self._sessions.values() if not session.online]
         inactive.sort(key=lambda session: session.last_heartbeat)
         for session in inactive[:-self.MAX_INACTIVE_SESSIONS]:
+            self.registry.retire(session.session_id)
             self._sessions.pop(session.session_id, None)
 
 

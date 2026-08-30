@@ -189,12 +189,13 @@ class ComputerActionService:
         device: DeviceIdentity,
         *,
         target_device: DeviceIdentity | None = None,
+        execution_adapter: str | None = None,
         session_id: str = "computer",
         correlation_id: str | None = None,
     ) -> ComputerResult:
         correlation = correlation_id or f"computer-{uuid4()}"
         target = target_device or device
-        adapter = "satellite" if target.device_id != device.device_id else "local"
+        adapter = execution_adapter or "local"
         if target.owner_id != identity.owner_id:
             await self._audit(
                 identity,

@@ -675,6 +675,7 @@ class CoreApplication:
         target_device_id: str | None = None,
     ) -> dict[str, Any]:
         target = device
+        execution_adapter: str | None = None
         if target_device_id is not None:
             target = await self.runtime.identity.device(target_device_id)
             if target is None:
@@ -685,11 +686,15 @@ class CoreApplication:
             target_row = self.runtime.repository.device(target_device_id)
             if (target_row is not None and target_row.get("status") != "active") or (target_record is not None and target_record.status == DeviceStatus.REVOKED.value):
                 return {"status": "denied", "output": {}, "error_code": "device_revoked", "verified": False, "approval_id": None}
+            execution_adapter = "satellite" if (
+                target_record is not None and target_record.transport == "http-long-poll"
+            ) or self.runtime.satellite.status(target_device_id) != "unknown" else "local"
         result = await self.runtime.computer_actions.execute(
             ComputerAction(action, parameters or {}, dry_run),
             identity,
             device,
             target_device=target,
+            execution_adapter=execution_adapter,
         )
         return asdict(result)
 

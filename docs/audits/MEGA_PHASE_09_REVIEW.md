@@ -90,3 +90,38 @@ count and correlation are committed in
 This is same-host physical acceptance, not a claim of a second physical node.
 Physical voice, local model, Venom, browser, Home Assistant, and external
 communications remain honestly deferred.
+
+## Final Routing and Liveness Delta
+
+The final delta is based on `a2f9c4bc31af2d9e20d3fc60827b3db44d9ac365` and
+keeps topology resolution inside the existing Core authority. Routing no
+longer infers local versus satellite execution from request/target ID
+equality. An explicitly targeted device is classified from JARVIS-owned
+DeviceFabric/registry topology, so a same-device-ID satellite target still
+routes through the satellite adapter; an omitted target retains local
+backward-compatible behavior. The client exposes only `target_device_id` and
+cannot select an execution adapter.
+
+Stale transport expiration now retires its inactive registry connection, and
+registry selection prefers the current active non-revoked connection. Repeated
+stale/reconnect cycles therefore keep both transport and registry history
+bounded. Public aggregate health reports a healthy reconnect as available and
+not degraded; inactive diagnostic history does not affect current status.
+
+Final verification:
+
+- Final routing delta tests: **6 passed, 0 failed**.
+- Focused Phase 09 authority integration file: **21 passed, 0 failed**.
+- Phase 09 focused suite: **39 passed, 0 failed**.
+- Phase 08 closure/regression: **13 passed, 0 failed**; regression subset
+  remains **9/9 passed**.
+- Full repository suite: **116 passed, 0 failed**.
+- `python -m compileall src tests`: PASS.
+- `git diff --check`: PASS.
+
+The final tests cover same request/target satellite routing, same-ID offline
+no-fallback, no-target local compatibility, stale/reconnect registry current
+state, bounded registry history, and public reconnect health semantics. No
+new scheduler, EventBus, ApprovalEngine, PermissionEngine, ComputerActionService,
+VoiceCore, broad SQL cleanup, paid API, model copy/download, or protected BMO
+evidence change was introduced.

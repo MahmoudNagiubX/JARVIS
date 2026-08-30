@@ -108,6 +108,67 @@ class PhaseNineAuthorityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "succeeded")
         self.assertTrue(result["verified"])
 
+    async def test_same_request_and_target_id_still_routes_known_satellite(self) -> None:
+        local = _CountingLocalController()
+        self.runtime.computer_actions.controller.local = local
+        task = asyncio.create_task(
+            self.application.computer_action(
+                self.identity,
+                self.target,
+                "list_processes",
+                dry_run=True,
+                target_device_id=self.target.device_id,
+            )
+        )
+        command = await self._poll()
+        self.assertIsNotNone(command)
+        assert command is not None
+        self.assertEqual(local.calls, 0)
+        rows = self.runtime.repository.audit()
+        metadata = [json.loads(row["metadata_json"]) for row in rows if row["device_id"] == self.target.device_id]
+        self.assertTrue(any(item.get("execution_adapter") == "satellite" and item.get("request_device_id") == self.target.device_id and item.get("target_device_id") == self.target.device_id for item in metadata))
+        await self.application.satellite_result(
+            self.target_principal,
+            {
+                "session_id": self.session_id,
+                "command_id": command.command_id,
+                "status": "completed",
+                "output": {"bounded": True},
+            },
+        )
+        result = await task
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(local.calls, 0)
+
+    async def test_same_request_and_target_id_offline_never_runs_local(self) -> None:
+        local = _CountingLocalController()
+        self.runtime.computer_actions.controller.local = local
+        self.assertTrue((await self.application.satellite_disconnect(self.target_principal, self.session_id))["accepted"])
+        result = await self.application.computer_action(
+            self.identity,
+            self.target,
+            "list_processes",
+            dry_run=False,
+            target_device_id=self.target.device_id,
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error_code"], "satellite_offline")
+        self.assertEqual(local.calls, 0)
+
+    async def test_no_explicit_target_preserves_local_backward_compatibility(self) -> None:
+        local = _CountingLocalController()
+        self.runtime.computer_actions.controller.local = local
+        before = self._queued()
+        result = await self.application.computer_action(
+            self.identity,
+            self.actor,
+            "list_processes",
+            dry_run=False,
+        )
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(local.calls, 1)
+        self.assertEqual(self._queued(), before)
+
     async def test_permission_failure_queues_nothing(self) -> None:
         before = self._queued()
         result = await self.application.computer_action(
@@ -366,6 +427,45 @@ class PhaseNineAuthorityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(sessions), self.runtime.satellite_transport.MAX_INACTIVE_SESSIONS + 1)
         self.assertIsNone(await self.runtime.satellite_transport.poll(self.identity.owner_id, self.target.device_id, old_session, 0))
 
+    async def test_stale_then_reconnect_prefers_current_registry_connection(self) -> None:
+        session = self.runtime.satellite_transport._sessions[self.session_id]
+        session.last_heartbeat = datetime.now(UTC) - timedelta(minutes=5)
+        self.assertEqual(len(await self.runtime.satellite_transport.expire_stale_sessions()), 1)
+        replacement = await self.application.satellite_connect(
+            self.target_principal,
+            {
+                "device_id": self.target.device_id,
+                "owner_id": self.identity.owner_id,
+                "platform": "windows",
+                "capabilities": ["computer.observe"],
+            },
+        )
+        self.assertTrue(replacement["accepted"])
+        self.assertEqual(self.runtime.satellite.status(self.target.device_id), "online")
+        self.assertEqual(self.runtime.satellite.capabilities(self.target.device_id), frozenset({"computer.observe"}))
+        self.assertEqual(sum(connection.online for connection in self.runtime.satellite._connections.values()), 1)
+
+    async def test_repeated_stale_reconnect_cycles_bound_registry_history(self) -> None:
+        session_id = self.session_id
+        for _ in range(100):
+            self.runtime.satellite_transport._sessions[session_id].last_heartbeat = datetime.now(UTC) - timedelta(minutes=5)
+            self.assertEqual(len(await self.runtime.satellite_transport.expire_stale_sessions()), 1)
+            welcome = await self.application.satellite_connect(
+                self.target_principal,
+                {
+                    "device_id": self.target.device_id,
+                    "owner_id": self.identity.owner_id,
+                    "platform": "windows",
+                    "capabilities": ["computer.observe"],
+                },
+            )
+            self.assertTrue(welcome["accepted"])
+            session_id = str(welcome["session_id"])
+        sessions = self.runtime.satellite_transport.health()["sessions"]
+        self.assertLessEqual(len(sessions), self.runtime.satellite_transport.MAX_INACTIVE_SESSIONS + 1)
+        self.assertLessEqual(len(self.runtime.satellite._connections), 1)
+        self.assertEqual(sum(connection.online for connection in self.runtime.satellite._connections.values()), 1)
+
     async def test_public_health_is_aggregate_only(self) -> None:
         health = await self.application.health()
         transport = health["node_transport"]
@@ -373,6 +473,22 @@ class PhaseNineAuthorityIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("session_id", json.dumps(transport))
         self.assertNotIn(self.target.device_id, json.dumps(transport))
         self.assertNotIn(self.identity.owner_id, json.dumps(transport))
+
+    async def test_public_health_healthy_reconnect_is_not_degraded_by_history(self) -> None:
+        replacement = await self.application.satellite_connect(
+            self.target_principal,
+            {
+                "device_id": self.target.device_id,
+                "owner_id": self.identity.owner_id,
+                "platform": "windows",
+                "capabilities": ["computer.observe"],
+            },
+        )
+        self.assertTrue(replacement["accepted"])
+        transport = (await self.application.health())["node_transport"]
+        self.assertEqual(transport["online_sessions"], 1)
+        self.assertTrue(transport["available"])
+        self.assertFalse(transport["degraded"])
 
     async def test_satellite_role_cannot_compose_core_and_credential_cli_is_unavailable(self) -> None:
         with self.assertRaisesRegex(ValueError, "satellite role must use python -m jarvis.satellite_agent"):
