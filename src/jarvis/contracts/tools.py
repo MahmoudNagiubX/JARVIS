@@ -18,6 +18,11 @@ class ToolResultStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ToolResultRetention(StrEnum):
+    DURABLE = "durable"
+    EPHEMERAL = "ephemeral"
+
+
 @dataclass(frozen=True, slots=True)
 class ToolContext:
     identity: Identity | None

@@ -16,6 +16,7 @@ class AgentContextSnapshot:
     personalization: Mapping[str, object] = field(default_factory=dict)
     tool_capabilities: tuple[str, ...] = ()
     evidence: tuple[str, ...] = ()
+    desktop_context: Mapping[str, object] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -27,4 +28,5 @@ class AgentContextSnapshot:
             "personalization": dict(self.personalization),
             "tool_capabilities": list(self.tool_capabilities),
             "evidence": list(self.evidence),
+            "desktop_context": dict(self.desktop_context),
         }

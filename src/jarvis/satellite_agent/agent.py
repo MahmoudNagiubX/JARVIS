@@ -7,7 +7,7 @@ import json
 import platform
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from http.client import HTTPException
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 from ..computer.service import WindowsNativeComputerController
 from ..contracts import ComputerAction, DeviceIdentity, Identity, ToolContext
 from ..devices.satellite.contracts import CommandObservation, SatelliteCommand, validate_command
+from ..perception.windows import WindowsDesktopProvider
 
 
 class SatelliteAgentTransportError(RuntimeError):
@@ -33,6 +34,7 @@ class SatelliteAgentConfig:
     software_version: str = "phase09"
     poll_interval_seconds: float = 15.0
     heartbeat_interval_seconds: float = 15.0
+    protocol_version: str = "1"
 
 
 class WindowsSatelliteAgent:
@@ -46,6 +48,7 @@ class WindowsSatelliteAgent:
         "open_folder",
         "open_application",
         "stop_safe_process",
+        "focus_window",
     })
 
     def __init__(
@@ -54,6 +57,7 @@ class WindowsSatelliteAgent:
         credential: str,
         *,
         controller: WindowsNativeComputerController | None = None,
+        perception_provider: WindowsDesktopProvider | None = None,
         opener: Callable[..., Any] = urlopen,
     ) -> None:
         _validate_core_url(config.core_url)
@@ -66,6 +70,7 @@ class WindowsSatelliteAgent:
         self.config = config
         self._credential = credential
         self._controller = controller or WindowsNativeComputerController()
+        self._perception_provider = perception_provider or WindowsDesktopProvider()
         self._opener = opener
         self._session_id: str | None = None
         self._sequence = 0
@@ -86,7 +91,7 @@ class WindowsSatelliteAgent:
                 "platform": platform.system().casefold() or "windows",
                 "software_version": self.config.software_version,
                 "capabilities": sorted(self.config.capabilities),
-                "protocol_version": "1",
+                "protocol_version": self.config.protocol_version,
                 "name": self.config.device_id,
             },
         )
@@ -126,6 +131,7 @@ class WindowsSatelliteAgent:
             str(raw.get("capability", "")),
             raw.get("parameters", {}) if isinstance(raw.get("parameters", {}), dict) else {},
             bool(raw.get("dry_run", True)),
+            str(raw.get("protocol_version", "1")),
         )
         observation = await self.execute_command(command)
         submission = await asyncio.to_thread(
@@ -152,6 +158,10 @@ class WindowsSatelliteAgent:
         if command.capability not in self.config.capabilities:
             return CommandObservation(command.command_id, "denied", error_code="capability_not_declared")
         operation = command.parameters.get("operation")
+        if command.action == "perception":
+            if command.protocol_version != "2" or command.capability != "perception.screen" or operation not in {"observe_screen", "observe_desktop_context"}:
+                return CommandObservation(command.command_id, "denied", error_code="invalid_perception_command")
+            return await self._execute_perception(command, str(operation))
         if not isinstance(operation, str) or operation not in self.ALLOWED_OPERATIONS:
             return CommandObservation(command.command_id, "denied", error_code="unsupported_typed_operation")
         parameters = {key: value for key, value in command.parameters.items() if key != "operation"}
@@ -174,6 +184,38 @@ class WindowsSatelliteAgent:
         status = "completed" if result.status == "succeeded" else "denied" if result.status == "denied" else "failed"
         output = dict(result.output) if isinstance(result.output, dict) else {"value": result.output}
         return CommandObservation(command.command_id, status, output, result.error_code)
+
+    async def _execute_perception(self, command: SatelliteCommand, operation: str) -> CommandObservation:
+        try:
+            allowed_parameters = {"operation", "mode", "window_ref", "region"}
+            if set(command.parameters) - allowed_parameters:
+                return CommandObservation(command.command_id, "denied", error_code="invalid_perception_parameters")
+            if operation == "observe_desktop_context":
+                value = self._perception_provider.desktop_context(self.config.device_id)
+                return CommandObservation(command.command_id, "completed", _json_safe(asdict(value)))
+            from ..contracts import VisualRegion
+            region_value = command.parameters.get("region")
+            if region_value is not None and (not isinstance(region_value, dict) or set(region_value) != {"x", "y", "width", "height"}):
+                return CommandObservation(command.command_id, "denied", error_code="invalid_perception_region")
+            region = VisualRegion(*(int(region_value[key]) for key in ("x", "y", "width", "height"))) if isinstance(region_value, dict) else None
+            window_value = command.parameters.get("window_ref")
+            if window_value is not None and not isinstance(window_value, str):
+                return CommandObservation(command.command_id, "denied", error_code="window_ref_required")
+            window_ref = window_value
+            mode = str(command.parameters.get("mode", "screen"))
+            if mode not in {"semantic", "screen"}:
+                return CommandObservation(command.command_id, "denied", error_code="invalid_perception_mode")
+            if mode == "semantic":
+                from ..contracts import ScreenObservation
+                context = self._perception_provider.desktop_context(self.config.device_id)
+                active_ref = context.active_window.window_ref if context.active_window else None
+                value = ScreenObservation(f"observation-{self.config.device_id}", self.config.device_id, context.observed_at, "windows-metadata", active_window=active_ref, confidence=context.confidence, metadata={"snapshot_id": context.snapshot_id, "semantic": True})
+                return CommandObservation(command.command_id, "completed", _json_safe(asdict(value)))
+            value = await self._perception_provider.capture(self.config.device_id, window_ref, region)
+            return CommandObservation(command.command_id, "completed", _json_safe(asdict(value)))
+        except (OSError, RuntimeError, ValueError) as exc:
+            code = exc.args[0] if exc.args and isinstance(exc.args[0], str) else exc.__class__.__name__
+            return CommandObservation(command.command_id, "failed", error_code=code)
 
     async def disconnect(self) -> bool:
         if self._session_id is None:
@@ -247,3 +289,13 @@ def _validate_core_url(value: str) -> None:
         raise ValueError("satellite core URL must be a loopback HTTP origin")
     if parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or parsed.port is None:
         raise ValueError("satellite core URL must use an explicit loopback host and port")
+
+
+def _json_safe(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value

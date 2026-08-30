@@ -13,6 +13,7 @@ from ..proactive.service import DurableProactiveService
 from ..goals.engine import DurableGoalEngine
 from ..tools.registry import ToolRegistry
 from ..world_state.service import DurableWorldStateService
+from ..perception.desktop import ActiveDesktopContextService
 
 
 class ContextAssembler:
@@ -28,6 +29,7 @@ class ContextAssembler:
         tools: ToolRegistry,
         offline: OfflineModeService,
         capabilities: CapabilityRegistry | None = None,
+        desktop_context: ActiveDesktopContextService | None = None,
     ) -> None:
         self.memory = memory
         self.world_state = world_state
@@ -37,12 +39,13 @@ class ContextAssembler:
         self.tools = tools
         self.offline = offline
         self.capabilities = capabilities
+        self.desktop_context = desktop_context
 
     async def capture_input(self, identity: Identity, text: str, source_reference: str | None = None) -> None:
         await self.memory.remember_from_conversation(identity.owner_id, text, source_reference)
         await self.personalization.learn_from_text(identity.owner_id, text)
 
-    async def assemble(self, identity: Identity, device: DeviceIdentity, query: str) -> AgentContextSnapshot:
+    async def assemble(self, identity: Identity, device: DeviceIdentity, query: str, *, session_id: str = "perception") -> AgentContextSnapshot:
         memories = await self.memory.search(MemoryQuery(identity.owner_id, query, limit=6))
         facts = await self.world_state.facts(WorldStateQuery(identity.owner_id))
         goals = await self.goals.list(identity.owner_id, ("active", "waiting", "blocked", "proposed", "draft"))
@@ -60,6 +63,7 @@ class ContextAssembler:
         capability_names = [spec.name for spec in self.tools.list()]
         if self.capabilities is not None:
             capability_names.extend(item.capability_id for item in self.capabilities.list(device_id=device.device_id))
+        desktop = self.desktop_context.safe_context(identity.owner_id, device.device_id, session_id) if self.desktop_context is not None else {"available": False}
         return AgentContextSnapshot(
             identity={"identity_id": identity.identity_id, "owner_id": identity.owner_id, "display_name": identity.display_name, "roles": sorted(identity.roles), "device_id": device.device_id},
             memories=memory_data,
@@ -69,6 +73,7 @@ class ContextAssembler:
             personalization=dict(profile.values) | {"internet_online": self.offline.state.online},
             tool_capabilities=tuple(sorted(set(capability_names))),
             evidence=evidence,
+            desktop_context=desktop,
         )
 
     @staticmethod

@@ -76,7 +76,7 @@ class CoreApplication:
                 device_kind="desktop",
                 platform="windows",
                 scopes=("tool.request",),
-                capabilities=("computer.observe",),
+                capabilities=("computer.observe", "perception.screen"),
                 software_version="phase02",
             )
         )
@@ -189,6 +189,7 @@ class CoreApplication:
             "internet": asdict(self.runtime.offline.state),
             "local_model": {"available": model.available, "provider": model.provider, "reason": model.reason},
             "venom": asdict(self.runtime.venom.health()),
+            "perception": self.runtime.perception.health(),
             "runtime_profile": {
                 "deployment_profile": self.runtime.config.deployment_profile,
                 "runtime_role": self.runtime.config.runtime_role,
@@ -226,7 +227,7 @@ class CoreApplication:
                     hello.capabilities,
                     "verified",
                     datetime.now(UTC),
-                    metadata={"protocol": "jarvis-satellite-v1", "session_id": welcome.session_id},
+                    metadata={"protocol": f"jarvis-satellite-v{hello.protocol_version}", "session_id": welcome.session_id},
                 )
             )
             await self.runtime.world_state.set_fact(
@@ -639,10 +640,35 @@ class CoreApplication:
         return [asdict(item) for item in self.runtime.research.evidence(run_id, owner_id)]
 
     async def perception_screen(self, identity: Identity, device: DeviceIdentity, values: dict[str, object]) -> dict[str, Any]:
+        if "window_ref" in values and values["window_ref"] is not None and not isinstance(values["window_ref"], str):
+            return {"status": "denied", "error_code": "window_ref_required"}
         region_value = values.get("region")
-        region = VisualRegion(*(int(region_value[key]) for key in ("x", "y", "width", "height"))) if isinstance(region_value, dict) and all(key in region_value for key in ("x", "y", "width", "height")) else None
-        result = await self.runtime.perception.capture_screen(identity, device, window=values.get("window") if isinstance(values.get("window"), str) else None, region=region)
+        if region_value is not None and (not isinstance(region_value, dict) or not all(key in region_value for key in ("x", "y", "width", "height"))):
+            return {"status": "denied", "error_code": "perception_region_invalid"}
+        try:
+            region = VisualRegion(*(int(region_value[key]) for key in ("x", "y", "width", "height"))) if isinstance(region_value, dict) else None
+        except (TypeError, ValueError, KeyError):
+            return {"status": "denied", "error_code": "perception_region_invalid"}
+        target = await self.runtime.perception.resolve_target(identity, device, values.get("target_device_id"))
+        if target is None:
+            return {"status": "denied", "error_code": "target_device_missing"}
+        result = await self.runtime.perception.observe_screen(
+            identity, device, target_device=target,
+            window_ref=values.get("window_ref") if isinstance(values.get("window_ref"), str) else None,
+            region=region, mode=str(values.get("mode", "screen")), session_id=str(values.get("session_id", "perception")),
+        )
         return asdict(result)
+
+    async def perception_context(self, identity: Identity, device: DeviceIdentity, values: dict[str, object] | None = None) -> dict[str, Any]:
+        values = values or {}
+        target = await self.runtime.perception.resolve_target(identity, device, values.get("target_device_id"))
+        if target is None:
+            return {"status": "denied", "error_code": "target_device_missing"}
+        return asdict(await self.runtime.perception.observe_desktop_context(identity, device, target_device=target, session_id=str(values.get("session_id", "perception"))))
+
+    async def perception_latest(self, identity: Identity, device: DeviceIdentity, values: dict[str, object] | None = None) -> dict[str, Any]:
+        values = values or {}
+        return asdict(await self.runtime.perception.latest_observation(identity, device, observation_id=values.get("observation_id") if isinstance(values.get("observation_id"), str) else None, session_id=str(values.get("session_id", "perception"))))
 
     async def perception_window(self, identity: Identity, device: DeviceIdentity, window: str) -> dict[str, Any]:
         return asdict(await self.runtime.perception.capture_window(identity, device, window))

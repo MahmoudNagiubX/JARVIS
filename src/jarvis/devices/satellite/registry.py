@@ -15,6 +15,7 @@ from .contracts import (
     SatelliteCommand,
     SatelliteHeartbeat,
     SatelliteHello,
+    SUPPORTED_PROTOCOL_VERSIONS,
     validate_command,
 )
 
@@ -48,8 +49,10 @@ class WindowsSatelliteRegistry:
         device: DeviceIdentity,
         handler: SatelliteHandler,
     ) -> CoreWelcome:
-        if hello.protocol_version != "1":
+        if hello.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:
             return CoreWelcome(False, None, "protocol_version_unsupported")
+        if "perception.screen" in hello.capabilities and hello.protocol_version != "2":
+            return CoreWelcome(False, None, "perception_protocol_v2_required")
         if hello.platform.casefold() != "windows":
             return CoreWelcome(False, None, "windows_satellite_required")
         if hello.device_id != device.device_id or hello.owner_id != device.owner_id:

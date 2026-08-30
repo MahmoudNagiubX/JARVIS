@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from ...bus import InMemoryEventBus
-from ...contracts import DeviceIdentity, Identity, LLMMessage, LLMRequest, LLMRole, ToolContext
+from ...contracts import DeviceIdentity, Identity, LLMMessage, LLMRequest, LLMRole, ToolContext, ToolResultRetention
 from ...context.assembler import ContextAssembler
 from ...events import Event, EventCategory, EventState
 from ...models.gateway import ModelGateway
@@ -141,10 +142,17 @@ class AgentRuntime:
         if tool_result.status is not ToolExecutionStatus.COMPLETED:
             self.repository.update_run(run_id, status="failed", completed_at=datetime.now(UTC), failure_code=tool_result.error_code, pending_approval_id=None)
             return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.FAILED, error_code=tool_result.error_code)
-        messages = [LLMMessage(LLMRole(item["role"]), item["content"]) for item in run.context.get("messages", [])]
-        messages.append(LLMMessage(LLMRole.TOOL, json.dumps(tool_result.output, ensure_ascii=False)))
-        self.repository.update_run(run_id, status="running", pending_approval_id=None, context_json={"messages": [{"role": m.role.value, "content": m.content} for m in messages]})
-        return await self._execute(run_id, identity, device, messages_override=messages)
+        messages = [
+            LLMMessage(
+                LLMRole(item["role"]),
+                item["content"] if isinstance(item.get("content"), str) else json.dumps(item.get("content"), ensure_ascii=False, default=str),
+            )
+            for item in run.context.get("messages", [])
+        ]
+        messages.append(LLMMessage(LLMRole.TOOL, json.dumps(tool_result.output, ensure_ascii=False, default=str)))
+        ephemeral = {len(messages) - 1: tool_result} if tool_result.retention is ToolResultRetention.EPHEMERAL else {}
+        self.repository.update_run(run_id, status="running", pending_approval_id=None, context_json=self._run_context(messages, None, ephemeral))
+        return await self._execute(run_id, identity, device, messages_override=messages, ephemeral_results=ephemeral)
 
     async def cancel(self, run_id: str) -> AgentRunOutcome | None:
         run = self.repository.run(run_id)
@@ -164,6 +172,7 @@ class AgentRuntime:
         device: DeviceIdentity,
         *,
         messages_override: list[LLMMessage] | None = None,
+        ephemeral_results: dict[int, ToolCallResult] | None = None,
     ) -> AgentRunOutcome:
         task = asyncio.current_task()
         if task:
@@ -175,7 +184,8 @@ class AgentRuntime:
         await self._emit("run.started", EventCategory.AGENT, run, {})
         try:
             messages = messages_override or self._history(run)
-            context_snapshot = await self.context_assembler.assemble(identity, device, messages[-1].content) if self.context_assembler else None
+            ephemeral_results = dict(ephemeral_results or {})
+            context_snapshot = await self.context_assembler.assemble(identity, device, messages[-1].content, session_id=run.session_id) if self.context_assembler else None
             for _step in range(self.max_steps):
                 if run_id in self._cancelled:
                     raise asyncio.CancelledError
@@ -209,7 +219,7 @@ class AgentRuntime:
                 await self._emit("model.completed", EventCategory.MODEL, run, {"request_id": request_id, "model": response.model}, state=EventState.COMPLETED)
                 if not response.tool_calls:
                     assistant = self.repository.create_message(run.conversation_id, run.session_id, run.id, None, "assistant", response.text)
-                    self.repository.update_run(run_id, status="succeeded", completed_at=datetime.now(UTC), context_json=self._run_context(messages, context_snapshot))
+                    self.repository.update_run(run_id, status="succeeded", completed_at=datetime.now(UTC), context_json=self._run_context(messages, context_snapshot, ephemeral_results))
                     await self._emit("run.completed", EventCategory.AGENT, run, {"assistant_message_id": assistant.id}, state=EventState.COMPLETED)
                     return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.SUCCEEDED, response.text, assistant_message_id=assistant.id, context_snapshot=context_snapshot)
                 context = ToolContext(identity, device, run.session_id, run.correlation_id)
@@ -217,12 +227,14 @@ class AgentRuntime:
                     name, arguments = self._proposal(proposal)
                     tool_result = await self.tools.execute(name, arguments, context, run_id=run.id)
                     if tool_result.status is ToolExecutionStatus.APPROVAL_REQUIRED:
-                        context_json = self._run_context(messages, context_snapshot)
+                        context_json = self._run_context(messages, context_snapshot, ephemeral_results)
                         self.repository.update_run(run_id, status="paused", pending_approval_id=tool_result.approval_id, context_json=context_json)
                         await self._emit("run.paused", EventCategory.AGENT, run, {"approval_id": tool_result.approval_id})
                         return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.PAUSED, pending_approval_id=tool_result.approval_id, context_snapshot=context_snapshot)
-                    messages.append(LLMMessage(LLMRole.TOOL, json.dumps(tool_result.output if tool_result.output is not None else {"error": tool_result.error_code}, ensure_ascii=False)))
-            self.repository.update_run(run_id, status="failed", completed_at=datetime.now(UTC), failure_code="max_agent_steps")
+                    messages.append(LLMMessage(LLMRole.TOOL, json.dumps(tool_result.output if tool_result.output is not None else {"error": tool_result.error_code}, ensure_ascii=False, default=str)))
+                    if tool_result.retention is ToolResultRetention.EPHEMERAL:
+                        ephemeral_results[len(messages) - 1] = tool_result
+            self.repository.update_run(run_id, status="failed", completed_at=datetime.now(UTC), failure_code="max_agent_steps", context_json=self._run_context(messages, context_snapshot, ephemeral_results))
             return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.FAILED, error_code="max_agent_steps", context_snapshot=context_snapshot)
         except asyncio.CancelledError:
             self.repository.update_run(run_id, status="cancelled", completed_at=datetime.now(UTC), failure_code="cancelled")
@@ -233,7 +245,7 @@ class AgentRuntime:
             self._cancelled.discard(run_id)
 
     def _history(self, run: RunRecord) -> list[LLMMessage]:
-        history = [LLMMessage(LLMRole.SYSTEM, "You are JARVIS. Use only declared tools and report factual outcomes.")]
+        history = [LLMMessage(LLMRole.SYSTEM, "You are JARVIS. Use only declared tools and report factual outcomes. When the user explicitly refers to the current screen/window/page and a perception tool is available, observe before answering. Never guess visual state.")]
         for message in self.repository.messages(run.conversation_id):
             if message.role in {"user", "assistant"}:
                 history.append(LLMMessage(LLMRole(message.role), message.content))
@@ -273,9 +285,27 @@ class AgentRuntime:
         return [LLMMessage(LLMRole.SYSTEM, prompt), *messages]
 
     @staticmethod
-    def _run_context(messages: list[LLMMessage], snapshot: object | None) -> dict[str, object]:
+    def _run_context(messages: list[LLMMessage], snapshot: object | None, ephemeral_results: dict[int, ToolCallResult] | None = None) -> dict[str, object]:
+        ephemeral_results = ephemeral_results or {}
+        persisted: list[dict[str, object]] = []
+        for index, message in enumerate(messages):
+            result = ephemeral_results.get(index)
+            if result is None:
+                persisted.append({"role": message.role.value, "content": message.content})
+                continue
+            try:
+                output = json.loads(message.content)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                output = message.content
+            digest = hashlib.sha256(message.content.encode("utf-8")).hexdigest()
+            observation_id = output.get("observation_id") if isinstance(output, dict) else None
+            source = output.get("source") if isinstance(output, dict) else None
+            if isinstance(output, dict) and isinstance(output.get("observation"), dict):
+                observation_id = observation_id or output["observation"].get("observation_id")
+                source = source or output["observation"].get("source")
+            persisted.append({"role": message.role.value, "content": {"tool": result.name, "observation_id": observation_id, "retained": False, "content_digest": digest, "source": source or "ephemeral-tool"}})
         return {
-            "messages": [{"role": message.role.value, "content": message.content} for message in messages],
+            "messages": persisted,
             "context_snapshot": snapshot.as_dict() if snapshot is not None else None,
         }
 

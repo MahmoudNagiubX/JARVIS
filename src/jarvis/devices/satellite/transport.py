@@ -20,6 +20,7 @@ from .contracts import (
     SatelliteHeartbeat,
     SatelliteHello,
     validate_command,
+    validate_perception_output,
 )
 from .registry import WindowsSatelliteRegistry
 
@@ -239,6 +240,18 @@ class SatelliteTransportService:
                     self._complete(session, pending, observation)
         return pending.result or CommandObservation(command.command_id, "failed", error_code="command_expired")
 
+    async def dispatch(self, owner_id: str, device_id: str, session_id: str, command: SatelliteCommand) -> CommandObservation:
+        """Dispatch a typed command through the existing transport authority."""
+        with self._lock:
+            if self._session_for(session_id, owner_id, device_id) is None:
+                return CommandObservation(command.command_id, "failed", error_code="satellite_session_invalid")
+        if command.action == "perception":
+            try:
+                validate_perception_output(command.parameters)
+            except ValueError:
+                return CommandObservation(command.command_id, "denied", error_code="invalid_perception_command")
+        return await self._dispatch(session_id, command)
+
     def _poll(self, owner_id: str, device_id: str, session_id: str, wait_seconds: float) -> SatelliteCommand | None:
         wait = max(0.0, min(wait_seconds, 25.0))
         with self._lock:
@@ -298,6 +311,10 @@ class SatelliteTransportService:
                 return ResultSubmission(False, reason="invalid_command_result", observation=observation)
             if _encoded_size(observation.output) > self.MAX_RESULT_BYTES:
                 return ResultSubmission(False, reason="result_payload_too_large", observation=observation)
+            pending_session = self._sessions.get(session_id)
+            pending_command = pending_session.pending.get(observation.command_id).command if pending_session and observation.command_id in pending_session.pending else None
+            if pending_command is not None and pending_command.action == "perception":
+                validate_perception_output(observation.output)
         except (TypeError, ValueError):
             return ResultSubmission(False, reason="invalid_command_result", observation=observation)
         with self._lock:

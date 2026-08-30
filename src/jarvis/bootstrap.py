@@ -59,7 +59,7 @@ from .proactive.service import DurableProactiveService
 from .notifications.service import NotificationService
 from .runtime.noop import NoOpSpeechToText, NoOpTextToSpeech
 from .scheduler.service import BackgroundScheduler
-from .tools.registry import ToolRegistry, default_registry
+from .tools.registry import ToolRegistry, default_registry, register_perception_tools
 from .tools.service import ToolExecutionService
 from .voice.core import VoiceCore
 from .voice.routing.service import VoiceRoutingService
@@ -74,7 +74,11 @@ from .engineering.service import EngineeringService, EngineeringWorker
 from .experience.gateway import ExperienceGatewayService
 from .experience.projections import ExperienceProjection
 from .observability.service import ObservabilityService
+from .perception.desktop import ActiveDesktopContextService
+from .perception.browser import BrowserDomPerceptionBridge
+from .perception.router import DesktopPerceptionRouter
 from .perception.service import PerceptionService
+from .perception.windows import WindowsDesktopProvider
 from .research.providers import LocalDocumentProvider
 from .research.service import ResearchService
 from .missions.service import MissionService
@@ -222,6 +226,7 @@ class JarvisRuntime:
             raise RuntimeError(f"cannot shut down runtime from {self.state.value}")
         self.state = RuntimeState.STOPPING
         await self.scheduler.stop()
+        await self.perception.shutdown()
         if getattr(self.voice.state, "value", None) != "stopped":
             try:
                 await self.voice.stop()
@@ -283,7 +288,8 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     proactive = DurableProactiveService(repository, event_bus, world_state, goals, tool_service, audit, autonomy)
     capabilities = CapabilityRegistry()
     device_fabric = DeviceFabricService(repository, event_bus, audit)
-    local_computer_controller = WindowsNativeComputerController()
+    windows_perception_provider = WindowsDesktopProvider()
+    local_computer_controller = WindowsNativeComputerController(perception_provider=windows_perception_provider)
     satellite_computer_controller = WindowsComputerController(satellite)
     computer_router = ComputerExecutionRouter(local_computer_controller, satellite_computer_controller)
     computer_actions = ComputerActionService(computer_router, repository, event_bus, permission, audit, approval)
@@ -296,7 +302,8 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     notifications = NotificationService(repository, event_bus, audit)
     voice_routing = VoiceRoutingService(repository, event_bus)
     _register_capabilities(capabilities)
-    context = ContextAssembler(memory, world_state, goals, proactive, personalization, registry, offline, capabilities)
+    desktop_context = ActiveDesktopContextService(world_state)
+    context = ContextAssembler(memory, world_state, goals, proactive, personalization, registry, offline, capabilities, desktop_context)
     agent = AgentRuntime(repository, event_bus, models, tool_service, max_steps=effective_config.max_agent_steps, context_assembler=context)
     scheduler = BackgroundScheduler()
     runtime_ref: dict[str, JarvisRuntime] = {}
@@ -396,6 +403,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
                 "offline": not offline.state.online,
                 "model_provider": model.provider,
                 "model_available": model.available,
+                "perception": perception.health(),
                 "topology": {
                     "profile": effective_config.deployment_profile,
                     "node_id": effective_config.node_id,
@@ -431,7 +439,15 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     )
     engineering_worker = EngineeringWorker(engineering, event_bus, repository)
     research = ResearchService(repository, event_bus, permission, audit, local=LocalDocumentProvider((str(Path.cwd()),)))
-    perception = PerceptionService(repository, event_bus, permission, audit)
+    perception_router = DesktopPerceptionRouter(windows_perception_provider, satellite, satellite_transport)
+    perception = PerceptionService(
+        repository, event_bus, permission, audit, provider=windows_perception_provider,
+        router=perception_router, desktop_context=desktop_context, device_lookup=device_fabric.get,
+        browser_dom=BrowserDomPerceptionBridge(browser_actions),
+    )
+    register_perception_tools(registry, perception)
+    if effective_config.desktop_awareness_enabled:
+        scheduler.add("desktop-metadata-awareness", 10.0, perception.poll_metadata_awareness)
     developer_workers = DeveloperWorkerGateway()
     worker_coordinator.developer_gateway = developer_workers
 
@@ -652,7 +668,7 @@ def _register_capabilities(capabilities: CapabilityRegistry) -> None:
     capabilities.register(CapabilityDescriptor("engineering.worker", "local-worker-runtime", None, True, "bounded", permission="tool.request"))
     capabilities.register(CapabilityDescriptor("research.local", "local-document-provider", None, True, "read", permission="tool.request"))
     capabilities.register(CapabilityDescriptor("research.browser", "browser-adapter", None, False, "read", requires_internet=True, permission="tool.request"))
-    capabilities.register(CapabilityDescriptor("perception.screen", "perception-adapter", None, False, "read", permission="tool.request", metadata={"continuous_capture": False, "raw_frame_retention": False}))
+    capabilities.register(CapabilityDescriptor("perception.screen", "perception-adapter", None, windows, "read", permission="tool.request", metadata={"continuous_capture": False, "raw_frame_retention": False, "reason": None if windows else "windows_desktop_unavailable"}))
 
 
 async def bootstrap_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:

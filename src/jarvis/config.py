@@ -34,6 +34,7 @@ class JarvisConfig:
     heartbeat_interval_seconds: float = 15.0
     voice_input_adapter: str = "noop"
     voice_output_adapter: str = "noop"
+    desktop_awareness_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "JarvisConfig":
@@ -63,6 +64,7 @@ class JarvisConfig:
         heartbeat_text = os.getenv("JARVIS_HEARTBEAT_INTERVAL_SECONDS", str(defaults.heartbeat_interval_seconds))
         voice_input_adapter = os.getenv("JARVIS_VOICE_INPUT_ADAPTER", defaults.voice_input_adapter).strip().lower()
         voice_output_adapter = os.getenv("JARVIS_VOICE_OUTPUT_ADAPTER", defaults.voice_output_adapter).strip().lower()
+        awareness_text = os.getenv("JARVIS_DESKTOP_AWARENESS_ENABLED", "false").strip().lower()
         try:
             timeout = float(timeout_text)
         except ValueError as exc:
@@ -76,6 +78,8 @@ class JarvisConfig:
             heartbeat_interval = float(heartbeat_text)
         except ValueError as exc:
             raise ValueError("satellite and heartbeat intervals must be numeric") from exc
+        if awareness_text not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+            raise ValueError("JARVIS_DESKTOP_AWARENESS_ENABLED must be boolean")
         if not service_name:
             raise ValueError("service_name cannot be empty")
         if not environment:
@@ -110,6 +114,7 @@ class JarvisConfig:
             heartbeat_interval_seconds=heartbeat_interval,
             voice_input_adapter=voice_input_adapter,
             voice_output_adapter=voice_output_adapter,
+            desktop_awareness_enabled=awareness_text in {"true", "1", "yes", "on"},
         )
 
     @property

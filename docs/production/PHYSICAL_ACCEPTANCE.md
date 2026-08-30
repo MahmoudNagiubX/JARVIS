@@ -26,3 +26,9 @@ produced matching audit metadata. The bounded evidence is stored at
 This proves the Windows authority path on the inspected host; it does not
 claim an authorized second physical node. Physical voice, local model, Venom,
 browser, and external services remain deferred.
+
+Phase 10 desktop perception passed native active-window metadata, bounded
+visible-window enumeration, and a real on-demand GDI capture on the inspected
+Windows workstation. The transient frame was released and no screenshot file
+was created. OCR, accessibility packages, local image-model inference, and
+camera remain deferred; see `docs/phase10/evidence/PHYSICAL_DESKTOP_PERCEPTION.json`.

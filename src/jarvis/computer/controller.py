@@ -33,6 +33,7 @@ class WindowsComputerController:
             "open_folder",
             "open_application",
             "stop_safe_process",
+            "focus_window",
         }:
             transport_action = "observe" if action.action in {"list_processes", "inspect_file", "search_files"} else "input"
             transport_capability = f"computer.{transport_action}"

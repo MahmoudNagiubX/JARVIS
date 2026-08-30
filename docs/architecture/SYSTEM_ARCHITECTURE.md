@@ -95,3 +95,9 @@ authenticate -> authorize -> validate -> request approval -> audit decision
 The model may propose; it cannot approve. Voice may collect a user decision;
 it cannot turn speech into implicit authorization. A tool may return a result;
 it cannot claim verification unless the controller supplies evidence.
+
+Phase 10 adds native desktop perception as a read-only extension of the
+existing runtime. Active metadata may be projected safely; visual text and
+pixels remain current-turn/ephemeral data. The implementation keeps one
+PerceptionService, one scheduler, one EventBus, and the existing computer and
+satellite authorities.

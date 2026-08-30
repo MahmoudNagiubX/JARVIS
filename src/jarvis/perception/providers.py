@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from ..contracts import PerceptionProvider, ScreenObservation, VisualRegion
+from ..contracts import DesktopContextSnapshot, PerceptionProvider, ScreenObservation, VisualRegion
 
 
 class DeferredPerceptionProvider:
@@ -15,6 +15,9 @@ class DeferredPerceptionProvider:
     async def capture(self, device_id: str, window: str | None = None, region: VisualRegion | None = None) -> ScreenObservation:
         del device_id, window, region
         raise RuntimeError("screen_capture_provider_not_configured")
+
+    def desktop_context(self, device_id: str) -> DesktopContextSnapshot:
+        return DesktopContextSnapshot(f"snapshot-{uuid4()}", device_id, datetime.now(UTC), source=self.name, confidence=0.0)
 
 
 class StaticPerceptionProvider:
@@ -28,3 +31,6 @@ class StaticPerceptionProvider:
 
     async def capture(self, device_id: str, window: str | None = None, region: VisualRegion | None = None) -> ScreenObservation:
         return ScreenObservation(f"observation-{uuid4()}", device_id, datetime.now(UTC), self.name, active_window=window, text=self.text, region=region, raw_retained=False, confidence=1.0)
+
+    def desktop_context(self, device_id: str) -> DesktopContextSnapshot:
+        return DesktopContextSnapshot(f"snapshot-{uuid4()}", device_id, datetime.now(UTC), source=self.name, confidence=1.0)

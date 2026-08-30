@@ -22,3 +22,9 @@ Read actions use `computer.observe`. State-changing actions require
 `computer.input` and approval when the authority or autonomy policy requires
 it. Dry-run results are marked verified only as contract-level simulation;
 they do not claim physical execution.
+
+Phase 10 adds only grounded `focus_window` support. It accepts an ephemeral
+`window_ref`, revalidates it through the native desktop provider, executes
+through this existing `ComputerActionService`, and reports `verified` only
+when `GetForegroundWindow` confirms the result. Raw HWNDs, coordinate clicks,
+keyboard injection, and vision-selected coordinates remain outside scope.

@@ -1,0 +1,16 @@
+{
+  "phase": "10",
+  "date": "2026-08-30",
+  "provider": "windows-native",
+  "active_window_metadata": "PASS",
+  "visible_window_enumeration": "PASS",
+  "bounded_screen_capture": "PASS",
+  "raw_frame_retained": false,
+  "raw_frame_persisted": false,
+  "screen_file_created": false,
+  "ocr": "DEFERRED",
+  "arabic_ocr": "DEFERRED",
+  "local_vision": "DEFERRED",
+  "camera": "DEFERRED",
+  "notes": "Native metadata and an on-demand capture were exercised on the inspected Windows workstation; no title, screenshot, digest, or private content is recorded here."
+}

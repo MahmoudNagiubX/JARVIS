@@ -20,6 +20,7 @@ from ..contracts import (
     PermissionEffect,
     ToolContext,
     ToolResult,
+    ToolResultRetention,
     ToolResultStatus,
 )
 from ..events import Event, EventCategory, EventState
@@ -43,6 +44,7 @@ class ToolCallResult:
     error_code: str | None = None
     approval_id: str | None = None
     argument_digest: str | None = None
+    retention: ToolResultRetention = ToolResultRetention.DURABLE
 
 
 class ToolExecutionService:
@@ -79,7 +81,7 @@ class ToolExecutionService:
         try:
             normalized = spec.validate_arguments(arguments)
         except ValueError as exc:
-            return await self._denied(tool_call_id, name, context, str(exc), run_id=run_id)
+            return await self._denied(tool_call_id, name, context, str(exc), run_id=run_id, retention=spec.retention)
         digest = hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         self.repository.insert_tool_call(tool_call_id, run_id, name, normalized, digest, "requested")
         await self._emit("tool.requested", EventCategory.TOOL, context, {"tool_call_id": tool_call_id, "name": name})
@@ -111,7 +113,7 @@ class ToolExecutionService:
         )
         if decision.effect is PermissionEffect.DENY:
             self.repository.update_tool_call(tool_call_id, "denied", {"reason": decision.reason_code})
-            return ToolCallResult(tool_call_id, name, ToolExecutionStatus.DENIED, error_code=decision.reason_code, argument_digest=digest)
+            return ToolCallResult(tool_call_id, name, ToolExecutionStatus.DENIED, error_code=decision.reason_code, argument_digest=digest, retention=spec.retention)
         if decision.effect is PermissionEffect.REQUIRE_APPROVAL:
             approval_id = f"approval-{uuid4()}"
             request = ApprovalRequest(
@@ -125,7 +127,7 @@ class ToolExecutionService:
             self.repository.set_tool_call_approval(tool_call_id, approval_id)
             self.repository.update_run(run_id, pending_approval_id=approval_id) if run_id else None
             await self._emit("tool.approval_required", EventCategory.APPROVAL, context, {"approval_id": approval_id, "tool_call_id": tool_call_id})
-            return ToolCallResult(tool_call_id, name, ToolExecutionStatus.APPROVAL_REQUIRED, approval_id=approval_id, argument_digest=digest)
+            return ToolCallResult(tool_call_id, name, ToolExecutionStatus.APPROVAL_REQUIRED, approval_id=approval_id, argument_digest=digest, retention=spec.retention)
         return await self._run_handler(spec, tool_call_id, normalized, context, run_id, digest)
 
     async def decide_and_resume(
@@ -172,28 +174,37 @@ class ToolExecutionService:
                                                 context.correlation_id, "failed", "executor_error",
                                                 {"tool_call_id": tool_call_id, "tool": spec.name}))
             await self._emit("tool.failed", EventCategory.TOOL, context, {"tool_call_id": tool_call_id})
-            return ToolCallResult(tool_call_id, spec.name, ToolExecutionStatus.FAILED, error_code="executor_error", argument_digest=digest)
+            return ToolCallResult(tool_call_id, spec.name, ToolExecutionStatus.FAILED, error_code="executor_error", argument_digest=digest, retention=spec.retention)
         if result.status is not ToolResultStatus.SUCCEEDED:
             status = ToolExecutionStatus.DENIED if result.status is ToolResultStatus.DENIED else ToolExecutionStatus.FAILED
-            self.repository.update_tool_call(tool_call_id, status.value, result.output)
-            return ToolCallResult(tool_call_id, spec.name, status, result.output, result.error_code, argument_digest=digest)
-        self.repository.update_tool_call(tool_call_id, "completed", result.output)
+            self.repository.update_tool_call(tool_call_id, status.value, _retained_output(spec, result.output))
+            return ToolCallResult(tool_call_id, spec.name, status, result.output, result.error_code, argument_digest=digest, retention=spec.retention)
+        self.repository.update_tool_call(tool_call_id, "completed", _retained_output(spec, result.output))
         await self.audit.record(AuditRecord(f"audit-{uuid4()}", "tool.completed", datetime.now(UTC),
                                             context.identity.identity_id if context.identity else None,
                                             context.device.device_id if context.device else None,
                                             context.correlation_id, "succeeded", None,
                                             {"tool_call_id": tool_call_id, "tool": spec.name, "verified": result.verified}))
         await self._emit("tool.completed", EventCategory.TOOL, context, {"tool_call_id": tool_call_id, "verified": result.verified}, state=EventState.COMPLETED)
-        return ToolCallResult(tool_call_id, spec.name, ToolExecutionStatus.COMPLETED, result.output, argument_digest=digest)
+        return ToolCallResult(tool_call_id, spec.name, ToolExecutionStatus.COMPLETED, result.output, argument_digest=digest, retention=spec.retention)
 
-    async def _denied(self, tool_call_id: str, name: str, context: ToolContext, reason: str, *, run_id: str | None) -> ToolCallResult:
+    async def _denied(
+        self,
+        tool_call_id: str,
+        name: str,
+        context: ToolContext,
+        reason: str,
+        *,
+        run_id: str | None,
+        retention: ToolResultRetention = ToolResultRetention.DURABLE,
+    ) -> ToolCallResult:
         self.repository.insert_tool_call(tool_call_id, run_id, name, {}, "", "denied")
         await self.audit.record(AuditRecord(f"audit-{uuid4()}", "tool.denied", datetime.now(UTC),
                                             context.identity.identity_id if context.identity else None,
                                             context.device.device_id if context.device else None,
                                             context.correlation_id, "denied", reason, {"tool": name}))
         await self._emit("tool.failed", EventCategory.TOOL, context, {"tool_call_id": tool_call_id, "reason": reason}, state=EventState.FAILED)
-        return ToolCallResult(tool_call_id, name, ToolExecutionStatus.DENIED, error_code=reason)
+        return ToolCallResult(tool_call_id, name, ToolExecutionStatus.DENIED, error_code=reason, retention=retention)
 
     async def _emit(self, event_type: str, category: EventCategory, context: ToolContext, payload: dict[str, object], *, state: EventState = EventState.EMITTED) -> None:
         event = Event.create(
@@ -202,3 +213,9 @@ class ToolExecutionService:
         )
         self.repository.append_event(event)
         await self.event_bus.publish(event)
+
+
+def _retained_output(spec: ToolSpec, output: object) -> object:
+    if spec.retention is ToolResultRetention.DURABLE:
+        return output
+    return {"retained": False, "content_digest": hashlib.sha256(json.dumps(output, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest(), "source": "ephemeral-tool"}

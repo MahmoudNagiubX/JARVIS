@@ -28,3 +28,8 @@ modified: NONE. Legacy BMO repositories modified: NONE.
 
 Before a live deployment, attach physical evidence for each deferred/partial
 row and run the commands in the development acceptance documents.
+
+Phase 10 desktop perception: native metadata/capture is on-demand,
+owner/device/session-bound, raw-frame-free, and loopback-only. Metadata
+awareness is disabled by default and must never enable pixel polling. Keep
+OCR, vision, and camera deferred until an actual local capability is verified.

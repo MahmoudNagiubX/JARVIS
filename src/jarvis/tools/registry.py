@@ -10,7 +10,7 @@ import subprocess
 import sys
 from typing import Any
 
-from ..contracts import ToolContext, ToolResult, ToolResultStatus
+from ..contracts import ToolContext, ToolResult, ToolResultRetention, ToolResultStatus
 
 ToolHandler = Callable[[Mapping[str, Any], ToolContext], ToolResult | Awaitable[ToolResult]]
 
@@ -31,6 +31,7 @@ class ToolSpec:
     enabled: bool = True
     autonomy_level: int = 1
     parameters_schema: Mapping[str, object] = field(default_factory=lambda: {"type": "object", "additionalProperties": False})
+    retention: ToolResultRetention = ToolResultRetention.DURABLE
 
     def json_schema(self) -> dict[str, object]:
         return dict(self.parameters_schema)
@@ -57,6 +58,13 @@ class ToolSpec:
             test_file = normalized.get("test_file")
             if test_file is not None and (not isinstance(test_file, str) or len(test_file) > 300 or ".." in Path(test_file).parts):
                 raise ValueError("test_file_invalid")
+        if self.name == "screen.observe":
+            mode = normalized.get("mode", "semantic")
+            if mode not in {"semantic", "screen"}:
+                raise ValueError("perception_mode_invalid")
+            region = normalized.get("region")
+            if region is not None and (not isinstance(region, Mapping) or set(region) != {"x", "y", "width", "height"}):
+                raise ValueError("perception_region_invalid")
         properties = self.parameters_schema.get("properties", {})
         required = self.parameters_schema.get("required", ())
         if isinstance(properties, Mapping) and self.parameters_schema.get("additionalProperties") is False:
@@ -161,3 +169,75 @@ def default_registry() -> ToolRegistry:
             ),
         )
     )
+
+
+def register_perception_tools(registry: ToolRegistry, perception: object) -> None:
+    """Register visual tools in the existing product-owned registry."""
+
+    async def desktop_context(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        if context.identity is None or context.device is None:
+            return ToolResult(ToolResultStatus.DENIED, error_code="identity_or_device_missing")
+        target = await perception.resolve_target(context.identity, context.device, arguments.get("target_device_id"))
+        if target is None:
+            return ToolResult(ToolResultStatus.DENIED, error_code="target_device_missing")
+        result = await perception.observe_desktop_context(context.identity, context.device, target_device=target, session_id=context.session_id)
+        return ToolResult(_tool_status(result.status), _json_safe(result), result.error_code, verified=result.status == "completed")
+
+    async def observe_screen(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        if context.identity is None or context.device is None:
+            return ToolResult(ToolResultStatus.DENIED, error_code="identity_or_device_missing")
+        if "window_ref" in arguments and arguments["window_ref"] is not None and not isinstance(arguments["window_ref"], str):
+            return ToolResult(ToolResultStatus.DENIED, error_code="window_ref_required")
+        target = await perception.resolve_target(context.identity, context.device, arguments.get("target_device_id"))
+        if target is None:
+            return ToolResult(ToolResultStatus.DENIED, error_code="target_device_missing")
+        region_value = arguments.get("region")
+        from ..contracts import VisualRegion
+        region = VisualRegion(*(int(region_value[key]) for key in ("x", "y", "width", "height"))) if isinstance(region_value, Mapping) else None
+        result = await perception.observe_screen(context.identity, context.device, target_device=target, window_ref=arguments.get("window_ref") if isinstance(arguments.get("window_ref"), str) else None, region=region, mode=str(arguments.get("mode", "semantic")), session_id=context.session_id)
+        return ToolResult(_tool_status(result.status), _json_safe(result), result.error_code, verified=result.status == "completed")
+
+    async def latest_screen(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        if context.identity is None or context.device is None:
+            return ToolResult(ToolResultStatus.DENIED, error_code="identity_or_device_missing")
+        result = await perception.latest_observation(context.identity, context.device, observation_id=arguments.get("observation_id") if isinstance(arguments.get("observation_id"), str) else None, session_id=context.session_id)
+        return ToolResult(_tool_status(result.status), _json_safe(result), result.error_code, verified=result.status == "completed")
+
+    registry.register(ToolSpec(
+        "tool-desktop-context-read-v1", "desktop.context.read", "1", "Read bounded active desktop metadata.",
+        "read", "tool.request", frozenset(), 10.0, True, desktop_context,
+        parameters_schema={"type": "object", "properties": {"target_device_id": {"type": "string", "maxLength": 200}}, "additionalProperties": False},
+    ))
+    registry.register(ToolSpec(
+        "tool-screen-observe-v1", "screen.observe", "1", "Observe the current screen on demand using safe structured perception.",
+        "read", "tool.request", frozenset(), 15.0, False, observe_screen,
+        parameters_schema={"type": "object", "properties": {"target_device_id": {"type": "string", "maxLength": 200}, "window_ref": {"type": "string", "maxLength": 100}, "region": {"type": "object"}, "mode": {"type": "string", "enum": ["semantic", "screen"]}}, "additionalProperties": False},
+        retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-screen-latest-v1", "screen.latest", "1", "Read a still-valid cached screen observation.",
+        "read", "tool.request", frozenset(), 5.0, True, latest_screen,
+        parameters_schema={"type": "object", "properties": {"observation_id": {"type": "string", "maxLength": 200}}, "additionalProperties": False},
+        retention=ToolResultRetention.EPHEMERAL,
+    ))
+
+
+def _tool_status(status: str) -> ToolResultStatus:
+    if status == "completed":
+        return ToolResultStatus.SUCCEEDED
+    if status == "denied":
+        return ToolResultStatus.DENIED
+    return ToolResultStatus.FAILED
+
+
+def _json_safe(value: object) -> object:
+    from dataclasses import asdict, is_dataclass
+    if is_dataclass(value):
+        return _json_safe(asdict(value))
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value

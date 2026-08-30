@@ -55,3 +55,11 @@ World State offline together. Canonical identity revocation propagates through
 the existing EventBus and fails pending work. Disconnect, revocation,
 reconnect, queue overflow, expired commands, and rejected results are
 observable failures; inactive reconnect history is bounded.
+
+Phase 10 extends the same typed transport with protocol v2 and the separate
+`perception.screen` capability. Perception routes by topology, including when
+request and target device IDs are equal, and an unavailable explicit target
+returns `perception_target_offline` without falling back to another screen.
+The result channel permits bounded structured metadata, dimensions, digests,
+and locally derived semantic data only; raw bitmaps and base64 image payloads
+are rejected.

@@ -22,6 +22,7 @@ from ..bus import InMemoryEventBus
 from ..contracts import ApprovalRequest, AuditRecord, ComputerAction, ComputerCapability, ComputerController, ComputerResult, DeviceIdentity, Identity, ToolContext
 from ..events import Event, EventCategory, EventState
 from ..persistence.repositories import RuntimeRepository
+from ..perception.windows import WindowsDesktopProvider
 
 
 class WindowsNativeComputerController:
@@ -36,6 +37,9 @@ class WindowsNativeComputerController:
         "explorer": "explorer.exe",
     }
     SAFE_STOP_PROCESSES = frozenset({"notepad.exe", "calc.exe", "calculator.exe", "code.exe"})
+
+    def __init__(self, *, perception_provider: WindowsDesktopProvider | None = None) -> None:
+        self.perception_provider = perception_provider or WindowsDesktopProvider()
 
     async def execute(self, action: ComputerAction, context: ToolContext) -> ComputerResult:
         try:
@@ -63,6 +67,8 @@ class WindowsNativeComputerController:
                 return await asyncio.to_thread(self._search_files, action.parameters)
             if capability is ComputerCapability.STOP_SAFE_PROCESS:
                 return await asyncio.to_thread(self._stop_safe_process, action.parameters)
+            if capability is ComputerCapability.FOCUS_WINDOW:
+                return await asyncio.to_thread(self._focus_window, action.parameters)
             return ComputerResult("failed", error_code="native_action_not_configured")
         except (OSError, ValueError) as exc:
             return ComputerResult("failed", error_code=str(exc) or exc.__class__.__name__)
@@ -143,6 +149,15 @@ class WindowsNativeComputerController:
         result = subprocess.run(["taskkill", "/IM", name, "/T"], capture_output=True, text=True, timeout=5, check=False, shell=False)
         return ComputerResult("succeeded" if result.returncode == 0 else "failed", {"name": name, "output": result.stdout[-1000:]}, None if result.returncode == 0 else "process_stop_failed", result.returncode == 0)
 
+    def _focus_window(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        if set(parameters) - {"window_ref"} or not isinstance(parameters.get("window_ref"), str):
+            return ComputerResult("denied", error_code="window_ref_required")
+        try:
+            verified = self.perception_provider.focus_window(str(parameters["window_ref"]))
+        except ValueError as exc:
+            return ComputerResult("failed", error_code=str(exc))
+        return ComputerResult("succeeded", {"window_ref": parameters["window_ref"]}, verified=True) if verified else ComputerResult("failed", error_code="window_focus_not_verified")
+
 
 class ComputerActionService:
     """Common permission, audit, event, and controller boundary."""
@@ -163,6 +178,7 @@ class ComputerActionService:
         ComputerCapability.OPEN_FOLDER.value,
         ComputerCapability.STOP_SAFE_PROCESS.value,
         ComputerCapability.SEARCH_FILES.value,
+        ComputerCapability.FOCUS_WINDOW.value,
     })
 
     def __init__(

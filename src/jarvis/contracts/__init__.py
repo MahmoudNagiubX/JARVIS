@@ -67,7 +67,10 @@ from .presence import PresenceObservation, PresenceSnapshot, PresenceSource
 from .proactive import FindingStatus, ProactiveFinding, ProactiveFindingType
 from .perception import (
     CameraObservation,
+    DesktopContextSnapshot,
+    DesktopWindow,
     OCRProvider,
+    PerceptionPrivacyMode,
     PerceptionProvider,
     PerceptionResult,
     ScreenObservation,
@@ -85,7 +88,7 @@ from .research import (
     ResearchSource,
     ResearchStep,
 )
-from .tools import Tool, ToolContext, ToolRegistry, ToolResult, ToolResultStatus
+from .tools import Tool, ToolContext, ToolRegistry, ToolResult, ToolResultRetention, ToolResultStatus
 from .voice import (
     RealtimeVoiceSession,
     SpeechToText,
@@ -208,6 +211,9 @@ __all__ = [
     "ProactiveFinding",
     "ProactiveFindingType",
     "CameraObservation",
+    "DesktopContextSnapshot",
+    "DesktopWindow",
+    "PerceptionPrivacyMode",
     "OCRProvider",
     "PerceptionProvider",
     "PerceptionResult",
@@ -238,6 +244,7 @@ __all__ = [
     "ToolRegistry",
     "ToolResult",
     "ToolResultStatus",
+    "ToolResultRetention",
     "VoiceSessionState",
     "VoiceTranscript",
     "VoiceTurnResult",

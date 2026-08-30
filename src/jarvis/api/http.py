@@ -201,6 +201,11 @@ class CoreHttpServer:
                         self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
                     elif route == "/perception/capabilities":
                         self._respond(HTTPStatus.OK, application.perception_capabilities())
+                    elif route == "/perception/context":
+                        self._respond(HTTPStatus.OK, asyncio.run(application.perception_context(principal.identity, principal.device, values)))
+                    elif route.startswith("/perception/observations/"):
+                        observation_id = route.rsplit("/", 1)[-1]
+                        self._respond(HTTPStatus.OK, asyncio.run(application.perception_latest(principal.identity, principal.device, {"observation_id": observation_id})))
                     elif route == "/workers/developer/providers":
                         self._respond(HTTPStatus.OK, {"providers": application.developer_providers()})
                     elif route == "/missions":
@@ -452,6 +457,16 @@ class CoreHttpServer:
                     if route == "/perception/screen":
                         principal = self._authenticated(body)
                         result = asyncio.run(application.perception_screen(principal.identity, principal.device, body))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/perception/context":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.perception_context(principal.identity, principal.device, body))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/perception/latest":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.perception_latest(principal.identity, principal.device, body))
                         self._respond(HTTPStatus.OK, result)
                         return
                     if route == "/perception/window":
