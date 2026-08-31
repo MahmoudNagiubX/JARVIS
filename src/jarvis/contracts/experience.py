@@ -100,6 +100,7 @@ class ApprovalProjection:
     action: str
     status: str
     reason: str | None = None
+    run_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

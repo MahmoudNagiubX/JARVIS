@@ -25,6 +25,7 @@ from ..routing.router import RequestRouter
 
 
 class AgentRunState(StrEnum):
+    QUEUED = "queued"
     SUCCEEDED = "succeeded"
     PAUSED = "paused"
     FAILED = "failed"
@@ -71,7 +72,7 @@ class AgentRuntime:
         self._tasks: dict[str, asyncio.Task[AgentRunOutcome]] = {}
         self._cancelled: set[str] = set()
 
-    async def process_text(
+    async def prepare_text(
         self,
         text: str,
         identity: Identity,
@@ -88,16 +89,23 @@ class AgentRuntime:
             raise ValueError("identity/device owner binding mismatch")
         if client_message_id:
             previous = self.repository.message_by_client_id(client_message_id)
-            if previous is not None and previous.run_id:
-                prior_run = self.repository.run(previous.run_id)
-                if prior_run:
-                    state = {
-                        "succeeded": AgentRunState.SUCCEEDED,
-                        "paused": AgentRunState.PAUSED,
-                        "failed": AgentRunState.FAILED,
-                        "cancelled": AgentRunState.CANCELLED,
-                    }.get(prior_run.status, AgentRunState.FAILED)
-                    return AgentRunOutcome(prior_run.id, prior_run.conversation_id, prior_run.session_id, state, replayed=True)
+            if previous is not None:
+                previous_conversation = self.repository.conversation(previous.conversation_id)
+                if previous_conversation is None or previous_conversation.owner_id != identity.owner_id:
+                    raise ValueError("client message owner binding mismatch")
+                if previous.run_id:
+                    prior_run = self.repository.run(previous.run_id)
+                    if prior_run:
+                        state = {
+                            "queued": AgentRunState.QUEUED,
+                            "running": AgentRunState.QUEUED,
+                            "cancel_requested": AgentRunState.QUEUED,
+                            "succeeded": AgentRunState.SUCCEEDED,
+                            "paused": AgentRunState.PAUSED,
+                            "failed": AgentRunState.FAILED,
+                            "cancelled": AgentRunState.CANCELLED,
+                        }.get(prior_run.status, AgentRunState.FAILED)
+                        return AgentRunOutcome(prior_run.id, prior_run.conversation_id, prior_run.session_id, state, replayed=True)
         if session_id is None:
             session = self.repository.create_session(identity.owner_id, device.device_id)
             session_id = session.id
@@ -115,7 +123,32 @@ class AgentRuntime:
         self.repository.update_message_run_id(message.id, run.id)
         if self.context_assembler is not None:
             await self.context_assembler.capture_input(identity, content, message.id)
-        return await self._execute(run.id, identity, device)
+        return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.QUEUED)
+
+    async def process_text(
+        self,
+        text: str,
+        identity: Identity,
+        device: DeviceIdentity,
+        *,
+        session_id: str | None = None,
+        conversation_id: str | None = None,
+        client_message_id: str | None = None,
+    ) -> AgentRunOutcome:
+        prepared = await self.prepare_text(
+            text,
+            identity,
+            device,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            client_message_id=client_message_id,
+        )
+        if prepared.replayed:
+            return prepared
+        return await self._execute(prepared.run_id, identity, device)
+
+    async def execute_run(self, run_id: str, identity: Identity, device: DeviceIdentity) -> AgentRunOutcome:
+        return await self._execute(run_id, identity, device)
 
     async def resume(
         self,
@@ -133,6 +166,10 @@ class AgentRuntime:
             raise ValueError("identity/device owner binding mismatch")
         if run.request_device_id != device.device_id or run.status != "paused" or run.pending_approval_id is None:
             raise ValueError("run is not awaiting approval for this device")
+        claimed = self.repository.claim_paused_run(run_id, device.device_id)
+        if claimed is None:
+            raise ValueError("run is already being resumed")
+        run = claimed
         decision = await self.tools.approvals.get(run.pending_approval_id)
         if decision is None:
             raise ValueError("approval not found")
@@ -165,7 +202,9 @@ class AgentRuntime:
         self._cancelled.add(run_id)
         task = self._tasks.get(run_id)
         if task and task is not asyncio.current_task():
-            task.cancel()
+            task_loop = task.get_loop()
+            if task_loop.is_running():
+                task_loop.call_soon_threadsafe(task.cancel)
         self.repository.update_run(run_id, status="cancel_requested", cancel_requested_at=datetime.now(UTC))
         return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.CANCELLED)
 

@@ -398,10 +398,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
             NotificationProjection(item.notification_id, item.title, item.message, item.severity, item.dismissed_at is not None)
             for item in await notifications.list(owner_id)
         )
-        approvals_view = tuple(
-            ApprovalProjection(str(row["id"]), str(row["action"]), str(row["status"]), row.get("decision_reason"))
-            for row in repository.pending_approvals(owner_id)
-        )
+        approvals_view = tuple(_approval_projection(row) for row in repository.pending_approvals(owner_id))
         missions_view = tuple(asdict(item) for item in await missions.list(owner_id))
         skills_view = tuple(asdict(item) for item in skills.list(include_disabled=True))
         automation_view = tuple(asdict(item) for item in await automation.list(owner_id))
@@ -453,6 +450,13 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
             "follow_ups": followup_view,
             "home": home_view,
         }
+
+    def _approval_projection(row: dict[str, object]) -> ApprovalProjection:
+        tool_call = repository.tool_call_by_approval(str(row["id"]))
+        return ApprovalProjection(
+            str(row["id"]), str(row["action"]), str(row["status"]), row.get("decision_reason"),
+            str(tool_call["run_id"]) if tool_call and tool_call.get("run_id") else None,
+        )
 
     experience_projection = ExperienceProjection(event_bus, experience_state, repository=repository)
     observability = ObservabilityService(event_bus)

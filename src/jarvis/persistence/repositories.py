@@ -381,6 +381,18 @@ class RuntimeRepository:
             raise KeyError(run_id)
         return result
 
+    def claim_paused_run(self, run_id: str, device_id: str) -> RunRecord | None:
+        """Atomically claim one paused run for approval resumption."""
+
+        with self.database.transaction() as db:
+            cursor = db.execute(
+                "UPDATE runs SET status = 'resuming' WHERE id = ? AND request_device_id = ? AND status = 'paused'",
+                (run_id, device_id),
+            )
+            if cursor.rowcount != 1:
+                return None
+        return self.run(run_id)
+
     def reconcile_active_runs(self) -> int:
         """Fail only process-owned transient runs after an unclean restart."""
         with self.database.transaction() as db:
@@ -512,6 +524,13 @@ class RuntimeRepository:
             "SELECT * FROM tool_calls WHERE approval_id = ?", (approval_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    def tool_calls_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.database.connection.execute(
+            "SELECT id, run_id, name, status, approval_id, created_at, completed_at FROM tool_calls WHERE run_id = ? ORDER BY created_at, id",
+            (run_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def set_tool_call_approval(self, tool_call_id: str, approval_id: str) -> None:
         with self.database.transaction() as db:

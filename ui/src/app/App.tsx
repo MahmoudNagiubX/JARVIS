@@ -7,7 +7,7 @@ import { AppContext, emptyScreenData, type ScreenData } from './context'
 import { AppShell } from '../components/layout/AppShell'
 import { ErrorBoundary } from '../components/common/ErrorBoundary'
 import { initialUiState, uiReducer } from '../state/store'
-import { ActivityScreen, ApprovalsScreen, BrowserScreen, ChatScreen, ContextScreen, DevicesScreen, EngineeringScreen, HomeScreen, MemoryScreen, MissionsScreen, NotificationsScreen, OperationsScreen, ResearchScreen, SettingsScreen, SkillsScreen } from '../screens/Screens'
+import { ActivityScreen, ApprovalsScreen, BrowserScreen, ChatScreen, ContextScreen, DevicesScreen, EngineeringScreen, HomeScreen, MemoryScreen, MissionsScreen, NotificationsScreen, OperationsScreen, ResearchScreen, sessionRefreshDelay, SettingsScreen, SkillsScreen } from '../screens/Screens'
 
 export interface AppProps {
   api?: ApiClient
@@ -82,6 +82,25 @@ function Workspace({ api, initialSession }: { api: ApiClient; initialSession?: J
   }, [api, initialSession, refreshProjection, setError])
 
   useEffect(() => { if (!ui.loading && session) void refreshScreen(location.pathname) }, [location.pathname, refreshScreen, session, ui.loading])
+
+  useEffect(() => {
+    const delay = sessionRefreshDelay(session?.expires_at)
+    if (delay === null) return
+    let active = true
+    const timer = window.setTimeout(() => {
+      void api.post<JarvisSession>('/auth/session/refresh', {}).then((refreshed) => {
+        if (!active) return
+        api.setSession(refreshed)
+        setSession(refreshed)
+      }).catch(() => {
+        if (!active) return
+        api.setSession(null)
+        setSession(null)
+        setError('Session expired. Reopen JARVIS.')
+      })
+    }, delay)
+    return () => { active = false; window.clearTimeout(timer) }
+  }, [api, session?.expires_at, setError])
 
   useEffect(() => {
     if (!session || typeof WebSocket === 'undefined') return

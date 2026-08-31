@@ -130,6 +130,32 @@ class DesktopSessionService:
             with self._lock:
                 self._sessions.pop(token, None)
 
+    def refresh_session(self, token: str | None, principal: Any) -> DesktopSession | None:
+        """Rotate a live browser session and its CSRF token exactly once."""
+
+        if not token:
+            return None
+        now = datetime.now(UTC)
+        with self._lock:
+            current = self._sessions.get(token)
+            self._prune(now)
+            if current is None or current.expires_at <= now:
+                return None
+            if (
+                current.owner_id != principal.identity.owner_id
+                or current.identity_id != principal.identity.identity_id
+                or current.device_id != principal.device.device_id
+            ):
+                return None
+            refreshed = DesktopSession(
+                secrets.token_urlsafe(32), current.owner_id, current.identity_id,
+                current.device_id, secrets.token_urlsafe(24),
+                now + timedelta(seconds=self.session_ttl_seconds),
+            )
+            self._sessions.pop(token, None)
+            self._sessions[refreshed.token] = refreshed
+            return refreshed
+
     def _prune(self, now: datetime) -> None:
         self._bootstraps = {key: item for key, item in self._bootstraps.items() if item.expires_at > now}
         self._sessions = {key: item for key, item in self._sessions.items() if item.expires_at > now}

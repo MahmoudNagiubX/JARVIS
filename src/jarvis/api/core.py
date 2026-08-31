@@ -122,6 +122,33 @@ class CoreApplication:
             conversation_id=conversation_id,
             client_message_id=client_message_id,
         )
+        return self._message_outcome(outcome)
+
+    async def start_message(
+        self,
+        text: str,
+        identity: Identity,
+        device: DeviceIdentity,
+        *,
+        session_id: str | None = None,
+        conversation_id: str | None = None,
+        client_message_id: str | None = None,
+    ) -> dict[str, Any]:
+        outcome = await self.runtime.agent.prepare_text(
+            text,
+            identity,
+            device,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            client_message_id=client_message_id,
+        )
+        return self._message_outcome(outcome)
+
+    async def execute_message(self, run_id: str, identity: Identity, device: DeviceIdentity) -> dict[str, Any]:
+        return self._message_outcome(await self.runtime.agent.execute_run(run_id, identity, device))
+
+    @staticmethod
+    def _message_outcome(outcome: Any) -> dict[str, Any]:
         return {
             "run_id": outcome.run_id,
             "conversation_id": outcome.conversation_id,
@@ -938,6 +965,52 @@ class CoreApplication:
     def events(self, correlation_id: str | None = None, owner_id: str | None = None) -> list[dict[str, Any]]:
         return self.runtime.repository.events(correlation_id, owner_id)
 
+    def run_status(self, run_id: str, owner_id: str) -> dict[str, Any] | None:
+        run = self.runtime.repository.run(run_id)
+        if run is None:
+            return None
+        conversation = self.runtime.repository.conversation(run.conversation_id)
+        if conversation is None or conversation.owner_id != owner_id:
+            return None
+        assistant = next(
+            (
+                item for item in reversed(self.runtime.repository.messages(run.conversation_id))
+                if item.run_id == run_id and item.role == "assistant"
+            ),
+            None,
+        )
+        return {
+            "run_id": run.id,
+            "conversation_id": run.conversation_id,
+            "session_id": run.session_id,
+            "state": run.status,
+            "pending_approval_id": run.pending_approval_id,
+            "error_code": run.failure_code,
+            "response": assistant.content if assistant else None,
+            "assistant_message_id": assistant.id if assistant else None,
+        }
+
+    def run_activity(self, run_id: str, owner_id: str) -> dict[str, Any] | None:
+        run = self.runtime.repository.run(run_id)
+        if run is None:
+            return None
+        conversation = self.runtime.repository.conversation(run.conversation_id)
+        if conversation is None or conversation.owner_id != owner_id:
+            return None
+        return {
+            "run_id": run_id,
+            "state": run.status,
+            "tools": [
+                {
+                    "tool_call_id": row["id"],
+                    "name": row["name"],
+                    "status": row["status"],
+                    "approval_id": row["approval_id"],
+                }
+                for row in self.runtime.repository.tool_calls_for_run(run_id)
+            ],
+        }
+
     async def approval(self, approval_id: str, owner_id: str | None = None) -> dict[str, Any] | None:
         row = self.runtime.repository.approval(approval_id)
         if row is None or (owner_id is not None and row.get("requester_id") != owner_id):
@@ -947,6 +1020,7 @@ class CoreApplication:
             return None
         return {
             "approval_id": decision.approval_id,
+            "run_id": (tool_call := self.runtime.repository.tool_call_by_approval(approval_id)).get("run_id") if tool_call else None,
             "status": decision.status.value,
             "decided_by": decision.decided_by,
             "decided_at": decision.decided_at.isoformat() if decision.decided_at else None,

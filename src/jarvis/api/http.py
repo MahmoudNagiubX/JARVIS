@@ -6,6 +6,7 @@ import asyncio
 import json
 import queue
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +19,17 @@ from .core import CoreApplication
 from .auth import DesktopSessionService, StreamTicketService
 from ..experience.projections import ExperienceProjection
 from ..experience.websocket import accept_key, close_frame, ping_frame, text_frame
+
+
+def _execute_background_message(application: CoreApplication, run_id: str, identity: Any, device: Any) -> None:
+    """Finish a queued message through the existing AgentRuntime authority."""
+
+    try:
+        asyncio.run(application.execute_message(run_id, identity, device))
+    except Exception:
+        # AgentRuntime persists terminal failures; the HTTP request has already
+        # returned the durable run id and clients observe the resulting state.
+        return
 
 
 class CoreHttpServer:
@@ -33,6 +45,7 @@ class CoreHttpServer:
         self.application = application
         self.stream_tickets = StreamTicketService()
         self.desktop_sessions = DesktopSessionService()
+        self._message_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jarvis-message")
         self.server = ThreadingHTTPServer((host, port), self._handler())
 
     @property
@@ -45,6 +58,7 @@ class CoreHttpServer:
     def shutdown(self) -> None:
         self.server.shutdown()
         self.server.server_close()
+        self._message_executor.shutdown(wait=False, cancel_futures=True)
 
     def issue_desktop_bootstrap(self, credential: str, device_id: str, identity_id: str) -> str:
         """Issue a one-use browser handoff without exposing a device credential in a URL."""
@@ -55,6 +69,7 @@ class CoreHttpServer:
         application = self.application
         ticket_service = self.stream_tickets
         desktop_sessions = self.desktop_sessions
+        message_executor = self._message_executor
         public_get_routes = self.PUBLIC_GET_ROUTES
         stream_get_routes = self._STREAM_GET_ROUTES
 
@@ -271,6 +286,16 @@ class CoreHttpServer:
                             "csrf_token": session.csrf_token,
                             "expires_at": session.expires_at.isoformat(),
                         })
+                    elif route.startswith("/runs/") and route.endswith("/activity"):
+                        run_id = route.strip("/").split("/")[1]
+                        principal = self._authenticated(values)
+                        result = application.run_activity(run_id, principal.identity.owner_id)
+                        self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
+                    elif route.startswith("/runs/"):
+                        run_id = route.strip("/").split("/")[1]
+                        principal = self._authenticated(values)
+                        result = application.run_status(run_id, principal.identity.owner_id)
+                        self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
                     elif route == "/conversations":
                         self._respond(HTTPStatus.OK, {"conversations": asyncio.run(application.list_conversations(self._owner(query)))})
                     elif route.startswith("/conversations/") and route.endswith("/messages"):
@@ -313,6 +338,26 @@ class CoreHttpServer:
                             {"Set-Cookie": self._session_cookie(session.token, session.expires_at)},
                         )
                         return
+                    if route == "/auth/session/refresh":
+                        current = self._desktop_session()
+                        if current is None:
+                            raise PermissionError("desktop_session_required")
+                        principal = self._authenticated({}, require_session=True)
+                        refreshed = desktop_sessions.refresh_session(current.token, principal)
+                        if refreshed is None:
+                            raise PermissionError("desktop_session_refresh_failed")
+                        self._respond(
+                            HTTPStatus.OK,
+                            {
+                                "owner_id": refreshed.owner_id,
+                                "identity_id": refreshed.identity_id,
+                                "device_id": refreshed.device_id,
+                                "csrf_token": refreshed.csrf_token,
+                                "expires_at": refreshed.expires_at.isoformat(),
+                            },
+                            {"Set-Cookie": self._session_cookie(refreshed.token, refreshed.expires_at)},
+                        )
+                        return
                     if route == "/satellites/connect":
                         principal = self._authenticated(body)
                         self._respond(HTTPStatus.CREATED, asyncio.run(application.satellite_connect(principal, body)))
@@ -345,6 +390,24 @@ class CoreHttpServer:
                             client_message_id=body.get("client_message_id"),
                         ))
                         self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/messages/start":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.start_message(
+                            str(body["text"]), principal.identity, principal.device,
+                            session_id=body.get("session_id"),
+                            conversation_id=body.get("conversation_id"),
+                            client_message_id=body.get("client_message_id"),
+                        ))
+                        if result.get("state") == "queued" and not result.get("replayed"):
+                            message_executor.submit(
+                                _execute_background_message,
+                                application,
+                                str(result["run_id"]),
+                                principal.identity,
+                                principal.device,
+                            )
+                        self._respond(HTTPStatus.ACCEPTED, result)
                         return
                     if route == "/personal-operations/mode":
                         principal = self._authenticated(body)
@@ -881,7 +944,7 @@ class CoreHttpServer:
                     raise PermissionError("owner_authentication_required")
                 return principal.identity.owner_id
 
-            def _authenticated(self, values: dict[str, Any]) -> Any:
+            def _authenticated(self, values: dict[str, Any], *, require_session: bool = False) -> Any:
                 values = dict(values)
                 if self.command == "GET":
                     if "credential" in values:
@@ -890,19 +953,20 @@ class CoreHttpServer:
                     # principal material. Device/identity stay header-bound.
                     values.pop("device_id", None)
                     values.pop("identity_id", None)
-                authorization = self.headers.get("Authorization", "")
-                if "credential" not in values and authorization.casefold().startswith("bearer "):
-                    values["credential"] = authorization[7:].strip()
-                values.setdefault("device_id", self.headers.get("X-JARVIS-Device-ID") or self.headers.get("X-Device-ID"))
-                values.setdefault("identity_id", self.headers.get("X-JARVIS-Identity-ID") or self.headers.get("X-Identity-ID"))
-                required = ("credential", "device_id", "identity_id")
-                if not any(not values.get(key) for key in required):
-                    principal = asyncio.run(application.authenticate_principal(
-                        str(values["credential"]), str(values["device_id"]), str(values["identity_id"])
-                    ))
-                    if principal is None:
-                        raise PermissionError("principal_not_found")
-                    return principal
+                if not require_session:
+                    authorization = self.headers.get("Authorization", "")
+                    if "credential" not in values and authorization.casefold().startswith("bearer "):
+                        values["credential"] = authorization[7:].strip()
+                    values.setdefault("device_id", self.headers.get("X-JARVIS-Device-ID") or self.headers.get("X-Device-ID"))
+                    values.setdefault("identity_id", self.headers.get("X-JARVIS-Identity-ID") or self.headers.get("X-Identity-ID"))
+                    required = ("credential", "device_id", "identity_id")
+                    if not any(not values.get(key) for key in required):
+                        principal = asyncio.run(application.authenticate_principal(
+                            str(values["credential"]), str(values["device_id"]), str(values["identity_id"])
+                        ))
+                        if principal is None:
+                            raise PermissionError("principal_not_found")
+                        return principal
                 session = self._desktop_session()
                 if session is None:
                     raise PermissionError("credential_device_and_identity_required")

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useJarvis } from '../app/context'
 import { JArcReactor } from '../components/hud/JArcReactor'
@@ -17,8 +17,34 @@ function projectionRecord(projection: Record<string, unknown> | null, key: strin
   return record(projection?.[key])
 }
 
+export function evidenceFromPayload(payload: unknown): unknown[] {
+  return list(record(payload).evidence)
+}
+
+export type NotificationFilter = 'all' | 'unread' | 'important' | 'proactive' | 'system'
+
+export function filterNotifications(notifications: JsonRecord[], filter: NotificationFilter): JsonRecord[] {
+  if (filter === 'all') return notifications
+  if (filter === 'unread') return notifications.filter((item) => !Boolean(item.dismissed || item.dismissed_at))
+  if (filter === 'important') return notifications.filter((item) => ['important', 'urgent', 'critical'].includes(stringValue(item.severity).toLowerCase()) || Boolean(record(item.metadata).important))
+  if (filter === 'proactive') return notifications.filter((item) => stringValue(item.source).toLowerCase().startsWith('proactive'))
+  return notifications.filter((item) => stringValue(item.source).toLowerCase().startsWith('system'))
+}
+
+export function sessionRefreshDelay(expiresAt?: string, now: Date = new Date()): number | null {
+  if (!expiresAt) return null
+  const expires = Date.parse(expiresAt)
+  if (!Number.isFinite(expires)) return null
+  return Math.max(1_000, expires - now.getTime() - 60_000)
+}
+
+export function isApprovalActionable(approval: JsonRecord): boolean {
+  return stringValue(approval.status, 'pending') === 'pending' && Boolean(stringValue(approval.run_id || approval.pending_run_id, ''))
+}
+
 function ApprovalCard({ approval, onDecision, interactive }: { approval: JsonRecord; onDecision: (approval: JsonRecord, approved: boolean) => void; interactive?: boolean }) {
   const location = useLocation()
+  const [deciding, setDeciding] = useState(false)
   const actionsEnabled = interactive ?? location.pathname === '/approvals'
   const id = stringValue(approval.approval_id || approval.id, 'unknown approval')
   const runId = stringValue(approval.run_id || approval.pending_run_id, '')
@@ -26,7 +52,7 @@ function ApprovalCard({ approval, onDecision, interactive }: { approval: JsonRec
   return <ListCard title={stringValue(approval.action, 'Consequential action')} status={status} meta={`Approval ${id}`}>
     <p className="card-copy">{stringValue(approval.reason, 'The action requires owner confirmation.')}</p>
     {Boolean(approval.preview) && <div className="safe-preview"><span className="eyebrow">SANITIZED PREVIEW</span><p>{stringValue(approval.preview)}</p></div>}
-    {status === 'pending' && actionsEnabled && <div className="card-actions inline"><Button variant="primary" disabled={!runId} onClick={() => onDecision(approval, true)} title={!runId ? 'Waiting for the server run correlation' : undefined}>Approve</Button><Button variant="danger" disabled={!runId} onClick={() => onDecision(approval, false)} title={!runId ? 'Waiting for the server run correlation' : undefined}>Deny</Button>{!runId && <span className="small muted">Awaiting run correlation</span>}</div>}
+    {status === 'pending' && actionsEnabled && <div className="card-actions inline"><Button variant="primary" disabled={!isApprovalActionable(approval) || deciding} onClick={() => { setDeciding(true); onDecision(approval, true) }} title={!runId ? 'Waiting for the server run correlation' : undefined}>{deciding ? 'Saving…' : 'Approve'}</Button><Button variant="danger" disabled={!isApprovalActionable(approval) || deciding} onClick={() => { setDeciding(true); onDecision(approval, false) }}>Deny</Button>{!runId && <span className="small muted">Awaiting run correlation</span>}</div>}
   </ListCard>
 }
 
@@ -60,6 +86,7 @@ export function ChatScreen() {
   const [sending, setSending] = useState(false)
   const [lastRun, setLastRun] = useState('')
   const [messageError, setMessageError] = useState('')
+  const [activities, setActivities] = useState<Record<string, JsonRecord[]>>({})
   const conversation = screenData.conversations.find((item) => item.id === selected)
 
   useEffect(() => {
@@ -67,26 +94,55 @@ export function ChatScreen() {
     void api.get<{ messages?: unknown[] }>(`/conversations/${encodeURIComponent(selected)}/messages`).then((payload) => setScreenData({ messages: list(payload.messages) })).catch((error) => setMessageError(error instanceof Error ? error.message : 'Conversation history unavailable.'))
   }, [api, selected, setScreenData])
 
+  useEffect(() => {
+    const runIds = [...new Set(screenData.messages.map((message) => stringValue(message.run_id, '')).filter(Boolean))]
+    if (!runIds.length) { setActivities({}); return }
+    void Promise.all(runIds.map(async (runId) => [runId, list((await api.get<{ tools?: unknown[] }>(`/runs/${encodeURIComponent(runId)}/activity`)).tools)] as const))
+      .then((entries) => setActivities(Object.fromEntries(entries)))
+      .catch((error) => setMessageError(error instanceof Error ? error.message : 'Run activity unavailable.'))
+  }, [api, screenData.messages])
+
+  async function refreshConversation(conversationId: string) {
+    const [history, conversations] = await Promise.all([
+      api.get<{ messages?: unknown[] }>(`/conversations/${encodeURIComponent(conversationId)}/messages`),
+      api.get<{ conversations?: unknown[] }>('/conversations'),
+    ])
+    setScreenData({ messages: list(history.messages), conversations: list(conversations.conversations) })
+    await refreshProjection()
+  }
+
+  async function waitForRun(runId: string, conversationId: string) {
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+      const status = await api.get<JsonRecord>(`/runs/${encodeURIComponent(runId)}`)
+      if (['succeeded', 'paused', 'failed', 'cancelled'].includes(stringValue(status.state))) {
+        await refreshConversation(conversationId)
+        setSending(false)
+        return
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 200))
+    }
+    throw new Error('The local run did not reach a terminal state.')
+  }
+
   async function send(event: React.FormEvent) {
     event.preventDefault(); const text = draft.trim(); if (!text || sending) return
     setSending(true); setMessageError('')
     try {
-      const result = await api.post<JsonRecord>('/messages', { text, conversation_id: selected || undefined, client_message_id: `ui-${globalThis.crypto?.randomUUID?.() || Date.now()}` })
+      const result = await api.post<JsonRecord>('/messages/start', { text, conversation_id: selected || undefined, client_message_id: `ui-${globalThis.crypto?.randomUUID?.() || Date.now()}` })
       const conversationId = stringValue(result.conversation_id, selected)
       setSelected(conversationId); setLastRun(stringValue(result.run_id, ''))
       setDraft('')
-      const [history, conversations] = await Promise.all([api.get<{ messages?: unknown[] }>(`/conversations/${encodeURIComponent(conversationId)}/messages`), api.get<{ conversations?: unknown[] }>('/conversations')])
-      setScreenData({ messages: list(history.messages), conversations: list(conversations.conversations) }); await refreshProjection()
-    } catch (error) { setMessageError(error instanceof Error ? error.message : 'Message failed.') }
-    finally { setSending(false) }
+      await refreshConversation(conversationId)
+      if (result.run_id) await waitForRun(stringValue(result.run_id), conversationId)
+    } catch (error) { setSending(false); setMessageError(error instanceof Error ? error.message : 'Message failed.') }
   }
 
   async function cancel() {
     if (!lastRun) return
-    try { await api.post(`/runs/${encodeURIComponent(lastRun)}/cancel`); await refreshProjection() } catch (error) { setError(error instanceof Error ? error.message : 'Run cancellation failed.') }
+    try { await api.post(`/runs/${encodeURIComponent(lastRun)}/cancel`); await waitForRun(lastRun, selected) } catch (error) { setError(error instanceof Error ? error.message : 'Run cancellation failed.') }
   }
 
-  return <div className="screen"><SectionHeading eyebrow="CONVERSATION" title="Chat with JARVIS" description="The text path reaches the same local AgentRuntime, context, tools, permissions, and approvals." /><div className="chat-layout"><Panel className="conversation-panel"><div className="panel-head"><div><span className="eyebrow">HISTORY</span><h2>Conversations</h2></div><Button variant="quiet" onClick={() => { setSelected(''); setScreenData({ messages: [] }) }}>New</Button></div>{screenLoading ? <LoadingState label="Loading conversations…" /> : screenData.conversations.length ? <div className="conversation-list">{screenData.conversations.map((item) => <button className={`conversation-row ${selected === item.id ? 'active' : ''}`} key={stringValue(item.id)} onClick={() => setSelected(stringValue(item.id))}><strong>{stringValue(item.title, 'Untitled conversation')}</strong><span>{shortDate(item.updated_at || item.last_message_at)}</span></button>)}</div> : <EmptyState title="No saved conversations" detail="Your first message creates one." />}</Panel><Panel className="chat-panel"><div className="panel-head"><div><span className="eyebrow">LOCAL AGENT RUNTIME</span><h2>{conversation ? stringValue(conversation.title, 'Conversation') : 'New conversation'}</h2></div><StatusBadge value={sending ? 'processing' : 'ready'} /></div>{messageError && <div className="inline-error" role="alert">{messageError}</div>}<div className="message-list" aria-live="polite">{screenData.messages.length ? screenData.messages.map((message, index) => <article className={`message ${message.role === 'user' ? 'user' : 'assistant'}`} key={stringValue(message.message_id || message.id, `${message.created_at}-${index}`)}><span className="message-role">{message.role === 'user' ? 'YOU' : 'JARVIS'}</span><p>{stringValue(message.content, '')}</p><time>{dateValue(message.created_at)}</time>{list(message.tool_activity).map((tool, toolIndex) => <div className="tool-inline" key={`${toolIndex}-${stringValue(tool.name)}`}><span className="tool-dot" />{stringValue(tool.name || tool.tool, 'Tool activity')} <StatusBadge value={tool.status} /></div>)}</article>) : <EmptyState title="Start a conversation" detail="Ask a normal question and the local model will answer through the canonical runtime." />}{sending && <div className="message assistant pending-message"><span className="message-role">JARVIS</span><p>Working from the local runtime…</p><JWaveform active /></div>}</div><form className="composer" onSubmit={send}><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask JARVIS anything local…" aria-label="Message JARVIS" rows={3} required /><div className="composer-footer"><span className="muted small">Enter a message · no cloud provider</span><div>{sending && lastRun && <Button variant="quiet" onClick={() => void cancel()}>Cancel run</Button>}<Button variant="primary" type="submit" disabled={sending || !draft.trim()}>{sending ? 'Processing…' : 'Send message ↗'}</Button></div></div></form></Panel></div></div>
+  return <div className="screen"><SectionHeading eyebrow="CONVERSATION" title="Chat with JARVIS" description="The text path reaches the same local AgentRuntime, context, tools, permissions, and approvals." /><div className="chat-layout"><Panel className="conversation-panel"><div className="panel-head"><div><span className="eyebrow">HISTORY</span><h2>Conversations</h2></div><Button variant="quiet" onClick={() => { setSelected(''); setScreenData({ messages: [] }) }}>New</Button></div>{screenLoading ? <LoadingState label="Loading conversations…" /> : screenData.conversations.length ? <div className="conversation-list">{screenData.conversations.map((item) => <button className={`conversation-row ${selected === item.id ? 'active' : ''}`} key={stringValue(item.id)} onClick={() => setSelected(stringValue(item.id))}><strong>{stringValue(item.title, 'Untitled conversation')}</strong><span>{shortDate(item.updated_at || item.last_message_at)}</span></button>)}</div> : <EmptyState title="No saved conversations" detail="Your first message creates one." />}</Panel><Panel className="chat-panel"><div className="panel-head"><div><span className="eyebrow">LOCAL AGENT RUNTIME</span><h2>{conversation ? stringValue(conversation.title, 'Conversation') : 'New conversation'}</h2></div><StatusBadge value={sending ? 'processing' : 'ready'} /></div>{messageError && <div className="inline-error" role="alert">{messageError}</div>}<div className="message-list" aria-live="polite">{screenData.messages.length ? screenData.messages.map((message, index) => <article className={`message ${message.role === 'user' ? 'user' : 'assistant'}`} key={stringValue(message.message_id || message.id, `${message.created_at}-${index}`)}><span className="message-role">{message.role === 'user' ? 'YOU' : 'JARVIS'}</span><p>{stringValue(message.content, '')}</p><time>{dateValue(message.created_at)}</time>{list(activities[stringValue(message.run_id, '')]).map((tool, toolIndex) => <div className="tool-inline" key={`${toolIndex}-${stringValue(tool.name)}`}><span className="tool-dot" />{stringValue(tool.name || tool.tool, 'Tool activity')} <StatusBadge value={tool.status} /></div>)}</article>) : <EmptyState title="Start a conversation" detail="Ask a normal question and the local model will answer through the canonical runtime." />}{sending && <div className="message assistant pending-message"><span className="message-role">JARVIS</span><p>Working from the local runtime…</p><JWaveform active /></div>}</div><form className="composer" onSubmit={send}><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask JARVIS anything local…" aria-label="Message JARVIS" rows={3} required /><div className="composer-footer"><span className="muted small">Enter a message · no cloud provider</span><div>{sending && lastRun && <Button variant="quiet" onClick={() => void cancel()}>Cancel run</Button>}<Button variant="primary" type="submit" disabled={sending || !draft.trim()}>{sending ? 'Processing…' : 'Send message ↗'}</Button></div></div></form></Panel></div></div>
 }
 
 export function MissionsScreen() {
@@ -115,7 +171,7 @@ export function OperationsScreen() { const { projection } = useJarvis(); const s
 export function ResearchScreen() { const { api, screenData, screenLoading, setScreenData, refreshProjection, setError } = useJarvis(); const [query, setQuery] = useState(''); const [starting, setStarting] = useState(false); const [evidence, setEvidence] = useState<JsonRecord[]>([])
   async function start(event: React.FormEvent) { event.preventDefault(); if (!query.trim()) return; setStarting(true); try { await api.post('/research/runs', { query: query.trim() }); setQuery(''); await Promise.all([refreshProjection(), load()]) } catch (error) { setError(error instanceof Error ? error.message : 'Research request failed.') } finally { setStarting(false) } }
   async function load() { const payload = await api.get<{ runs?: unknown[] }>('/research/runs'); setScreenData({ research: list(payload.runs) }) }
-  async function showEvidence(item: JsonRecord) { try { const id = stringValue(item.run_id || item.id); const payload = await api.get<unknown[]>(`/research/runs/${encodeURIComponent(id)}/evidence`); setEvidence(list(payload)) } catch (error) { setError(error instanceof Error ? error.message : 'Evidence unavailable.') } }
+  async function showEvidence(item: JsonRecord) { try { const id = stringValue(item.run_id || item.id); const payload = await api.get<unknown>(`/research/runs/${encodeURIComponent(id)}/evidence`); setEvidence(list(evidenceFromPayload(payload))) } catch (error) { setError(error instanceof Error ? error.message : 'Evidence unavailable.') } }
   return <div className="screen"><SectionHeading eyebrow="EVIDENCE LEDGER" title="Research" description="Persisted research runs and evidence. Web access remains explicit when the provider is unavailable." /><Panel className="toolbar-panel"><form className="search-form" onSubmit={(event) => void start(event)}><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Start a local research request…" aria-label="Research request" /><Button variant="primary" type="submit" disabled={starting || !query.trim()}>{starting ? 'Starting…' : 'Start research'}</Button></form></Panel><div className="screen-grid two">{screenLoading ? <LoadingState /> : screenData.research.length ? screenData.research.map((item) => <ListCard key={stringValue(item.run_id || item.id)} title={stringValue(item.query, 'Research run')} status={item.status} meta={dateValue(item.created_at)}><DetailList values={{ Completed: dateValue(item.completed_at), Sources: item.source_count ?? item.evidence_count ?? 'Not reported', Error: stringValue(item.error_code, 'None') }} /><div className="card-actions inline"><Button onClick={() => void showEvidence(item)}>View evidence</Button>{['queued', 'running', 'started'].includes(stringValue(item.status)) && <Button variant="danger" onClick={() => void api.post(`/research/runs/${encodeURIComponent(stringValue(item.run_id || item.id))}/cancel`, {}).then(load).catch((error) => setError(error instanceof Error ? error.message : 'Research cancellation failed.'))}>Cancel</Button>}</div></ListCard>) : <Panel><EmptyState title="No research runs" detail="Research runs appear here when the existing ResearchService is used." /></Panel>}</div>{evidence.length > 0 && <Panel className="evidence-panel"><div className="panel-head"><h2>Evidence</h2><Button onClick={() => setEvidence([])}>Close</Button></div>{evidence.map((item, index) => <div className="evidence-row" key={stringValue(item.evidence_id || item.id, String(index))}><strong>{stringValue(item.title || item.source, 'Source')}</strong><p>{stringValue(item.excerpt || item.content, 'No excerpt')}</p><span className="muted small">{stringValue(item.url, 'Local evidence')}</span></div>)}</Panel>}</div>
 }
 
@@ -123,7 +179,18 @@ export function SkillsScreen() { const { api, projection, refreshProjection, set
 
 export function DevicesScreen() { const { projection } = useJarvis(); const devices = projectionList(record(projection), 'devices'); return <div className="screen"><SectionHeading eyebrow="DEVICE FABRIC" title="Devices & home" description="Actual registered device and home-controller state. A device is never marked live without backend evidence." /><div className="screen-grid two">{devices.length ? devices.map((item) => <ListCard key={stringValue(item.device_id || item.id)} title={stringValue(item.name || item.device_id, 'Device')} status={item.status} meta={stringValue(item.role, 'Registered device')}><DetailList values={{ Device: stringValue(item.device_id || item.id), 'Last seen': dateValue(item.last_seen), Capabilities: list(item.capabilities).length ? `${list(item.capabilities).length} reported` : 'None reported', Health: stringValue(item.health, 'Not reported') }} /></ListCard>) : <Panel><EmptyState title="No registered devices" detail="Connect a device through the canonical device authority." /></Panel>}</div><Panel><EmptyState title="No live home controller connected" detail="Home integration will appear when configured; the UI does not fabricate device state." /></Panel></div> }
 
-export function NotificationsScreen() { const { api, projection, refreshProjection, setError } = useJarvis(); const notifications = projectionList(record(projection), 'notifications'); async function dismiss(item: JsonRecord) { try { await api.post(`/notifications/${encodeURIComponent(stringValue(item.notification_id || item.id))}/dismiss`, {}); await refreshProjection() } catch (error) { setError(error instanceof Error ? error.message : 'Notification dismissal failed.') } } return <div className="screen"><SectionHeading eyebrow="OWNER ATTENTION" title="Notifications" description="Unread, proactive, and system notices from the existing notification service." /><div className="filter-tabs large"><button className="selected">All <span>{notifications.length}</span></button><button>Unread</button><button>Important</button><button>Proactive</button><button>System</button></div><Panel>{notifications.length ? <div className="notification-list">{notifications.map((item) => <div className="notification-row" key={stringValue(item.notification_id || item.id)}><span className={`notification-marker ${tone(item.severity)}`} /><div><div className="card-heading"><strong>{stringValue(item.title, 'Notification')}</strong><StatusBadge value={item.severity || 'info'} /></div><p>{stringValue(item.message, '')}</p><span className="muted small">{dateValue(item.created_at)}</span></div>{!item.dismissed && <Button variant="quiet" onClick={() => void dismiss(item)}>Dismiss</Button>}</div>)}</div> : <EmptyState title="No notifications" detail="JARVIS will surface important changes without turning local operation into noise." />}</Panel></div> }
+export function NotificationsScreen() {
+  const { api, projection, refreshProjection, setError } = useJarvis()
+  const notifications = projectionList(record(projection), 'notifications')
+  const [filter, setFilter] = useState<NotificationFilter>('all')
+  const visible = useMemo(() => filterNotifications(notifications, filter), [filter, notifications])
+  async function dismiss(item: JsonRecord) {
+    try { await api.post(`/notifications/${encodeURIComponent(stringValue(item.notification_id || item.id))}/dismiss`, {}); await refreshProjection() }
+    catch (error) { setError(error instanceof Error ? error.message : 'Notification dismissal failed.') }
+  }
+  const filters: Array<[NotificationFilter, string]> = [['all', 'All'], ['unread', 'Unread'], ['important', 'Important'], ['proactive', 'Proactive'], ['system', 'System']]
+  return <div className="screen"><SectionHeading eyebrow="OWNER ATTENTION" title="Notifications" description="Unread, proactive, and system notices from the existing notification service." /><div className="filter-tabs large">{filters.map(([value, label]) => <button className={filter === value ? 'selected' : ''} key={value} onClick={() => setFilter(value)}>{label}{value === 'all' && <span> {notifications.length}</span>}</button>)}</div><Panel>{visible.length ? <div className="notification-list">{visible.map((item) => <div className="notification-row" key={stringValue(item.notification_id || item.id)}><span className={`notification-marker ${tone(item.severity)}`} /><div><div className="card-heading"><strong>{stringValue(item.title, 'Notification')}</strong><StatusBadge value={item.severity || 'info'} /></div><p>{stringValue(item.message, '')}</p><span className="muted small">{dateValue(item.created_at)}</span></div>{!item.dismissed && <Button variant="quiet" onClick={() => void dismiss(item)}>Dismiss</Button>}</div>)}</div> : <EmptyState title="No notifications in this view" detail="JARVIS will surface important changes without turning local operation into noise." />}</Panel></div>
+}
 
 export function ApprovalsScreen() { const { api, projection, refreshProjection, setError } = useJarvis(); const approvals = projectionList(record(projection), 'approvals'); async function decision(item: JsonRecord, approved: boolean) { const runId = stringValue(item.run_id || item.pending_run_id, ''); if (!runId) return; try { await api.post(`/approvals/${encodeURIComponent(stringValue(item.approval_id || item.id))}`, { run_id: runId, approved }); await refreshProjection() } catch (error) { setError(error instanceof Error ? error.message : 'Approval decision failed.') } } return <div className="screen"><SectionHeading eyebrow="OWNER CONTROL" title="Approval center" description="Consequential actions remain backend-authoritative. Each decision is owner-scoped, CSRF-protected, and audited." /><div className="screen-grid two">{approvals.length ? approvals.map((item) => <ApprovalCard key={stringValue(item.approval_id || item.id)} approval={item} onDecision={(approval, approved) => void decision(approval, approved)} />) : <Panel><EmptyState title="No pending approvals" detail="JARVIS will show the exact action, target, reason, risk, and sanitized preview here." /></Panel>}</div></div> }
 
@@ -133,4 +200,4 @@ export function EngineeringScreen() { const { projection } = useJarvis(); const 
 
 export function BrowserScreen() { return <div className="screen"><SectionHeading eyebrow="SAFE CAPABILITY SURFACE" title="Browser" description="Browser work remains behind the existing browser authority, session, permission, and approval policy." /><Panel className="deferred-panel"><span className="deferred-icon">↗</span><h2>No live browser job</h2><StatusBadge value="unavailable" /><p>The product UI will display real browser capability results when a configured local controller reports them. It does not fabricate tabs, navigation, or web content.</p><Link className="button secondary" to="/approvals">Review approvals</Link></Panel></div> }
 
-export function SettingsScreen() { const { projection, screenData } = useJarvis(); const health = screenData.health; const system = projectionRecord(record(projection), 'system'); const model = record(health.local_model || health.model); const voice = projectionRecord(record(projection), 'voice'); return <div className="screen"><SectionHeading eyebrow="CONFIGURATION" title="Settings & health" description="Operational truth, privacy controls, and safe product surfaces for the local runtime." /><div className="settings-grid"><FramePanel title="System health" status={health.state || system.runtime_state}><DetailList values={{ Core: health.state || system.runtime_state || 'Not reported', Database: health.database || 'Not reported', 'Local model': model.available || system.model_available ? 'Ready' : 'Unavailable', Provider: model.provider || system.model_provider || 'Not reported', Voice: voice.state || 'No active voice session', Venom: record(health.venom).status || 'Not connected' }} /></FramePanel><FramePanel title="Privacy center" eyebrow="LOCAL POLICY"><DetailList values={{ 'Local brain': 'YES', 'Raw audio stored': 'NO', 'Raw screenshots stored': 'NO', 'Core cloud dependency': 'NO', Memory: 'Inspectable / editable / deletable', Credentials: 'HttpOnly session boundary' }} /><div className="notice">Physical voice acceptance is intentionally deferred. Normal voice operational state remains visible when the backend reports it.</div></FramePanel><FramePanel title="Preferences" eyebrow="PRODUCT SURFACE"><div className="settings-list"><Link to="/settings">General <span>Appearance, notifications, permissions</span></Link><Link to="/devices">Devices <span>Registered device status</span></Link><Link to="/skills">Skills <span>Policy-controlled capabilities</span></Link><Link to="/context">Advanced diagnostics <span>Existing local repair surface remains available</span></Link></div></FramePanel><FramePanel title="Voice status" eyebrow="OPERATIONAL ONLY"><div className="voice-status"><JWaveform active={['listening', 'speaking'].includes(stringValue(voice.state))} /><DetailList values={{ State: statusText(voice.state || 'sleeping'), Microphone: stringValue(voice.microphone, 'Not reported'), Speaker: stringValue(voice.speaker, 'Not reported'), Wake: stringValue(voice.wake, 'Not reported'), STT: stringValue(voice.stt, 'Not reported'), TTS: stringValue(voice.tts, 'Not reported') }} /></div></FramePanel></div></div> }
+export function SettingsScreen() { const { projection, screenData } = useJarvis(); const health = screenData.health; const system = projectionRecord(record(projection), 'system'); const model = record(health.local_model || health.model); const voice = projectionRecord(record(projection), 'voice'); return <div className="screen"><SectionHeading eyebrow="CONFIGURATION" title="Settings & health" description="Operational truth, privacy controls, and safe product surfaces for the local runtime." /><div className="settings-grid"><FramePanel title="System health" status={health.state || system.runtime_state}><DetailList values={{ Core: health.state || system.runtime_state || 'Not reported', Database: health.database || 'Not reported', 'Local model': model.available || system.model_available ? 'Ready' : 'Unavailable', Provider: model.provider || system.model_provider || 'Not reported', Voice: voice.state || 'No active voice session', Venom: record(health.venom).status || 'Not connected' }} /></FramePanel><FramePanel title="Privacy center" eyebrow="LOCAL POLICY"><DetailList values={{ 'Local brain': 'YES', 'Raw audio stored': 'NO', 'Raw screenshots stored': 'NO', 'Core cloud dependency': 'NO', Memory: 'Inspectable / editable / deletable', Credentials: 'HttpOnly session boundary' }} /><div className="notice">Physical voice acceptance is intentionally deferred. Normal voice operational state remains visible when the backend reports it.</div></FramePanel><FramePanel title="Preferences" eyebrow="PRODUCT SURFACE"><div className="settings-list"><div>General <span>Read-only in this release; no editable preference control is exposed.</span></div><Link to="/devices">Devices <span>Registered device status</span></Link><Link to="/skills">Skills <span>Policy-controlled capabilities</span></Link><div>Advanced diagnostics <span>Available through the desktop repair surface; not a fabricated in-app route.</span></div></div></FramePanel><FramePanel title="Voice status" eyebrow="OPERATIONAL ONLY"><div className="voice-status"><JWaveform active={['listening', 'speaking'].includes(stringValue(voice.state))} /><DetailList values={{ State: statusText(voice.state || 'sleeping'), Microphone: stringValue(voice.microphone, 'Not reported'), Speaker: stringValue(voice.speaker, 'Not reported'), Wake: stringValue(voice.wake, 'Not reported'), STT: stringValue(voice.stt, 'Not reported'), TTS: stringValue(voice.tts, 'Not reported') }} /></div></FramePanel></div></div> }
