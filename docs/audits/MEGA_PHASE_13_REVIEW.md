@@ -199,3 +199,52 @@ Physical voice remains **PENDING / PARTIAL**. No human wake performance,
 English/Arabic/mixed transcription quality, audibility, Egyptian-Arabic
 quality, physical barge-in, or device-loss recovery PASS is inferred from
 automated or subprocess checks.
+
+## Physical Microphone Capture Reliability Closure
+
+The old 250 ms `sounddevice.rec()` one-shot has been replaced by an explicit
+2--5 second, approximately 3 second `InputStream` probe. The probe presents
+“Speak now...” before capture, keeps Tk responsive, reports only peak/RMS/dBFS,
+500 ms ambient baseline, speech delta, duration, frame count, clipping, and
+usable-signal status, and never returns or persists PCM. A live meter is
+updated from a worker-safe UI queue.
+
+The existing runner is paused and restored in `finally` for explicit probes.
+Candidate calibration tests stable host API/name selectors, ranks measured
+speech signal before API preference, and offers one-click persistence/rebind.
+Input/output duplex is opened together for an explicit PASS/PARTIAL result.
+Recoverable PortAudio status flags are counted while healthy frames continue;
+runner diagnostics expose input frames/bytes, callback time/faults, wake
+frames/detections/score, and pre/post-resample safe signal metrics. Silero VAD
+and wake scores are exposed as status only. Acceptance microphone PASS now
+requires a usable probe, and wake PASS requires backend detections.
+
+The authority boundary is unchanged: no second VoiceCore, scheduler, EventBus,
+ModelGateway, model server, SQL cleanup, cloud audio path, raw-audio file, or
+transcript retention was added.
+
+### Final closure validation
+
+- New physical microphone capture focused file: **15 passed, 0 failed**.
+- Phase 13 regression plus productization/remediation: **88 passed, 0 failed**.
+- Phase 08--12 regression: **154 passed, 25 subtests passed, 0 failed**.
+- Full repository suite: **306 passed, 25 subtests passed, 0 failed**.
+- `python -m compileall src tests`: **PASS**.
+- `git diff --check`: **PASS**.
+
+### Bounded local host probe
+
+- Configured input opened through the isolated voice interpreter at native
+  **44,100 Hz**, receiving **84,672 frames** with **0 callback faults**.
+- No human speech was supplied during the probe: peak **-90.31 dBFS**, RMS
+  **-96.70 dBFS**, ambient RMS **-96.71 dBFS**, speech delta **0.02 dB**,
+  `usable_signal=false`. This is the expected non-acceptance result for a
+  silent automated run and is not a human voice PASS.
+- Configured output `MME / Headphones (soundcore R60i NC)` was absent from the
+  current PortAudio enumeration, so simultaneous duplex was **PARTIAL** and
+  failed closed without opening an unselected endpoint.
+
+Physical human acceptance remains **PENDING / PARTIAL**. The only required
+operator action is to speak when the in-app probe says “Speak now...” and then
+complete the guided wake/voice steps; no terminal or manual numeric device
+index is required.

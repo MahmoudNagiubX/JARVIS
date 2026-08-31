@@ -21,7 +21,7 @@ from ..voice.adapters import SoundDeviceInput, SoundDevicePlayback
 from ..voice.config import VoiceDeviceSelector
 from ..voice.runtime import LocalVoiceRuntime, VoiceRunnerState, build_local_voice_runtime
 from .assets import VoiceAssetManager
-from .audio import AudioDeviceCatalog
+from .audio import AudioDeviceCatalog, MicrophoneCandidateResult, MicrophoneMeterUpdate, MicrophoneProbeResult, PROBE_DEFAULT_SECONDS
 from .config import DesktopProductConfig, ProductConfigError, product_config_path
 from .instance import SingleInstanceLock
 from .installation import ensure_product_interpreter, repository_root
@@ -318,12 +318,88 @@ class JarvisDesktopLifecycle:
         self.settings = updated
         return self._refresh_status()
 
-    def test_microphone(self, selector: VoiceDeviceSelector | None = None) -> float:
+    async def test_microphone(
+        self,
+        selector: VoiceDeviceSelector | None = None,
+        *,
+        seconds: float = PROBE_DEFAULT_SECONDS,
+        on_update: Callable[[MicrophoneMeterUpdate], None] | None = None,
+    ) -> MicrophoneProbeResult:
+        """Pause the existing runner and run one explicit metrics-only probe."""
+
         settings = self.settings or self._load_settings(defaults=True)
         selected = selector or settings.input_device
         if selected is None:
             raise RuntimeError("microphone_selector_required")
-        return self.audio_catalog.transient_input_level(selected)
+        paused = await self._pause_for_audio_diagnostic()
+        try:
+            return await asyncio.to_thread(
+                self.audio_catalog.probe_microphone,
+                selected,
+                seconds=seconds,
+                on_update=on_update,
+            )
+        finally:
+            await self._restore_after_audio_diagnostic(paused)
+
+    async def find_best_microphone(
+        self,
+        selector: VoiceDeviceSelector | None = None,
+        *,
+        seconds: float = PROBE_DEFAULT_SECONDS,
+        on_update: Callable[[MicrophoneMeterUpdate], None] | None = None,
+    ) -> tuple[MicrophoneCandidateResult, ...]:
+        """Probe plausible local inputs without exposing endpoint indexes."""
+
+        settings = self.settings or self._load_settings(defaults=True)
+        selected = selector or settings.input_device
+        paused = await self._pause_for_audio_diagnostic()
+        try:
+            return await asyncio.to_thread(
+                self.audio_catalog.probe_input_candidates,
+                selected,
+                seconds=seconds,
+                on_update=on_update,
+            )
+        finally:
+            await self._restore_after_audio_diagnostic(paused)
+
+    async def use_best_microphone(self, selector: VoiceDeviceSelector) -> DesktopStatus:
+        """Persist a stable selector and rebind the existing runner once."""
+
+        settings = self.settings or self._load_settings(defaults=True)
+        if settings.output_device is None:
+            raise RuntimeError("speaker_selector_required")
+        return await self.update_audio_devices(selector, settings.output_device)
+
+    async def check_bluetooth_duplex(self) -> str:
+        settings = self.settings or self._load_settings(defaults=True)
+        if settings.input_device is None or settings.output_device is None:
+            return "PARTIAL"
+        paused = await self._pause_for_audio_diagnostic()
+        try:
+            return await asyncio.to_thread(
+                self.audio_catalog.check_duplex,
+                settings.input_device,
+                settings.output_device,
+            )
+        finally:
+            await self._restore_after_audio_diagnostic(paused)
+
+    async def _pause_for_audio_diagnostic(self) -> bool:
+        runner = self.runner
+        if runner is None:
+            return False
+        state = getattr(runner, "state", None)
+        state_value = getattr(state, "value", state)
+        if state is VoiceRunnerState.RUNNING or state_value == VoiceRunnerState.RUNNING.value:
+            await runner.pause()
+            return True
+        return False
+
+    async def _restore_after_audio_diagnostic(self, paused: bool) -> None:
+        if paused and self.runner is not None:
+            await self.runner.resume()
 
     async def test_speaker(self) -> bool:
         """Play the fixed safe speaker test through the existing VoiceCore."""

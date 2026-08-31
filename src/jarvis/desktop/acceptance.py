@@ -106,9 +106,23 @@ _STEP_INSTRUCTIONS: dict[AcceptanceStep, tuple[str, str]] = {
 class PhysicalAcceptanceController:
     """Headless controller seam used by the in-app human acceptance wizard."""
 
-    def __init__(self, wizard: PhysicalAcceptanceWizard | None = None) -> None:
+    def __init__(
+        self,
+        wizard: PhysicalAcceptanceWizard | None = None,
+        *,
+        require_microphone_probe: bool = False,
+        require_wake_detections: bool = False,
+    ) -> None:
         self.wizard = wizard or PhysicalAcceptanceWizard()
         self._index = 0
+        self.require_microphone_probe = require_microphone_probe
+        self.require_wake_detections = require_wake_detections
+        self._microphone_probe: Any | None = None
+
+    def set_microphone_probe(self, result: Any) -> None:
+        """Attach metrics-only evidence from the real live microphone probe."""
+
+        self._microphone_probe = result
 
     @property
     def complete(self) -> bool:
@@ -147,6 +161,12 @@ class PhysicalAcceptanceController:
         step = self.current_step
         if step is None:
             raise ValueError("physical acceptance wizard is already complete")
+        if step is AcceptanceStep.MICROPHONE and status == "PASS" and self.require_microphone_probe:
+            if self._microphone_probe is None or not bool(getattr(self._microphone_probe, "usable_signal", False)):
+                raise ValueError("microphone PASS requires a usable live probe")
+        if step is AcceptanceStep.WAKE and status == "PASS" and self.require_wake_detections:
+            if expected is None or count is None or count < expected:
+                raise ValueError("wake PASS requires backend detections")
         result = self.wizard.record(
             step,
             status,

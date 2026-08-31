@@ -11,6 +11,7 @@ import asyncio
 import math
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -20,6 +21,36 @@ from .config import VoiceDeviceSelector
 
 class VoiceDeviceError(RuntimeError):
     """A safe, stable reason for a configured local audio endpoint failure."""
+
+
+@dataclass(frozen=True, slots=True)
+class SignalMetrics:
+    """Metrics-only view of an ephemeral mono PCM buffer."""
+
+    peak: float
+    rms: float
+    peak_dbfs: float
+    rms_dbfs: float
+
+
+def pcm16_metrics(audio: bytes) -> SignalMetrics:
+    """Measure PCM without exposing or retaining the samples."""
+
+    if len(audio) < 2:
+        return SignalMetrics(0.0, 0.0, -240.0, -240.0)
+    count = len(audio) // 2
+    peak = 0.0
+    sum_squares = 0.0
+    for offset in range(0, count * 2, 2):
+        amplitude = abs(int.from_bytes(audio[offset : offset + 2], "little", signed=True)) / 32768.0
+        peak = max(peak, amplitude)
+        sum_squares += amplitude * amplitude
+    rms = math.sqrt(sum_squares / count) if count else 0.0
+    return SignalMetrics(peak, rms, _dbfs(peak), _dbfs(rms))
+
+
+def _dbfs(amplitude: float) -> float:
+    return 20.0 * math.log10(max(abs(float(amplitude)), 1e-12))
 
 
 def resolve_sounddevice_device(sounddevice: object, selector: VoiceDeviceSelector, direction: str) -> int:
@@ -83,7 +114,8 @@ class SoundDeviceInput:
         self.selector = selector
         self.sample_rate = 0
         self._stream: object | None = None
-        self._faulted = False
+        self._callback_fault_count = 0
+        self._last_callback_status: str | None = None
 
     def start(self, callback: Callable[[bytes], None]) -> None:
         import sounddevice as sd
@@ -98,8 +130,10 @@ class SoundDeviceInput:
 
         def _callback(indata: object, _frames: int, _time: object, status: object) -> None:
             if status:
-                self._faulted = True
-                return
+                self._callback_fault_count += 1
+                self._last_callback_status = str(status)[:120]
+            # PortAudio overflow/underflow flags are recoverable status, not a
+            # device-loss signal. Healthy frames after one must still flow.
             callback(bytes(indata))
 
         self._stream = sd.InputStream(
@@ -113,8 +147,17 @@ class SoundDeviceInput:
         self._stream.start()  # type: ignore[union-attr]
 
     def take_fault(self) -> bool:
-        faulted, self._faulted = self._faulted, False
-        return faulted
+        # Status flags are reported through counters and deliberately do not
+        # force the runner to tear down a healthy capture stream.
+        return False
+
+    @property
+    def callback_fault_count(self) -> int:
+        return self._callback_fault_count
+
+    @property
+    def last_callback_status(self) -> str | None:
+        return self._last_callback_status
 
     def stop(self) -> None:
         if self._stream is not None:
@@ -194,6 +237,11 @@ class OpenWakeWordDetector:
         self.cooldown_seconds = cooldown_seconds
         self._model: object | None = None
         self._last_detection = -math.inf
+        self._last_score = 0.0
+
+    @property
+    def last_score(self) -> float:
+        return self._last_score
 
     def detect_pcm(self, audio: bytes) -> bool:
         if not audio:
@@ -204,6 +252,7 @@ class OpenWakeWordDetector:
 
         scores = self._model.predict(np.frombuffer(audio, dtype=np.int16))  # type: ignore[union-attr]
         score = max((float(value) for value in scores.values()), default=0.0)
+        self._last_score = score
         now = time.monotonic()
         if score < self.threshold or now - self._last_detection < self.cooldown_seconds:
             return False
@@ -236,6 +285,21 @@ class SileroVad:
         self._session: object | None = None
         self._state: object | None = None
         self._remainder = bytearray()
+        self._frames_processed = 0
+        self._last_score = 0.0
+        self._last_speech = False
+
+    @property
+    def frames_processed(self) -> int:
+        return self._frames_processed
+
+    @property
+    def last_score(self) -> float:
+        return self._last_score
+
+    @property
+    def last_speech(self) -> bool:
+        return self._last_speech
 
     def is_speech(self, audio: bytes) -> bool:
         if self._session is None:
@@ -256,12 +320,17 @@ class SileroVad:
                     "sr": np.array(16_000, dtype=np.int64),
                 },
             )
-            speech = speech or float(output[0][0]) >= self.threshold
+            self._last_score = float(output[0][0])
+            self._frames_processed += 1
+            self._last_speech = self._last_score >= self.threshold
+            speech = speech or self._last_speech
         return speech
 
     def reset(self) -> None:
         self._remainder.clear()
         self._state = None
+        self._last_score = 0.0
+        self._last_speech = False
         if self._session is not None:
             self._load_state()
 
@@ -305,6 +374,15 @@ class SpeechEndpointDetector:
         self._active = False
         self._speech_ms = 0.0
         self._silence_ms = 0.0
+
+    @property
+    def vad_diagnostics(self) -> dict[str, int | float | bool]:
+        vad = self.vad
+        return {
+            "vad_frames_processed": int(getattr(vad, "frames_processed", 0)),
+            "vad_last_score": float(getattr(vad, "last_score", 0.0)),
+            "vad_detected_speech": bool(getattr(vad, "last_speech", self._active)),
+        }
 
     @property
     def speech_active(self) -> bool:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import queue
+import time
 from enum import StrEnum
 from typing import Protocol
 
@@ -17,7 +18,9 @@ from .adapters import (
     SoundDeviceInput,
     SoundDevicePlayback,
     SpeechEndpointDetector,
+    SignalMetrics,
     VoiceDeviceError,
+    pcm16_metrics,
     resample_pcm_16le,
 )
 from .config import VoiceRuntimeConfig
@@ -85,6 +88,13 @@ class LocalVoiceRuntime:
         self._turn_task: asyncio.Task[None] | None = None
         self._wake_command_task: asyncio.Task[None] | None = None
         self._wake_detections = 0
+        self._input_frames_received = 0
+        self._input_bytes_received = 0
+        self._last_input_frame_monotonic: float | None = None
+        self._wake_frames_received = 0
+        self._last_wake_score: float | None = None
+        self._last_input_metrics: SignalMetrics | None = None
+        self._last_resampled_metrics: SignalMetrics | None = None
 
     @property
     def state(self) -> VoiceRunnerState:
@@ -104,6 +114,59 @@ class LocalVoiceRuntime:
         """Count safe wake detections for the in-app physical acceptance flow."""
 
         return self._wake_detections
+
+    @property
+    def input_frames_received(self) -> int:
+        return self._input_frames_received
+
+    @property
+    def input_bytes_received(self) -> int:
+        return self._input_bytes_received
+
+    @property
+    def last_input_frame_monotonic(self) -> float | None:
+        return self._last_input_frame_monotonic
+
+    @property
+    def audio_callback_fault_count(self) -> int:
+        return int(getattr(self.audio_input, "callback_fault_count", 0))
+
+    @property
+    def wake_frames_received(self) -> int:
+        return self._wake_frames_received
+
+    @property
+    def last_wake_score(self) -> float | None:
+        return self._last_wake_score
+
+    @property
+    def diagnostics(self) -> dict[str, int | float | None | bool | dict[str, float] | str]:
+        """Return safe counters and levels; never include PCM or transcripts."""
+
+        def metrics(value: SignalMetrics | None) -> dict[str, float] | None:
+            if value is None:
+                return None
+            return {
+                "peak": value.peak,
+                "rms": value.rms,
+                "peak_dbfs": value.peak_dbfs,
+                "rms_dbfs": value.rms_dbfs,
+            }
+
+        vad = getattr(self.endpointing, "vad_diagnostics", {})
+        return {
+            "input_frames_received": self.input_frames_received,
+            "input_bytes_received": self.input_bytes_received,
+            "last_input_frame_monotonic": self.last_input_frame_monotonic,
+            "audio_callback_fault_count": self.audio_callback_fault_count,
+            "wake_frames_received": self.wake_frames_received,
+            "wake_detections": self.wake_detections,
+            "last_wake_score": self.last_wake_score,
+            "wake_threshold": getattr(self.wake, "threshold", None),
+            "input_signal": metrics(self._last_input_metrics),
+            "resampled_signal": metrics(self._last_resampled_metrics),
+            **vad,
+        }
 
     async def start(
         self,
@@ -260,8 +323,12 @@ class LocalVoiceRuntime:
     def _capture_callback(self, audio: bytes) -> None:
         """Audio-thread work: copy into a bounded queue and return immediately."""
 
+        copied = bytes(audio)
+        self._input_bytes_received += len(copied)
+        self._input_frames_received += len(copied) // 2
+        self._last_input_frame_monotonic = time.monotonic()
         try:
-            self._pcm.put_nowait(bytes(audio))
+            self._pcm.put_nowait(copied)
         except queue.Full:
             self._queue_overruns += 1
             self._total_queue_overruns += 1
@@ -287,7 +354,9 @@ class LocalVoiceRuntime:
                 await asyncio.sleep(0.01)
                 continue
             try:
+                self._last_input_metrics = pcm16_metrics(captured)
                 pcm = resample_pcm_16le(captured, self.audio_input.sample_rate, 16_000)
+                self._last_resampled_metrics = pcm16_metrics(pcm)
                 await self._process_pcm(pcm)
             finally:
                 del captured
@@ -295,7 +364,7 @@ class LocalVoiceRuntime:
     async def _process_pcm(self, pcm: bytes) -> None:
         state_before = self.voice.state
         if state_before in {VoiceSessionState.SLEEPING, VoiceSessionState.THINKING, VoiceSessionState.SPEAKING}:
-            if self.wake.detect_pcm(pcm):
+            if self._detect_wake(pcm):
                 self._wake_detections += 1
                 self.endpointing.discard()
                 await self._cancel_wake_command_timer()
@@ -304,7 +373,7 @@ class LocalVoiceRuntime:
             return
         if state_before not in {VoiceSessionState.LISTENING, VoiceSessionState.FOLLOW_UP}:
             return
-        if state_before is VoiceSessionState.LISTENING and self.wake_command_timer_active and self.wake.detect_pcm(pcm):
+        if state_before is VoiceSessionState.LISTENING and self.wake_command_timer_active and self._detect_wake(pcm):
             self._wake_detections += 1
             self.endpointing.discard()
             await self._arm_wake_command_timer()
@@ -331,6 +400,14 @@ class LocalVoiceRuntime:
         if utterance is None or self._turn_task is not None and not self._turn_task.done():
             return
         self._turn_task = asyncio.create_task(self._dispatch(utterance))
+
+    def _detect_wake(self, pcm: bytes) -> bool:
+        self._wake_frames_received += 1
+        detected = self.wake.detect_pcm(pcm)
+        score = getattr(self.wake, "last_score", None)
+        if isinstance(score, (int, float)):
+            self._last_wake_score = float(score)
+        return detected
 
     async def _dispatch(self, utterance: bytes) -> None:
         try:

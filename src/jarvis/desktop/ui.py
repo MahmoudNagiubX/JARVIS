@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import queue
+import threading
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +12,7 @@ from typing import Any, Callable
 
 from ..voice.config import VoiceDeviceSelector
 from .acceptance import AcceptanceStep, PhysicalAcceptanceController
+from .audio import MicrophoneCandidateResult, MicrophoneMeterUpdate, MicrophoneProbeResult
 from .diagnostics import DesktopDiagnostics
 from .lifecycle import DesktopPhase, JarvisDesktopLifecycle
 
@@ -95,6 +98,11 @@ class DesktopWindow:
         self._output_combo: Any | None = None
         self._input_values: dict[str, VoiceDeviceSelector] = {}
         self._output_values: dict[str, VoiceDeviceSelector] = {}
+        self._microphone_probe_thread: threading.Thread | None = None
+        self._last_microphone_probe: MicrophoneProbeResult | None = None
+        self._best_microphone: MicrophoneCandidateResult | None = None
+        self._acceptance_controller: PhysicalAcceptanceController | None = None
+        self._ui_events: queue.Queue[Callable[[], Any]] = queue.Queue()
         self._voice_var: Any | None = None
         self._autostart_var: Any | None = None
         self._follow_up_var: Any | None = None
@@ -103,7 +111,16 @@ class DesktopWindow:
         return self.view_model.snapshot()
 
     def available_actions(self, *, setup: bool = False) -> tuple[str, ...]:
-        actions = ["Test Microphone", "Test Speaker", "Repair This Device", "Acceptance Wizard", "Diagnostics"]
+        actions = [
+            "Test Microphone",
+            "Find Best Microphone",
+            "Use Best Microphone",
+            "Check Bluetooth Duplex",
+            "Test Speaker",
+            "Repair This Device",
+            "Acceptance Wizard",
+            "Diagnostics",
+        ]
         if setup:
             actions.append("Finish Setup")
         else:
@@ -183,6 +200,9 @@ class DesktopWindow:
         buttons = tk.Frame(self.body, bg="#080b10")
         buttons.pack(fill="x", pady=10)
         self._button(buttons, "Test Microphone", self._test_microphone)
+        self._button(buttons, "Find Best Microphone", self._find_best_microphone)
+        self._button(buttons, "Use Best Microphone", self._use_best_microphone)
+        self._button(buttons, "Check Bluetooth Duplex", self._check_bluetooth_duplex)
         self._button(buttons, "Test Speaker", self._test_speaker)
         self._button(buttons, "Acceptance Wizard", self.show_acceptance)
         self._button(buttons, "Diagnostics", self.show_diagnostics)
@@ -245,6 +265,8 @@ class DesktopWindow:
         output_device = self._output_values.get(self._output_combo.get()) if self._output_combo is not None else None
         try:
             self.run_async(self.lifecycle.update_audio_devices(input_device, output_device))
+            self._last_microphone_probe = None
+            self._best_microphone = None
             self.render()
         except Exception as exc:
             self._safe_detail(f"Audio selector unavailable: {exc.__class__.__name__}")
@@ -271,11 +293,135 @@ class DesktopWindow:
             self._safe_detail(f"Startup setting unavailable: {exc.__class__.__name__}")
 
     def _test_microphone(self) -> None:
-        try:
-            level = self.lifecycle.test_microphone()
-            self._safe_detail(f"Microphone level observed: {level:.3f} (transient only)")
-        except Exception as exc:
-            self._safe_detail(f"Microphone test unavailable: {exc.__class__.__name__}")
+        if self._microphone_probe_thread is not None and self._microphone_probe_thread.is_alive():
+            return
+        self._safe_detail("Speak now...")
+
+        def on_update(update: MicrophoneMeterUpdate) -> None:
+            self._after_ui(lambda: self._render_microphone_meter(update))
+
+        def worker() -> None:
+            try:
+                result = self.run_async(self.lifecycle.test_microphone(on_update=on_update))
+            except Exception as exc:
+                self._after_ui(lambda: self._safe_detail(f"Microphone test unavailable: {exc.__class__.__name__}"))
+                return
+            self._after_ui(lambda: self._finish_microphone_probe(result))
+
+        self._microphone_probe_thread = threading.Thread(target=worker, name="jarvis-microphone-probe", daemon=True)
+        self._begin_ui_pump()
+        self._microphone_probe_thread.start()
+
+    def _render_microphone_meter(self, update: MicrophoneMeterUpdate) -> None:
+        bars = max(0, min(20, round(update.rms * 50)))
+        self._safe_detail(
+            f"Listening...\n"
+            f"{'█' * bars}{'·' * (20 - bars)}  {update.rms_dbfs:.1f} dBFS"
+        )
+
+    def _finish_microphone_probe(self, result: MicrophoneProbeResult) -> None:
+        self._last_microphone_probe = result
+        if self._acceptance_controller is not None:
+            self._acceptance_controller.set_microphone_probe(result)
+        quality = _signal_quality(result)
+        sample_rate = getattr(getattr(self.lifecycle, "audio_catalog", None), "last_probe_sample_rate", 0)
+        self._safe_detail(
+            f"Signal: {quality}\n"
+            f"Peak: {result.peak_dbfs:.1f} dBFS\n"
+            f"Average: {result.rms_dbfs:.1f} dBFS\n"
+            f"Speech delta: {result.speech_delta_db:.1f} dB\n"
+            f"Native sample rate: {sample_rate} Hz"
+        )
+
+    def _find_best_microphone(self) -> None:
+        if self._microphone_probe_thread is not None and self._microphone_probe_thread.is_alive():
+            return
+        self._safe_detail("Speak normally for a few seconds...")
+
+        def on_update(update: MicrophoneMeterUpdate) -> None:
+            self._after_ui(lambda: self._render_microphone_meter(update))
+
+        def worker() -> None:
+            try:
+                candidates = self.run_async(self.lifecycle.find_best_microphone(on_update=on_update))
+            except Exception as exc:
+                self._after_ui(lambda: self._safe_detail(f"Microphone search unavailable: {exc.__class__.__name__}"))
+                return
+            self._after_ui(lambda: self._finish_best_microphone(candidates))
+
+        self._microphone_probe_thread = threading.Thread(target=worker, name="jarvis-microphone-search", daemon=True)
+        self._begin_ui_pump()
+        self._microphone_probe_thread.start()
+
+    def _finish_best_microphone(self, candidates: tuple[MicrophoneCandidateResult, ...]) -> None:
+        self._best_microphone = candidates[0] if candidates else None
+        if self._best_microphone is None:
+            self._safe_detail("No usable microphone endpoint was found.")
+            return
+        result = self._best_microphone.result
+        self._safe_detail(
+            f"Best microphone: {_selector_label(self._best_microphone.selector)}\n"
+            f"Signal: {_signal_quality(result)}\n"
+            f"Speech delta: {result.speech_delta_db:.1f} dB\n"
+            "Click Use Best Microphone to persist and rebind."
+        )
+
+    def _use_best_microphone(self) -> None:
+        if self._best_microphone is None:
+            self._safe_detail("Run Find Best Microphone first.")
+            return
+        selector = self._best_microphone.selector
+
+        def worker() -> None:
+            try:
+                self.run_async(self.lifecycle.use_best_microphone(selector))
+            except Exception as exc:
+                self._after_ui(lambda: self._safe_detail(f"Microphone selection unavailable: {exc.__class__.__name__}"))
+                return
+            def finish() -> None:
+                self._last_microphone_probe = self._best_microphone.result if self._best_microphone is not None else None
+                self._safe_detail(f"Using microphone: {_selector_label(selector)}")
+
+            self._after_ui(finish)
+
+        self._microphone_probe_thread = threading.Thread(target=worker, name="jarvis-microphone-select", daemon=True)
+        self._begin_ui_pump()
+        self._microphone_probe_thread.start()
+
+    def _check_bluetooth_duplex(self) -> None:
+        if self._microphone_probe_thread is not None and self._microphone_probe_thread.is_alive():
+            return
+
+        def worker() -> None:
+            try:
+                result = self.run_async(self.lifecycle.check_bluetooth_duplex())
+            except Exception as exc:
+                self._after_ui(lambda: self._safe_detail(f"Bluetooth duplex unavailable: {exc.__class__.__name__}"))
+                return
+            self._after_ui(lambda: self._safe_detail(f"Bluetooth Duplex: {result}"))
+
+        self._microphone_probe_thread = threading.Thread(target=worker, name="jarvis-bluetooth-duplex", daemon=True)
+        self._begin_ui_pump()
+        self._microphone_probe_thread.start()
+
+    def _after_ui(self, callback: Callable[[], Any]) -> None:
+        self._ui_events.put(callback)
+
+    def _begin_ui_pump(self) -> None:
+        if self.root is not None:
+            self.root.after(50, self._drain_ui_events)
+
+    def _drain_ui_events(self) -> None:
+        while True:
+            try:
+                callback = self._ui_events.get_nowait()
+            except queue.Empty:
+                break
+            callback()
+        if self._microphone_probe_thread is not None and self._microphone_probe_thread.is_alive():
+            self._begin_ui_pump()
+        elif not self._ui_events.empty():
+            self._begin_ui_pump()
 
     def _test_speaker(self) -> None:
         try:
@@ -304,7 +450,10 @@ class DesktopWindow:
         import tkinter as tk
         from tkinter import messagebox
 
-        controller = PhysicalAcceptanceController()
+        controller = PhysicalAcceptanceController(require_microphone_probe=True, require_wake_detections=True)
+        if self._last_microphone_probe is not None:
+            controller.set_microphone_probe(self._last_microphone_probe)
+        self._acceptance_controller = controller
         wizard = tk.Toplevel(self.root)
         wizard.title("JARVIS Physical Acceptance")
         wizard.geometry("720x560")
@@ -336,7 +485,17 @@ class DesktopWindow:
                 step_label.configure(text=f"{controller._index + 1}/{len(AcceptanceStep)}  {title_text}")
                 instruction.configure(text=controller.instruction())
             if current is AcceptanceStep.WAKE and self.lifecycle.runner is not None:
-                count_label.configure(text=f"Detected wakes: {getattr(self.lifecycle.runner, 'wake_detections', 0)} / 10")
+                runner_diagnostics = getattr(self.lifecycle.runner, "diagnostics", {})
+                score = runner_diagnostics.get("last_wake_score")
+                threshold = runner_diagnostics.get("wake_threshold")
+                score_text = f"{float(score):.2f}" if isinstance(score, (int, float)) else "--"
+                threshold_text = f"{float(threshold):.2f}" if isinstance(threshold, (int, float)) else "--"
+                count_label.configure(
+                    text=(
+                        f"Detected wakes: {getattr(self.lifecycle.runner, 'wake_detections', 0)} / 10  "
+                        f"Wake confidence: {score_text}  Threshold: {threshold_text}"
+                    )
+                )
             else:
                 count_label.configure(text="Human observation is required; automated tests cannot mark PASS.")
             steps_text.configure(state="normal")
@@ -411,3 +570,11 @@ class DesktopWindow:
 
 def _selector_label(selector: VoiceDeviceSelector) -> str:
     return f"{selector.host_api} / {selector.name}"
+
+
+def _signal_quality(result: MicrophoneProbeResult) -> str:
+    if result.usable_signal and not result.clipping:
+        return "GOOD"
+    if result.frames_seen and result.rms > 0.001:
+        return "WEAK"
+    return "FAIL"
