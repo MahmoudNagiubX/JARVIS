@@ -654,6 +654,16 @@ class DesktopWindow:
         if self.root is not None:
             self.root.mainloop()
 
+    def run_background(self) -> bool:
+        """Keep the desktop process alive while the browser is the product UI."""
+
+        if self.root is None and not self._build():
+            return False
+        if self.root is not None:
+            self.root.withdraw()
+            self.root.mainloop()
+        return True
+
     def close(self) -> None:
         if self._acceptance_close is not None:
             close_acceptance = self._acceptance_close

@@ -58,6 +58,7 @@ class DesktopStatus:
     voice_state: str = "unavailable"
     model: Any | None = None
     hud_url: str | None = None
+    app_url: str | None = None
 
 
 RuntimeFactory = Callable[[JarvisConfig], JarvisRuntime]
@@ -101,6 +102,7 @@ class JarvisDesktopLifecycle:
         self.device: Any | None = None
         self._hud_server: Any | None = None
         self._hud_thread: threading.Thread | None = None
+        self._app_bootstrap_url: str | None = None
         self._status = DesktopStatus(DesktopPhase.CREATED, "not_started")
 
     @property
@@ -208,7 +210,7 @@ class JarvisDesktopLifecycle:
                 return self._status
             self.identity, self.device = identity, device
             await runtime.start()
-            self._start_hud()
+            self._start_hud(credential)
             model_status, brain_ready = await self._model_status(runtime)
             settings = self._reconcile_audio_and_assets(settings)
             settings.save(self.config_path)
@@ -233,7 +235,7 @@ class JarvisDesktopLifecycle:
             if not brain_ready:
                 reason = "local_brain_unavailable"
             phase = DesktopPhase.READY if brain_ready and voice_state in {"running", "paused"} else DesktopPhase.DEGRADED
-            self._status = DesktopStatus(phase, reason, identity.identity_id, device.device_id, brain_ready, voice_state, model_status, self._hud_url())
+            self._status = DesktopStatus(phase, reason, identity.identity_id, device.device_id, brain_ready, voice_state, model_status, self._hud_url(), self._app_url())
             self._log(f"desktop_start_{phase.value}")
             return self._status
         except Exception as exc:
@@ -251,6 +253,7 @@ class JarvisDesktopLifecycle:
             if self._hud_server is not None:
                 self._hud_server.shutdown()
                 self._hud_server = None
+            self._app_bootstrap_url = None
             if self.runtime is not None:
                 if getattr(self.runtime, "state", None) is not None and getattr(self.runtime.state, "value", None) == "ready":
                     await self.runtime.shutdown()
@@ -463,8 +466,12 @@ class JarvisDesktopLifecycle:
         return None
 
     def open_hud(self) -> bool:
-        url = self._hud_url()
-        return bool(url and webbrowser.open(url))
+        url = self._app_url() or self._hud_url()
+        opened = bool(url and webbrowser.open(url))
+        if opened and url == self._app_bootstrap_url:
+            self._app_bootstrap_url = None
+            self._status = replace(self._status, app_url=self._app_base_url())
+        return opened
 
     def _load_settings(self, *, defaults: bool) -> DesktopProductConfig:
         try:
@@ -575,13 +582,16 @@ class JarvisDesktopLifecycle:
         self.instance_lock.release()
         self._status = replace(self._status, phase=DesktopPhase.DEGRADED, reason=reason, voice_state="unavailable")
 
-    def _start_hud(self) -> None:
+    def _start_hud(self, credential: str | None = None) -> None:
         if self._hud_server is not None or self.runtime is None:
             return
         from ..api.core import CoreApplication
         from ..api.http import CoreHttpServer
 
         self._hud_server = CoreHttpServer(CoreApplication(self.runtime), host="127.0.0.1", port=0)
+        if credential and self.identity is not None and self.device is not None:
+            token = self._hud_server.issue_desktop_bootstrap(credential, self.device.device_id, self.identity.identity_id)
+            self._app_bootstrap_url = f"{self._app_base_url()}#bootstrap={token}"
         self._hud_thread = threading.Thread(target=self._hud_server.serve_forever, name="jarvis-hud", daemon=True)
         self._hud_thread.start()
 
@@ -590,13 +600,21 @@ class JarvisDesktopLifecycle:
             return None
         return f"http://{self._hud_server.address[0]}:{self._hud_server.address[1]}/hud"
 
+    def _app_base_url(self) -> str | None:
+        if self._hud_server is None:
+            return None
+        return f"http://{self._hud_server.address[0]}:{self._hud_server.address[1]}/app"
+
+    def _app_url(self) -> str | None:
+        return self._app_bootstrap_url or self._app_base_url()
+
     def _refresh_status(self) -> DesktopStatus:
         runner_state = getattr(getattr(self.runner, "state", None), "value", self._status.voice_state)
         if runner_state == VoiceRunnerState.PAUSED.value:
             phase = DesktopPhase.PAUSED
         else:
             phase = self._status.phase
-        return replace(self._status, phase=phase, voice_state=runner_state, hud_url=self._hud_url())
+        return replace(self._status, phase=phase, voice_state=runner_state, hud_url=self._hud_url(), app_url=self._app_url())
 
     def _secret_store(self) -> LocalSecretStore:
         if self.secret_store is None:

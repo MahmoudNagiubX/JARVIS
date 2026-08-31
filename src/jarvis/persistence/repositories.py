@@ -255,6 +255,19 @@ class RuntimeRepository:
             parse_time(row["created_at"]), parse_time(row["updated_at"]), parse_time(row["last_message_at"]),
         )
 
+    def conversations(self, owner_id: str) -> list[ConversationRecord]:
+        rows = self.database.connection.execute(
+            "SELECT * FROM conversations WHERE owner_id = ? ORDER BY updated_at DESC, id",
+            (owner_id,),
+        ).fetchall()
+        return [
+            ConversationRecord(
+                row["id"], row["owner_id"], row["created_by_device_id"], row["title"], row["status"],
+                parse_time(row["created_at"]), parse_time(row["updated_at"]), parse_time(row["last_message_at"]),
+            )
+            for row in rows
+        ]
+
     def message_by_client_id(self, client_message_id: str) -> MessageRecord | None:
         row = self.database.connection.execute(
             "SELECT * FROM messages WHERE client_message_id = ?", (client_message_id,)

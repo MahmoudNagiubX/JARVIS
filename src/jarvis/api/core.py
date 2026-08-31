@@ -134,6 +134,15 @@ class CoreApplication:
             "replayed": outcome.replayed,
         }
 
+    async def list_conversations(self, owner_id: str) -> list[dict[str, Any]]:
+        return [asdict(item) for item in self.runtime.repository.conversations(owner_id)]
+
+    async def conversation_messages(self, owner_id: str, conversation_id: str) -> list[dict[str, Any]] | None:
+        conversation = self.runtime.repository.conversation(conversation_id)
+        if conversation is None or conversation.owner_id != owner_id:
+            return None
+        return [asdict(item) for item in self.runtime.repository.messages(conversation_id)]
+
     async def resume_approval(
         self,
         approval_id: str,

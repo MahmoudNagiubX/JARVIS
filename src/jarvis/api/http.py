@@ -7,12 +7,15 @@ import json
 import queue
 import time
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import UTC, datetime
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from typing import Any
 
 from .core import CoreApplication
-from .auth import StreamTicketService
+from .auth import DesktopSessionService, StreamTicketService
 from ..experience.projections import ExperienceProjection
 from ..experience.websocket import accept_key, close_frame, ping_frame, text_frame
 
@@ -22,12 +25,14 @@ class CoreHttpServer:
 
     PUBLIC_GET_ROUTES = frozenset({"/health", "/hud", "/experience/hud"})
     _STREAM_GET_ROUTES = frozenset({"/experience/events", "/experience/events/ws", "/events/stream"})
+    _APP_STATIC_ROOT = Path(__file__).resolve().parents[1] / "ui_static"
 
     def __init__(self, application: CoreApplication, host: str = "127.0.0.1", port: int = 8787) -> None:
         if host not in {"127.0.0.1", "::1", "localhost"}:
             raise ValueError("JARVIS HTTP server must remain loopback-only")
         self.application = application
         self.stream_tickets = StreamTicketService()
+        self.desktop_sessions = DesktopSessionService()
         self.server = ThreadingHTTPServer((host, port), self._handler())
 
     @property
@@ -41,9 +46,15 @@ class CoreHttpServer:
         self.server.shutdown()
         self.server.server_close()
 
+    def issue_desktop_bootstrap(self, credential: str, device_id: str, identity_id: str) -> str:
+        """Issue a one-use browser handoff without exposing a device credential in a URL."""
+
+        return self.desktop_sessions.issue_bootstrap(credential, device_id, identity_id)
+
     def _handler(self) -> type[BaseHTTPRequestHandler]:
         application = self.application
         ticket_service = self.stream_tickets
+        desktop_sessions = self.desktop_sessions
         public_get_routes = self.PUBLIC_GET_ROUTES
         stream_get_routes = self._STREAM_GET_ROUTES
 
@@ -60,7 +71,7 @@ class CoreHttpServer:
                     # ordinary GET authenticates before route dispatch; stream
                     # routes authenticate through their ticket-aware boundary.
                     principal = None
-                    if route not in public_get_routes and route not in stream_get_routes:
+                    if route not in public_get_routes and route not in stream_get_routes and not self._is_public_app_route(route):
                         principal = self._authenticated(values)
                     if route == "/health":
                         self._respond(HTTPStatus.OK, asyncio.run(application.health()))
@@ -81,6 +92,10 @@ class CoreHttpServer:
                         self.send_header("Content-Length", str(len(encoded)))
                         self.end_headers()
                         self.wfile.write(encoded)
+                    elif route == "/app" or route == "/app/index.html":
+                        self._serve_app_asset("index.html")
+                    elif route.startswith("/app/"):
+                        self._serve_app_asset(route.removeprefix("/app/"))
                     elif route == "/experience/state":
                         self._respond(HTTPStatus.OK, asyncio.run(application.experience_state(self._authenticated(values).identity.owner_id)))
                     elif route == "/experience/system":
@@ -245,6 +260,23 @@ class CoreHttpServer:
                         self._respond(HTTPStatus.OK, {"automations": asyncio.run(application.list_automations(self._owner(query)))})
                     elif route == "/evaluations":
                         self._respond(HTTPStatus.OK, {"evaluations": asyncio.run(application.list_evaluations(self._owner(query)))})
+                    elif route == "/auth/session":
+                        session = self._desktop_session()
+                        if session is None:
+                            raise PermissionError("desktop_session_required")
+                        self._respond(HTTPStatus.OK, {
+                            "owner_id": session.owner_id,
+                            "identity_id": session.identity_id,
+                            "device_id": session.device_id,
+                            "csrf_token": session.csrf_token,
+                            "expires_at": session.expires_at.isoformat(),
+                        })
+                    elif route == "/conversations":
+                        self._respond(HTTPStatus.OK, {"conversations": asyncio.run(application.list_conversations(self._owner(query)))})
+                    elif route.startswith("/conversations/") and route.endswith("/messages"):
+                        parts = route.strip("/").split("/")
+                        result = asyncio.run(application.conversation_messages(self._owner(query), parts[1]))
+                        self._respond(HTTPStatus.OK if result is not None else HTTPStatus.NOT_FOUND, {"messages": result or []} if result is not None else {"error": "not_found"})
                     else:
                         self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
                 except PermissionError:
@@ -259,6 +291,28 @@ class CoreHttpServer:
                 route = self._route(parsed.path)
                 try:
                     body = self._body()
+                    if route == "/auth/desktop-session":
+                        bootstrap = desktop_sessions.consume_bootstrap(str(body.get("bootstrap", "")))
+                        if bootstrap is None:
+                            raise PermissionError("invalid_desktop_bootstrap")
+                        principal = asyncio.run(application.authenticate_principal(
+                            bootstrap.credential, bootstrap.device_id, bootstrap.identity_id,
+                        ))
+                        if principal is None:
+                            raise PermissionError("desktop_bootstrap_principal_not_found")
+                        session = desktop_sessions.create_session(principal)
+                        self._respond(
+                            HTTPStatus.CREATED,
+                            {
+                                "owner_id": session.owner_id,
+                                "identity_id": session.identity_id,
+                                "device_id": session.device_id,
+                                "csrf_token": session.csrf_token,
+                                "expires_at": session.expires_at.isoformat(),
+                            },
+                            {"Set-Cookie": self._session_cookie(session.token, session.expires_at)},
+                        )
+                        return
                     if route == "/satellites/connect":
                         principal = self._authenticated(body)
                         self._respond(HTTPStatus.CREATED, asyncio.run(application.satellite_connect(principal, body)))
@@ -283,12 +337,7 @@ class CoreHttpServer:
                         self._respond(HTTPStatus.CREATED, {"stream_ticket": ticket.token, "scope": ticket.scope, "expires_at": ticket.expires_at.isoformat()})
                         return
                     if route == "/messages":
-                        principal = asyncio.run(application.authenticate_principal(
-                            str(body["credential"]), str(body["device_id"]), str(body["identity_id"])
-                        ))
-                        if principal is None:
-                            self._respond(HTTPStatus.UNAUTHORIZED, {"error": "principal_not_found"})
-                            return
+                        principal = self._authenticated(body)
                         result = asyncio.run(application.send_message(
                             str(body["text"]), principal.identity, principal.device,
                             session_id=body.get("session_id"),
@@ -336,12 +385,7 @@ class CoreHttpServer:
                         return
                     if route.startswith("/approvals/"):
                         approval_id = route.rsplit("/", 1)[-1]
-                        principal = asyncio.run(application.authenticate_principal(
-                            str(body["credential"]), str(body["device_id"]), str(body["identity_id"])
-                        ))
-                        if principal is None:
-                            self._respond(HTTPStatus.UNAUTHORIZED, {"error": "principal_not_found"})
-                            return
+                        principal = self._authenticated(body)
                         result = asyncio.run(application.resume_approval(
                             approval_id, str(body["run_id"]), principal.identity, principal.device,
                             bool(body["approved"]), principal.identity.identity_id,
@@ -350,12 +394,7 @@ class CoreHttpServer:
                         return
                     if route.startswith("/runs/") and route.endswith("/cancel"):
                         run_id = route.split("/")[-2]
-                        principal = asyncio.run(application.authenticate_principal(
-                            str(body["credential"]), str(body["device_id"]), str(body["identity_id"])
-                        ))
-                        if principal is None:
-                            self._respond(HTTPStatus.UNAUTHORIZED, {"error": "principal_not_found"})
-                            return
+                        principal = self._authenticated(body)
                         result = asyncio.run(application.cancel(run_id, principal.identity, principal.device))
                         self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
                         return
@@ -706,6 +745,50 @@ class CoreHttpServer:
                 route = path.removeprefix("/v1")
                 return route.rstrip("/") or "/"
 
+            @staticmethod
+            def _is_public_app_route(route: str) -> bool:
+                return route == "/app" or route.startswith("/app/")
+
+            def _desktop_session(self) -> Any | None:
+                return desktop_sessions.get_session(self._cookie("jarvis_session"))
+
+            def _cookie(self, name: str) -> str | None:
+                parsed = SimpleCookie()
+                try:
+                    parsed.load(self.headers.get("Cookie", ""))
+                except Exception:
+                    return None
+                morsel = parsed.get(name)
+                return morsel.value if morsel is not None else None
+
+            @staticmethod
+            def _session_cookie(token: str, expires_at: Any) -> str:
+                max_age = max(1, int((expires_at - datetime.now(UTC)).total_seconds()))
+                return f"jarvis_session={token}; Max-Age={max_age}; HttpOnly; SameSite=Strict; Path=/"
+
+            def _serve_app_asset(self, relative: str) -> None:
+                root = CoreHttpServer._APP_STATIC_ROOT.resolve()
+                candidate = (root / relative).resolve()
+                if not candidate.is_relative_to(root) or not candidate.is_file():
+                    self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                    return
+                content_types = {
+                    ".css": "text/css; charset=utf-8",
+                    ".html": "text/html; charset=utf-8",
+                    ".js": "text/javascript; charset=utf-8",
+                }
+                payload = candidate.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", content_types.get(candidate.suffix, "application/octet-stream"))
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+                )
+                self.end_headers()
+                self.wfile.write(payload)
+
             def _websocket(self, query: dict[str, list[str]]) -> None:
                 """Serve a bounded authenticated local fan-out connection.
 
@@ -813,14 +896,39 @@ class CoreHttpServer:
                 values.setdefault("device_id", self.headers.get("X-JARVIS-Device-ID") or self.headers.get("X-Device-ID"))
                 values.setdefault("identity_id", self.headers.get("X-JARVIS-Identity-ID") or self.headers.get("X-Identity-ID"))
                 required = ("credential", "device_id", "identity_id")
-                if any(not values.get(key) for key in required):
+                if not any(not values.get(key) for key in required):
+                    principal = asyncio.run(application.authenticate_principal(
+                        str(values["credential"]), str(values["device_id"]), str(values["identity_id"])
+                    ))
+                    if principal is None:
+                        raise PermissionError("principal_not_found")
+                    return principal
+                session = self._desktop_session()
+                if session is None:
                     raise PermissionError("credential_device_and_identity_required")
-                principal = asyncio.run(application.authenticate_principal(
-                    str(values["credential"]), str(values["device_id"]), str(values["identity_id"])
-                ))
-                if principal is None:
-                    raise PermissionError("principal_not_found")
+                if self.command != "GET":
+                    self._validate_origin()
+                if self.command != "GET" and self.headers.get("X-JARVIS-CSRF") != session.csrf_token:
+                    raise PermissionError("csrf_required")
+                principal = asyncio.run(application.principal(session.identity_id, session.device_id))
+                if principal is None or principal.identity.owner_id != session.owner_id:
+                    desktop_sessions.revoke_session(session.token)
+                    raise PermissionError("desktop_session_principal_not_found")
                 return principal
+
+            def _validate_origin(self) -> None:
+                origin = self.headers.get("Origin")
+                if not origin:
+                    return
+                parsed = urlparse(origin)
+                if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+                    raise PermissionError("origin_not_allowed")
+                try:
+                    port = parsed.port
+                except ValueError as exc:
+                    raise PermissionError("origin_not_allowed") from exc
+                if port != self.server.server_port:
+                    raise PermissionError("origin_not_allowed")
 
             def _stream_principal(self, query: dict[str, list[str]], scope: str) -> Any:
                 token = query.get("stream_ticket", [None])[0]
@@ -843,11 +951,13 @@ class CoreHttpServer:
                     raise ValueError("request body must be a JSON object")
                 return decoded
 
-            def _respond(self, status: HTTPStatus, payload: Any) -> None:
+            def _respond(self, status: HTTPStatus, payload: Any, headers: dict[str, str] | None = None) -> None:
                 encoded = json.dumps(payload, default=str, ensure_ascii=False).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(encoded)))
+                for key, value in (headers or {}).items():
+                    self.send_header(key, value)
                 self.end_headers()
                 self.wfile.write(encoded)
 

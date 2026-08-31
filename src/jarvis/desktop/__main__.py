@@ -67,9 +67,11 @@ def main() -> None:
         if status.phase.value == "setup_required":
             if not window.show_setup(on_complete=lambda: submit(lifecycle.start())):
                 return
-        elif not window.show_status():
-            return
-        window.run()
+            window.run()
+        else:
+            lifecycle.open_hud()
+            if not window.run_background():
+                return
     finally:
         if tray is not None:
             tray.stop()

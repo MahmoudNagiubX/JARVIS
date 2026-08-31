@@ -14,3 +14,7 @@ experience API. The shell itself contains no credentials or secrets.
 The current stdlib adapter uses SSE snapshots for broad client compatibility.
 Replacing it with authenticated WebSocket transport is an edge-adapter change,
 not a change to the projection or authority model.
+
+Phase 14 adds the primary local Command Center at `/v1/app`. The legacy HUD
+remains available as a compatibility and diagnostic fallback; normal desktop
+launch opens the Command Center through the same loopback server.

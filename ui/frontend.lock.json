@@ -1,0 +1,6 @@
+{
+  "format": 1,
+  "runtime": "dependency-free-static",
+  "dependencies": {},
+  "entrypoints": ["index.html", "styles.css", "app.js"]
+}

@@ -18,6 +18,11 @@ authorization values, raw audio, and raw frames are never presented in the
 HUD timeline. UI actions must call an application use case and cannot mutate a
 projection or decide an approval.
 
+The Phase 14 Command Center is a local static client of this same boundary.
+Its `/app` shell has no runtime state of its own; browser session state is
+short-lived and the UI rebuilds owner-scoped projections and conversation
+history from the backend after load/reconnect.
+
 The projection maps real lifecycle events to visible states including
 `STARTING`, `IDLE`, `LISTENING`, `PROCESSING`, `TOOL_EXECUTING`,
 `WORKER_RUNNING`, `APPROVAL_REQUIRED`, `RESEARCHING`, `ENGINEERING_TASK`,
