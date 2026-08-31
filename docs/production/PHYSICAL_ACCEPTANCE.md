@@ -46,3 +46,10 @@ passed. This is **PARTIAL**, not a human physical voice PASS: no human wake,
 English/Arabic/mixed transcription, audible speaker, Egyptian-Arabic quality,
 barge-in observation, or device-loss recovery result is claimed. Sanitized
 metrics-only evidence is in `docs/phase13/evidence/PHYSICAL_LOCAL_VOICE.json`.
+
+The zero-touch desktop productization adds an in-app acceptance wizard and
+sanitized evidence boundary. Its automated closure is recorded in
+`docs/phase13/evidence/PHYSICAL_REALTIME_VOICE.json`; it remains
+**PENDING / PARTIAL** until a human completes the microphone, wake, audible
+speaker, bilingual, follow-up, and barge-in steps in the app. No automated
+product test is a physical voice claim.

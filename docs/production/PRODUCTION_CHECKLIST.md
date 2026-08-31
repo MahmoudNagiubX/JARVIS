@@ -18,7 +18,7 @@
 | Venom | DEFERRED | No valid local transport endpoint |
 | Home Assistant/MQTT | DEFERRED | Restricted seam only; no listener |
 | Email/Telegram/Discord | DEFERRED | No credentials; no real send |
-| Startup/autostart | PARTIAL | Explicit lifecycle and host strategy; no task installed |
+| Startup/autostart | PASS (automated) | Current-user reversible no-console startup registration is product-owned; physical login gate remains operator acceptance |
 | Crash recovery | PASS | Core and research transient reconciliation |
 | Security hardening | PASS | Loopback, scopes, limits, redaction, untrusted evidence |
 | Performance profiling | PASS | Standard-library profiler and observability counters |

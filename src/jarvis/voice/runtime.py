@@ -28,6 +28,7 @@ class VoiceRunnerState(StrEnum):
     CREATED = "created"
     STARTING = "starting"
     RUNNING = "running"
+    PAUSED = "paused"
     DEGRADED = "degraded"
     STOPPING = "stopping"
     STOPPED = "stopped"
@@ -145,6 +146,34 @@ class LocalVoiceRuntime:
         self.audio_output.close()
         await self.voice.stop()
         self._state = VoiceRunnerState.STOPPED
+
+    async def pause(self) -> None:
+        """Disarm capture while keeping the existing runner reusable."""
+
+        if self._state is VoiceRunnerState.PAUSED:
+            return
+        if self._state is not VoiceRunnerState.RUNNING:
+            raise RuntimeError("local voice runner is not running")
+        await self._cancel_wake_command_timer()
+        self.endpointing.discard()
+        self.audio_input.stop()
+        await self.voice.barge_in()
+        await self.voice.return_to_sleeping()
+        await self.voice.report_runtime_event("voice.paused", state=EventState.ACCEPTED)
+        self._state = VoiceRunnerState.PAUSED
+
+    async def resume(self) -> None:
+        """Re-arm the same configured microphone and wake boundary."""
+
+        if self._state is VoiceRunnerState.RUNNING:
+            return
+        if self._state is not VoiceRunnerState.PAUSED:
+            raise RuntimeError("local voice runner is not paused")
+        self.audio_input.start(self._capture_callback)
+        self._state = VoiceRunnerState.RUNNING
+        await self.voice.report_runtime_event("voice.resumed", state=EventState.ACCEPTED)
+        if self._consumer_task is None or self._consumer_task.done():
+            self._consumer_task = asyncio.create_task(self._consume())
 
     async def recover_device(self, attempts: int = 3) -> bool:
         """Re-open only the configured selector after an input endpoint loss."""

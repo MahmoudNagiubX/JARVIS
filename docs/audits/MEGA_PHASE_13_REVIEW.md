@@ -107,3 +107,41 @@ clears a held reservation without a leaked timer.
 - `python -m compileall src tests`: **PASS**.
 - `git diff --check`: **PASS**.
 - Physical human acceptance: **PENDING / PARTIAL**.
+
+## Zero-touch desktop productization closure
+
+The final productization pass adds a single `JarvisDesktopLifecycle`
+orchestrator around the already-composed runtime. It adds versioned safe user
+settings, current-user Windows Credential Manager with DPAPI fallback, explicit
+first-run enrollment/reuse through `IdentityService`, product-device repair,
+stable audio selector reconciliation, local speech-asset validation, a
+current-user no-console startup entry, single-instance locking, tray/status
+control, diagnostics, and sanitized in-app acceptance evidence. The existing
+HUD remains the primary experience surface; no second dashboard or domain
+authority was introduced.
+
+The product path does not read `JARVIS_VOICE_CREDENTIAL`,
+`JARVIS_VOICE_IDENTITY_ID`, or `JARVIS_VOICE_DEVICE_ID`. It does not download
+or copy Qwen, start a second model server, persist raw credentials, retain
+audio/transcripts/TTS bytes, expand public GET routes, or revoke unrelated
+devices. Voice pause/resume reuses the existing `LocalVoiceRuntime` and
+`VoiceCore`.
+
+### Final automated closure
+
+- Productization focused matrix: **29 passed, 0 failed**.
+- Phase 13 regression plus productization: **59 passed, 0 failed**.
+- Phase 12 suite including focused closure: **45 passed, 0 failed**.
+- Phase 11 regression: **26 passed, 0 failed**.
+- Phase 10 regression: **31 passed, 0 failed**.
+- Phase 09 regression: **39 passed, 0 failed**.
+- Phase 08 regression: **13 passed, 0 failed**.
+- Full repository suite: **277 passed, 25 subtests passed, 0 failed**.
+- `python -m compileall src tests`: **PASS**.
+- `git diff --check`: **PASS**.
+
+Physical voice remains **PENDING / PARTIAL**. The productization tests do not
+claim human wake performance, transcription quality, speaker audibility,
+Egyptian-Arabic intelligibility, physical barge-in, or device-loss recovery.
+The sanitized product evidence is in
+`docs/phase13/evidence/PHYSICAL_REALTIME_VOICE.json`.
