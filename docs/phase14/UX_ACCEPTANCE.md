@@ -17,6 +17,10 @@ The focused product test covers:
 The final exact counts are recorded in `docs/audits/MEGA_PHASE_14_REVIEW.md`
 after the repository-wide verification pass.
 
+Current focused evidence before the final repository gate is 11 frontend tests
+and 8 Phase 14 Python regression tests, all passing. The Phase 13 regression is
+107 passed; final full-suite counts are recorded after the last clean run.
+
 ## Human review checklist
 
 1. Start JARVIS from the existing Start Menu/desktop lifecycle.

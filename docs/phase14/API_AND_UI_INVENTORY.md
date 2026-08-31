@@ -50,3 +50,11 @@ The local static application provides Home, Chat, Missions, Memory, Current
 Context, Automation, Research, Engineering, Browser, Skills, Devices,
 Notifications, Approvals, Activity, and Settings. Empty and unavailable
 states are derived from backend projections rather than production fixtures.
+
+## Final implementation record
+
+The implementation lives under `ui/src/` as one React application with one
+typed API adapter, one experience-event normalizer, one browser projection
+store, and route-owned screens. `python ui/build_frontend.py` produces exactly
+`index.html`, `styles.css`, and `app.js` under `src/jarvis/ui_static`; runtime
+serving remains the existing local `/v1/app/*` boundary.

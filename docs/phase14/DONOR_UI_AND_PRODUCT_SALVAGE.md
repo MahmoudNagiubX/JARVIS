@@ -1,10 +1,10 @@
 # Donor UI and product salvage report
 
-The local donor inventory was inspected before implementation. No donor source,
-asset, icon, font, model, or runtime dependency was copied into JARVIS. The
-Phase 14 UI is a small dependency-free product-owned static surface because
-the installed environment had no Node/npm runtime and the available donors
-introduced larger dependency or authority surfaces than this phase needs.
+The local donor inventory was inspected before implementation. The final UI
+adapts only three file-cleared, MIT-licensed presentational components from
+donor 03. No donor backend, runtime authority, mock data, model, icon, font,
+or remote asset was copied into JARVIS. All data and actions remain behind the
+existing JARVIS API and experience projection.
 
 | Donor | Component/file | License | Value | Decision | Destination |
 |---|---|---|---|---|---|
@@ -20,7 +20,7 @@ introduced larger dependency or authority surfaces than this phase needs.
 | `09_ui_reference/panpenek-jarvis` | UI reference | No root license evidence surfaced | Visual comparison only | Reject for source/assets; no copy | None |
 | `09_ui_reference/raghava-jarvis` | UI reference | MIT | Visual comparison only | Reference only; no source copied | None |
 
-The resulting frontend uses original dark technical styling, no Marvel assets,
-no donor components, no CDN, and no cloud frontend runtime. Consequently no
-Phase 14 donor notice file is required beyond this explicit salvage report and
-the repository inventory update.
+The resulting frontend uses product-owned dark technical styling, no Marvel
+assets, no CDN, and no cloud frontend runtime. The adapted components are
+`ui/src/components/hud/JHudFrame.tsx`, `JArcReactor.tsx`, and `JWaveform.tsx`;
+their donor source and MIT treatment are recorded in the Phase 14 salvage map.

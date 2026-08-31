@@ -1,16 +1,16 @@
 # Phase 14 frontend architecture
 
-The Command Center is a product-owned dependency-free static frontend:
+The Command Center is a product-owned React/TypeScript/Vite frontend:
 
 ```text
-ui/src/{index.html,styles.css,app.js}
+ui/src/{main.tsx,app/,components/,screens/,lib/,state/,styles.css}
         -> python ui/build_frontend.py
 src/jarvis/ui_static/{index.html,styles.css,app.js}
         -> CoreHttpServer /v1/app/*
 ```
 
-`ui/frontend.lock.json` records the deliberate zero-dependency runtime. No
-Node/npm process is needed at product startup, and the build is deterministic
+`ui/frontend.lock.json` and `ui/package-lock.json` record the pinned frontend
+build surface. No Node/npm process is needed at product startup, and the build is deterministic
 because it copies a fixed entrypoint set and rejects remote URL references.
 Python package data includes the compiled static assets.
 

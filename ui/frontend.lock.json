@@ -1,6 +1,15 @@
 {
   "format": 1,
-  "runtime": "dependency-free-static",
-  "dependencies": {},
-  "entrypoints": ["index.html", "styles.css", "app.js"]
+  "runtime": "react-typescript-vite-local",
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-router-dom": "7.18.3",
+    "vite": "7.3.6",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  },
+  "entrypoints": ["index.html", "styles.css", "app.js"],
+  "remote_assets": false,
+  "runtime_server_required": false
 }

@@ -28,7 +28,7 @@ surfaces. It is not a final distribution notice.
 | Linux Voice Assistant | `C:\Jarivs\06_voice_room\linux-voice-assistant\LICENSE.md`, `README.md` | Apache-2.0 donor | Voice/satellite reference only; no source or dependency copied |
 | OCR/local vision/OmniParser/UI-TARS | No runtime package selected | Deferred/reference-only | Capability/provider boundaries only; no models downloaded or copied |
 | Phase 07 evaluation/anomaly helpers | No runtime package selected | Not introduced | Stdlib deterministic baselines only; no model or cloud grader |
-| Phase 14 Command Center frontend | `ui/frontend.lock.json`, `ui/src/` | Product-owned; zero runtime dependencies | Original local HTML/CSS/JS; no donor code, icons, fonts, CDN, or cloud frontend runtime |
+| Phase 14 Command Center frontend | `ui/frontend.lock.json`, `ui/package-lock.json`, `ui/src/` | React 19.2.8, React DOM 19.2.8, React Router DOM 7.18.3; Vite 7.3.6, TypeScript 5.9.3, Vitest 3.2.7; `npm audit`: 0 vulnerabilities | Local compiled assets only at runtime; no remote assets, icons, fonts, CDN, cloud frontend runtime, or donor backend. Three MIT-cleared donor 03 presentation components are adapted with attribution in the Phase 14 donor records. |
 
 ## Declared dependency surfaces reviewed
 
@@ -59,5 +59,6 @@ models, or bundled assets. Microsoft UFO is an adapter boundary only and is
 not merged. Playwright, Home Assistant, MQTT, email, Telegram, and Discord are
 optional adapter surfaces only; none is a runtime dependency. Phase 07 adds no
 runtime dependency, downloads no models, and modifies no donor or BMO
-repository. Phase 14's donor decisions and no-copy result are recorded in
-`docs/phase14/DONOR_UI_AND_PRODUCT_SALVAGE.md`.
+repository. Phase 14's donor decisions and exact adapted paths are recorded in
+`docs/phase14/DONOR_UI_AND_PRODUCT_SALVAGE.md` and
+`docs/phase14/UI_DONOR_SALVAGE_MAP.md`.
