@@ -22,7 +22,7 @@ from jarvis.desktop.lifecycle import (
 )
 from jarvis.desktop.model import LocalModelDiscovery
 from jarvis.desktop.logging import DesktopOperationalLogger
-from jarvis.desktop.secrets import MemorySecretStore, SecretStoreUnavailable, platform_secret_store
+from jarvis.desktop.secret_store import MemorySecretStore, SecretStoreUnavailable, platform_secret_store
 from jarvis.desktop.startup import UserStartupManager
 from jarvis.desktop.tray import TrayController
 from jarvis.voice.config import VoiceDeviceSelector

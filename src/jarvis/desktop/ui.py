@@ -1,25 +1,114 @@
-"""Small first-run/status window that delegates state to the existing HUD."""
+"""Zero-touch setup, settings, diagnostics, and physical acceptance UI."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
+from ..voice.config import VoiceDeviceSelector
+from .acceptance import AcceptanceStep, PhysicalAcceptanceController
 from .diagnostics import DesktopDiagnostics
 from .lifecycle import DesktopPhase, JarvisDesktopLifecycle
 
 
+@dataclass(frozen=True, slots=True)
+class DesktopUiSnapshot:
+    phase: str
+    statuses: tuple[tuple[str, str], ...]
+    microphone_options: tuple[str, ...]
+    speaker_options: tuple[str, ...]
+    microphone: str | None
+    speaker: str | None
+    voice_enabled: bool
+    autostart: bool
+    follow_up_seconds: float
+    repair_available: bool
+
+
+class DesktopViewModel:
+    """Headless UI seam; it exposes no credentials, transcripts, or audio."""
+
+    def __init__(self, lifecycle: JarvisDesktopLifecycle) -> None:
+        self.lifecycle = lifecycle
+
+    def snapshot(self) -> DesktopUiSnapshot:
+        status = self.lifecycle.status
+        settings = self.lifecycle.settings
+        if settings is None:
+            try:
+                settings = self.lifecycle._load_settings(defaults=True)  # type: ignore[attr-defined]
+            except Exception:
+                settings = None
+        input_options: list[str] = []
+        output_options: list[str] = []
+        try:
+            devices = self.lifecycle.audio_catalog.enumerate()
+            input_options = [_selector_label(item.selector) for item in devices if item.direction == "input"]
+            output_options = [_selector_label(item.selector) for item in devices if item.direction == "output"]
+        except Exception:
+            pass
+        input_selector = _selector_label(settings.input_device) if settings and settings.input_device else None
+        output_selector = _selector_label(settings.output_device) if settings and settings.output_device else None
+        validation = settings.last_validation if settings else {}
+        statuses = (
+            ("Core", "READY" if self.lifecycle.runtime is not None else "PENDING"),
+            ("Identity", "READY" if status.identity_id else "PENDING"),
+            ("Local Device", "READY" if status.device_id else "PENDING"),
+            ("Local Brain", "READY" if status.brain_ready else ("PREPARING" if status.phase is DesktopPhase.STARTING else "UNAVAILABLE")),
+            ("Microphone", "READY" if input_selector else "SELECT"),
+            ("Speaker", "READY" if output_selector else "SELECT"),
+            ("Wake", "READY" if validation.get("wake") == "ready" else ("OFF" if settings and not settings.voice_enabled else "PENDING")),
+            ("STT", "READY" if validation.get("stt") == "ready" else ("OFF" if settings and not settings.voice_enabled else "PENDING")),
+            ("TTS", "READY" if validation.get("english_tts") == "ready" and validation.get("arabic_tts") == "ready" else ("OFF" if settings and not settings.voice_enabled else "PENDING")),
+        )
+        return DesktopUiSnapshot(
+            phase=status.phase.value.upper(),
+            statuses=statuses,
+            microphone_options=tuple(dict.fromkeys(input_options)),
+            speaker_options=tuple(dict.fromkeys(output_options)),
+            microphone=input_selector,
+            speaker=output_selector,
+            voice_enabled=settings.voice_enabled if settings else True,
+            autostart=settings.autostart if settings else self.lifecycle.startup_manager.enabled(),
+            follow_up_seconds=settings.follow_up_seconds if settings else 30.0,
+            repair_available=status.phase is DesktopPhase.DEGRADED and bool(status.identity_id),
+        )
+
+
 class DesktopWindow:
-    """Dependency-light Tk window; the existing authenticated HUD remains primary."""
+    """Tk product shell delegating runtime authority to ``JarvisDesktopLifecycle``."""
 
     def __init__(self, lifecycle: JarvisDesktopLifecycle, *, run_async: Callable[[Awaitable[Any]], Any] | None = None) -> None:
         self.lifecycle = lifecycle
         self.run_async = run_async or asyncio.run
+        self.view_model = DesktopViewModel(lifecycle)
         self.root: Any | None = None
         self.state_label: Any | None = None
         self.detail_label: Any | None = None
+        self.body: Any | None = None
         self._build_error: Exception | None = None
+        self._row_values: dict[str, Any] = {}
+        self._input_combo: Any | None = None
+        self._output_combo: Any | None = None
+        self._input_values: dict[str, VoiceDeviceSelector] = {}
+        self._output_values: dict[str, VoiceDeviceSelector] = {}
+        self._voice_var: Any | None = None
+        self._autostart_var: Any | None = None
+        self._follow_up_var: Any | None = None
+
+    def snapshot(self) -> DesktopUiSnapshot:
+        return self.view_model.snapshot()
+
+    def available_actions(self, *, setup: bool = False) -> tuple[str, ...]:
+        actions = ["Test Microphone", "Test Speaker", "Repair This Device", "Acceptance Wizard", "Diagnostics"]
+        if setup:
+            actions.append("Finish Setup")
+        else:
+            actions.extend(("Open JARVIS HUD", "Pause Voice", "Resume Voice"))
+        return tuple(actions)
 
     def _build(self) -> bool:
         try:
@@ -30,60 +119,255 @@ class DesktopWindow:
             return False
         self.root = tk.Tk()
         self.root.title("JARVIS")
-        self.root.geometry("540x420")
+        self.root.geometry("720x720")
         self.root.configure(bg="#080b10")
         title = tk.Label(self.root, text="J.A.R.V.I.S.", fg="#67e8f9", bg="#080b10", font=("Consolas", 22, "bold"))
-        title.pack(pady=(26, 8))
+        title.pack(pady=(20, 4))
         self.state_label = tk.Label(self.root, text="STARTING", fg="#86efac", bg="#080b10", font=("Consolas", 18, "bold"))
-        self.state_label.pack(pady=8)
-        self.detail_label = tk.Label(self.root, text="", fg="#8aa0b4", bg="#080b10", justify="left", font=("Consolas", 11))
-        self.detail_label.pack(pady=16)
+        self.state_label.pack(pady=4)
+        self.detail_label = tk.Label(self.root, text="", fg="#8aa0b4", bg="#080b10", justify="left", font=("Consolas", 10))
+        self.detail_label.pack(pady=(4, 10))
+        self.body = tk.Frame(self.root, bg="#080b10")
+        self.body.pack(fill="both", expand=True, padx=24, pady=4)
         style = ttk.Style(self.root)
-        style.configure("JARVIS.TButton", padding=8)
+        style.configure("JARVIS.TButton", padding=7)
         return True
 
     def show_setup(self, on_complete: Callable[[], None] | None = None) -> bool:
         if not self._build():
             return False
-        import tkinter as tk
-        from tkinter import messagebox
-
-        self.state_label.configure(text="SETUP REQUIRED")
-        self.detail_label.configure(text="Core and local device setup\nwill be completed for this Windows user.")
-        def complete() -> None:
-            try:
-                self.run_async(self.lifecycle.setup())
-            except Exception as exc:
-                messagebox.showerror("JARVIS setup", "Setup could not be completed safely.")
-                self.detail_label.configure(text=f"Setup unavailable: {exc.__class__.__name__}")
-                return
-            if on_complete:
-                on_complete()
-            self.render()
-        tk.Button(self.root, text="Finish Setup", command=complete, bg="#122637", fg="#d8e5ef", relief="flat").pack(pady=10)
-        tk.Button(self.root, text="Diagnostics", command=self.show_diagnostics, bg="#101720", fg="#d8e5ef", relief="flat").pack(pady=4)
+        self._render_product_panel(setup=True, on_complete=on_complete)
         return True
 
     def show_status(self) -> bool:
         if not self._build():
             return False
-        import tkinter as tk
-
-        tk.Button(self.root, text="Open JARVIS HUD", command=self.lifecycle.open_hud, bg="#122637", fg="#d8e5ef", relief="flat").pack(pady=8)
-        tk.Button(self.root, text="Pause / Resume Voice", command=self._toggle_voice, bg="#101720", fg="#d8e5ef", relief="flat").pack(pady=4)
-        tk.Button(self.root, text="Diagnostics", command=self.show_diagnostics, bg="#101720", fg="#d8e5ef", relief="flat").pack(pady=4)
-        self.render()
+        self._render_product_panel(setup=False)
         return True
 
-    def _toggle_voice(self) -> None:
+    def _render_product_panel(self, *, setup: bool, on_complete: Callable[[], None] | None = None) -> None:
+        import tkinter as tk
+        from tkinter import ttk
+
+        assert self.body is not None
+        for child in self.body.winfo_children():
+            child.destroy()
+        snapshot = self.snapshot()
+        heading = "JARVIS Setup" if setup else "JARVIS Settings"
+        tk.Label(self.body, text=heading, fg="#d8e5ef", bg="#080b10", font=("Consolas", 15, "bold")).pack(anchor="w", pady=(0, 7))
+        status_frame = tk.Frame(self.body, bg="#0d151e", padx=12, pady=8)
+        status_frame.pack(fill="x", pady=(0, 8))
+        self._row_values = {}
+        for name, value in snapshot.statuses:
+            row = tk.Frame(status_frame, bg="#0d151e")
+            row.pack(fill="x")
+            tk.Label(row, text=f"{name:<16}", width=16, anchor="w", fg="#9bb2c6", bg="#0d151e", font=("Consolas", 10)).pack(side="left")
+            label = tk.Label(row, text=value, anchor="w", fg="#86efac" if value == "READY" else "#fbbf24", bg="#0d151e", font=("Consolas", 10, "bold"))
+            label.pack(side="left")
+            self._row_values[name] = label
+        settings_frame = tk.Frame(self.body, bg="#080b10")
+        settings_frame.pack(fill="x", pady=2)
+        self._input_combo, self._input_values = self._selector_combo(settings_frame, "Microphone", snapshot.microphone_options, "input")
+        self._output_combo, self._output_values = self._selector_combo(settings_frame, "Speaker", snapshot.speaker_options, "output")
+        self._voice_var = tk.BooleanVar(value=snapshot.voice_enabled)
+        tk.Checkbutton(settings_frame, text="Voice enabled", variable=self._voice_var, command=self._on_voice_toggle, fg="#d8e5ef", bg="#080b10", selectcolor="#122637", activebackground="#080b10", activeforeground="#d8e5ef").pack(anchor="w", pady=3)
+        follow_row = tk.Frame(settings_frame, bg="#080b10")
+        follow_row.pack(anchor="w", pady=3)
+        tk.Label(follow_row, text="Follow-up seconds", fg="#9bb2c6", bg="#080b10", font=("Consolas", 10)).pack(side="left")
+        self._follow_up_var = tk.DoubleVar(value=snapshot.follow_up_seconds)
+        follow = ttk.Spinbox(follow_row, from_=1, to=120, increment=1, textvariable=self._follow_up_var, width=7, command=self._on_follow_up_change)
+        follow.pack(side="left", padx=10)
+        follow.bind("<FocusOut>", lambda _event: self._on_follow_up_change())
+        self._autostart_var = tk.BooleanVar(value=snapshot.autostart)
+        tk.Checkbutton(settings_frame, text="Start with Windows", variable=self._autostart_var, command=self._on_autostart_toggle, fg="#d8e5ef", bg="#080b10", selectcolor="#122637", activebackground="#080b10", activeforeground="#d8e5ef").pack(anchor="w", pady=3)
+        buttons = tk.Frame(self.body, bg="#080b10")
+        buttons.pack(fill="x", pady=10)
+        self._button(buttons, "Test Microphone", self._test_microphone)
+        self._button(buttons, "Test Speaker", self._test_speaker)
+        self._button(buttons, "Acceptance Wizard", self.show_acceptance)
+        self._button(buttons, "Diagnostics", self.show_diagnostics)
+        if snapshot.repair_available or setup:
+            self._button(buttons, "Repair This Device", self._repair_device)
+        if setup:
+            self._button(buttons, "Finish Setup", lambda: self._finish_setup(on_complete))
+        else:
+            self._button(buttons, "Open JARVIS HUD", self.lifecycle.open_hud)
+            self._button(buttons, "Pause Voice", lambda: self._toggle_voice(force_pause=True))
+            self._button(buttons, "Resume Voice", lambda: self._toggle_voice(force_pause=False))
+        self.render()
+
+    def _selector_combo(self, parent: Any, title: str, options: tuple[str, ...], direction: str) -> tuple[Any, dict[str, VoiceDeviceSelector]]:
+        import tkinter as tk
+        from tkinter import ttk
+
+        row = tk.Frame(parent, bg="#080b10")
+        row.pack(fill="x", pady=3)
+        tk.Label(row, text=f"{title:<16}", width=16, anchor="w", fg="#9bb2c6", bg="#080b10", font=("Consolas", 10)).pack(side="left")
+        values: dict[str, VoiceDeviceSelector] = {}
         try:
-            if self.lifecycle.status.phase is DesktopPhase.PAUSED:
-                self.run_async(self.lifecycle.resume_voice())
-            else:
-                self.run_async(self.lifecycle.pause_voice())
-            self.render()
+            devices = self.lifecycle.audio_catalog.enumerate()
+            for device in devices:
+                if device.direction == direction:
+                    values[_selector_label(device.selector)] = device.selector
         except Exception:
+            pass
+        combo = ttk.Combobox(row, values=options, state="readonly", width=48)
+        selected = self.snapshot().microphone if direction == "input" else self.snapshot().speaker
+        if selected in options:
+            combo.set(selected)
+        elif options:
+            combo.current(0)
+        combo.bind("<<ComboboxSelected>>", self._on_selector_change)
+        combo.pack(side="left", fill="x", expand=True)
+        return combo, values
+
+    @staticmethod
+    def _button(parent: Any, label: str, command: Callable[[], Any]) -> Any:
+        import tkinter as tk
+
+        button = tk.Button(parent, text=label, command=command, bg="#122637", fg="#d8e5ef", relief="flat", padx=8, pady=5)
+        button.pack(side="left", padx=(0, 5), pady=3)
+        return button
+
+    def _finish_setup(self, on_complete: Callable[[], None] | None) -> None:
+        from tkinter import messagebox
+
+        try:
+            if on_complete:
+                on_complete()
+            self._render_product_panel(setup=False)
+        except Exception as exc:
+            messagebox.showerror("JARVIS setup", "Setup could not be completed safely.")
+            self._safe_detail(f"Setup unavailable: {exc.__class__.__name__}")
+
+    def _on_selector_change(self, _event: Any = None) -> None:
+        input_device = self._input_values.get(self._input_combo.get()) if self._input_combo is not None else None
+        output_device = self._output_values.get(self._output_combo.get()) if self._output_combo is not None else None
+        try:
+            self.run_async(self.lifecycle.update_audio_devices(input_device, output_device))
+            self.render()
+        except Exception as exc:
+            self._safe_detail(f"Audio selector unavailable: {exc.__class__.__name__}")
+
+    def _on_voice_toggle(self) -> None:
+        try:
+            self.run_async(self.lifecycle.set_voice_enabled(bool(self._voice_var.get())))
+            self.render()
+        except Exception as exc:
+            self._safe_detail(f"Voice setting unavailable: {exc.__class__.__name__}")
+
+    def _on_follow_up_change(self) -> None:
+        try:
+            self.lifecycle.update_follow_up_seconds(float(self._follow_up_var.get()))
+            self.render()
+        except Exception as exc:
+            self._safe_detail(f"Follow-up setting unavailable: {exc.__class__.__name__}")
+
+    def _on_autostart_toggle(self) -> None:
+        try:
+            self.lifecycle.enable_autostart(bool(self._autostart_var.get()))
+            self.render()
+        except Exception as exc:
+            self._safe_detail(f"Startup setting unavailable: {exc.__class__.__name__}")
+
+    def _test_microphone(self) -> None:
+        try:
+            level = self.lifecycle.test_microphone()
+            self._safe_detail(f"Microphone level observed: {level:.3f} (transient only)")
+        except Exception as exc:
+            self._safe_detail(f"Microphone test unavailable: {exc.__class__.__name__}")
+
+    def _test_speaker(self) -> None:
+        try:
+            played = self.run_async(self.lifecycle.test_speaker())
+            self._safe_detail("Speaker test played." if played else "Speaker test unavailable until local voice is ready.")
+        except Exception as exc:
+            self._safe_detail(f"Speaker test unavailable: {exc.__class__.__name__}")
+
+    def _repair_device(self) -> None:
+        try:
+            self.run_async(self.lifecycle.repair_device())
+            self._render_product_panel(setup=False)
+        except Exception as exc:
+            self._safe_detail(f"Device repair unavailable: {exc.__class__.__name__}")
+
+    def _toggle_voice(self, *, force_pause: bool) -> None:
+        try:
+            self.run_async(self.lifecycle.pause_voice() if force_pause else self.lifecycle.resume_voice())
+            self.render()
+        except Exception as exc:
+            self._safe_detail(f"Voice control unavailable: {exc.__class__.__name__}")
+
+    def show_acceptance(self) -> None:
+        if self.root is None:
             return
+        import tkinter as tk
+        from tkinter import messagebox
+
+        controller = PhysicalAcceptanceController()
+        wizard = tk.Toplevel(self.root)
+        wizard.title("JARVIS Physical Acceptance")
+        wizard.geometry("720x560")
+        wizard.configure(bg="#080b10")
+        title = tk.Label(wizard, text="Physical Acceptance Wizard", fg="#67e8f9", bg="#080b10", font=("Consolas", 18, "bold"))
+        title.pack(pady=(16, 8))
+        step_label = tk.Label(wizard, text="", fg="#86efac", bg="#080b10", font=("Consolas", 14, "bold"))
+        step_label.pack(pady=4)
+        instruction = tk.Label(wizard, text="", fg="#d8e5ef", bg="#080b10", justify="left", wraplength=650, font=("Consolas", 11))
+        instruction.pack(pady=8)
+        count_label = tk.Label(wizard, text="", fg="#fbbf24", bg="#080b10", font=("Consolas", 10))
+        count_label.pack(pady=4)
+        steps_text = tk.Text(wizard, height=9, width=76, bg="#0d151e", fg="#9bb2c6", relief="flat")
+        steps_text.configure(state="disabled")
+        steps_text.pack(padx=16, pady=8)
+        actions = tk.Frame(wizard, bg="#080b10")
+        actions.pack(fill="x", padx=16, pady=8)
+
+        def evidence_path() -> Path:
+            return self.lifecycle.config_path.parent / "PHYSICAL_REALTIME_VOICE.json"
+
+        def refresh() -> None:
+            current = controller.current_step
+            if current is None:
+                step_label.configure(text="COMPLETE - HUMAN ACCEPTANCE PASS")
+                instruction.configure(text="All required steps were explicitly marked PASS by the operator.")
+            else:
+                title_text = next(item.title for item in controller.steps() if item.step is current)
+                step_label.configure(text=f"{controller._index + 1}/{len(AcceptanceStep)}  {title_text}")
+                instruction.configure(text=controller.instruction())
+            if current is AcceptanceStep.WAKE and self.lifecycle.runner is not None:
+                count_label.configure(text=f"Detected wakes: {getattr(self.lifecycle.runner, 'wake_detections', 0)} / 10")
+            else:
+                count_label.configure(text="Human observation is required; automated tests cannot mark PASS.")
+            steps_text.configure(state="normal")
+            steps_text.delete("1.0", "end")
+            steps_text.insert("end", "\n".join(f"{item.title:<22} {item.status}" for item in controller.steps()))
+            steps_text.configure(state="disabled")
+
+        def record(status: str) -> None:
+            current = controller.current_step
+            if current is None:
+                return
+            count = None
+            expected = None
+            if current is AcceptanceStep.WAKE:
+                count = getattr(self.lifecycle.runner, "wake_detections", 0) if self.lifecycle.runner is not None else 0
+                expected = 10
+            try:
+                controller.record_current(status, count=count, expected=expected, safe_label="operator observed")
+                controller.save(evidence_path())
+                refresh()
+                if controller.complete:
+                    messagebox.showinfo("JARVIS acceptance", "Physical acceptance PASS recorded from all required human steps.")
+            except Exception as exc:
+                messagebox.showerror("JARVIS acceptance", f"Acceptance step could not be recorded: {exc.__class__.__name__}")
+
+        self._button(actions, "Test Microphone", self._test_microphone)
+        self._button(actions, "Test Speaker", self._test_speaker)
+        self._button(actions, "Record PASS", lambda: record("PASS"))
+        self._button(actions, "Record PARTIAL", lambda: record("PARTIAL"))
+        self._button(actions, "Record FAIL", lambda: record("FAIL"))
+        refresh()
 
     def show_diagnostics(self) -> None:
         if self.root is None:
@@ -96,8 +380,13 @@ class DesktopWindow:
     def render(self) -> None:
         if self.state_label is None or self.detail_label is None:
             return
+        snapshot = self.snapshot()
+        self.state_label.configure(text=snapshot.phase)
+        for name, value in snapshot.statuses:
+            label = self._row_values.get(name)
+            if label is not None:
+                label.configure(text=value)
         status = self.lifecycle.status
-        self.state_label.configure(text=status.phase.value.upper())
         self.detail_label.configure(text=(
             f"Brain       {'Ready' if status.brain_ready else 'Unavailable'}\n"
             f"Voice       {status.voice_state.title()}\n"
@@ -105,6 +394,10 @@ class DesktopWindow:
             f"Computer    {'Available' if self.lifecycle.runtime is not None else 'Unavailable'}\n\n"
             f"{status.reason}"
         ))
+
+    def _safe_detail(self, value: str) -> None:
+        if self.detail_label is not None:
+            self.detail_label.configure(text=value)
 
     def run(self) -> None:
         if self.root is not None:
@@ -114,3 +407,7 @@ class DesktopWindow:
         if self.root is not None:
             self.root.destroy()
             self.root = None
+
+
+def _selector_label(selector: VoiceDeviceSelector) -> str:
+    return f"{selector.host_api} / {selector.name}"

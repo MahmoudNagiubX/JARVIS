@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import webbrowser
 from dataclasses import dataclass, replace
@@ -16,14 +17,17 @@ from ..config import JarvisConfig
 from ..contracts import Identity, VoiceSessionContext
 from ..models.llama_runtime import LlamaRuntimeStatus
 from ..models.routing import ModelRoute
+from ..voice.adapters import SoundDeviceInput, SoundDevicePlayback
+from ..voice.config import VoiceDeviceSelector
 from ..voice.runtime import LocalVoiceRuntime, VoiceRunnerState, build_local_voice_runtime
 from .assets import VoiceAssetManager
 from .audio import AudioDeviceCatalog
 from .config import DesktopProductConfig, ProductConfigError, product_config_path
 from .instance import SingleInstanceLock
+from .installation import ensure_product_interpreter, repository_root
 from .logging import DesktopOperationalLogger
 from .model import LocalModelDiscovery
-from .secrets import LocalSecretStore, SecretStoreUnavailable, platform_secret_store
+from .secret_store import LocalSecretStore, SecretStoreUnavailable, platform_secret_store
 from .startup import UserStartupManager
 
 
@@ -133,9 +137,14 @@ class JarvisDesktopLifecycle:
                 device_id=device.device_id,
             )
             settings = self._reconcile_audio_and_assets(settings)
+            self._prepare_product_interpreter()
             settings.save(self.config_path)
             if settings.autostart:
-                self.startup_manager.register(executable=self._voice_python(), working_directory=Path.cwd())
+                self.startup_manager.register(executable=self._voice_python(), working_directory=repository_root())
+            if os.name == "nt":
+                self.startup_manager.install_start_menu_shortcut(
+                    executable=self._voice_python(), working_directory=repository_root()
+                )
             self.identity, self.device, self.settings = identity, device, settings
             self._close_unstarted_runtime(runtime)
             self.runtime = None
@@ -269,6 +278,63 @@ class JarvisDesktopLifecycle:
         self._status = replace(self._status, phase=DesktopPhase.READY, reason="ready", voice_state="running")
         return self._status
 
+    async def update_audio_devices(
+        self,
+        input_device: VoiceDeviceSelector | None,
+        output_device: VoiceDeviceSelector | None,
+    ) -> DesktopStatus:
+        """Persist stable selectors and rebind only the existing audio boundary."""
+
+        settings = self.settings or self._load_settings(defaults=True)
+        updated = replace(settings, input_device=input_device, output_device=output_device).validated()
+        if self.runner is not None and self.runtime is not None and input_device and output_device:
+            new_input = SoundDeviceInput(input_device)
+            new_output = SoundDevicePlayback(output_device)
+            try:
+                await self.runner.rebind_audio(new_input, new_output)
+            except Exception:
+                new_output.close()
+                raise
+        updated.save(self.config_path)
+        self.settings = updated
+        return self._refresh_status()
+
+    def update_follow_up_seconds(self, seconds: float) -> DesktopStatus:
+        settings = self.settings or self._load_settings(defaults=True)
+        updated = replace(settings, follow_up_seconds=float(seconds)).validated()
+        if self.runtime is not None and getattr(self.runtime, "voice", None) is not None:
+            self.runtime.voice.follow_up_seconds = updated.follow_up_seconds
+        updated.save(self.config_path)
+        self.settings = updated
+        return self._refresh_status()
+
+    async def set_voice_enabled(self, enabled: bool) -> DesktopStatus:
+        settings = self.settings or self._load_settings(defaults=True)
+        updated = replace(settings, voice_enabled=bool(enabled)).validated()
+        if not enabled and self.runner is not None:
+            await self.runner.pause()
+            self._status = replace(self._status, phase=DesktopPhase.PAUSED, reason="voice_disabled", voice_state="paused")
+        updated.save(self.config_path)
+        self.settings = updated
+        return self._refresh_status()
+
+    def test_microphone(self, selector: VoiceDeviceSelector | None = None) -> float:
+        settings = self.settings or self._load_settings(defaults=True)
+        selected = selector or settings.input_device
+        if selected is None:
+            raise RuntimeError("microphone_selector_required")
+        return self.audio_catalog.transient_input_level(selected)
+
+    async def test_speaker(self) -> bool:
+        """Play the fixed safe speaker test through the existing VoiceCore."""
+
+        if self.runner is None:
+            return False
+        test = getattr(getattr(self.runner, "voice", None), "speak_safe_test", None)
+        if not callable(test):
+            return False
+        return bool(await test())
+
     async def repair_device(self, owner_name: str = "Mahmoud") -> DesktopStatus:
         """Replace only the product credential/device; unrelated devices remain untouched."""
 
@@ -301,7 +367,8 @@ class JarvisDesktopLifecycle:
         settings = replace(settings, autostart=enabled)
         settings.save(self.config_path)
         if enabled:
-            return self.startup_manager.register(executable=self._voice_python(), working_directory=Path.cwd())
+            self._prepare_product_interpreter()
+            return self.startup_manager.register(executable=self._voice_python(), working_directory=repository_root())
         self.startup_manager.unregister()
         return None
 
@@ -451,6 +518,11 @@ class JarvisDesktopLifecycle:
 
         candidate = self.asset_manager.root / "venv" / "Scripts" / "python.exe"
         return candidate if candidate.is_file() else None
+
+    def _prepare_product_interpreter(self) -> None:
+        candidate = self._voice_python()
+        if candidate is not None:
+            ensure_product_interpreter(candidate, root=repository_root())
 
     def _log(self, message: str) -> None:
         if self.operational_logger is not None:

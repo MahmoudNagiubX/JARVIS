@@ -84,6 +84,7 @@ class LocalVoiceRuntime:
         self._consumer_task: asyncio.Task[None] | None = None
         self._turn_task: asyncio.Task[None] | None = None
         self._wake_command_task: asyncio.Task[None] | None = None
+        self._wake_detections = 0
 
     @property
     def state(self) -> VoiceRunnerState:
@@ -97,6 +98,12 @@ class LocalVoiceRuntime:
     def wake_command_timer_active(self) -> bool:
         task = self._wake_command_task
         return task is not None and not task.done()
+
+    @property
+    def wake_detections(self) -> int:
+        """Count safe wake detections for the in-app physical acceptance flow."""
+
+        return self._wake_detections
 
     async def start(
         self,
@@ -175,6 +182,47 @@ class LocalVoiceRuntime:
         if self._consumer_task is None or self._consumer_task.done():
             self._consumer_task = asyncio.create_task(self._consume())
 
+    async def rebind_audio(self, audio_input: AudioInput, audio_output: AudioOutput) -> None:
+        """Replace only physical audio handles while preserving VoiceCore state."""
+
+        if self._state not in {VoiceRunnerState.RUNNING, VoiceRunnerState.PAUSED}:
+            raise RuntimeError("local voice audio can only be rebound while running or paused")
+        prior_state = self._state
+        await self._cancel_wake_command_timer()
+        self.endpointing.discard()
+        self.audio_input.stop()
+        await self.audio_output.stop()
+        self.audio_output.close()
+        self.audio_input = audio_input
+        self.audio_output = audio_output
+        self.voice.playback = audio_output
+        if prior_state is VoiceRunnerState.PAUSED:
+            return
+        try:
+            self.audio_output.start()
+            self.audio_input.start(self._capture_callback)
+        except Exception as exc:
+            self._state = VoiceRunnerState.DEGRADED
+            try:
+                self.audio_input.stop()
+            except Exception:
+                pass
+            try:
+                await self.audio_output.stop()
+                self.audio_output.close()
+            except Exception:
+                pass
+            await self.voice.report_runtime_event(
+                "voice.audio_rebind_failed",
+                state=EventState.FAILED,
+                payload={"reason": _safe_reason(exc)},
+            )
+            raise
+        self._state = VoiceRunnerState.RUNNING
+        await self.voice.report_runtime_event("voice.audio_rebound", state=EventState.COMPLETED)
+        if self._consumer_task is None or self._consumer_task.done():
+            self._consumer_task = asyncio.create_task(self._consume())
+
     async def recover_device(self, attempts: int = 3) -> bool:
         """Re-open only the configured selector after an input endpoint loss."""
 
@@ -248,6 +296,7 @@ class LocalVoiceRuntime:
         state_before = self.voice.state
         if state_before in {VoiceSessionState.SLEEPING, VoiceSessionState.THINKING, VoiceSessionState.SPEAKING}:
             if self.wake.detect_pcm(pcm):
+                self._wake_detections += 1
                 self.endpointing.discard()
                 await self._cancel_wake_command_timer()
                 if await self.voice.wake_detected():
@@ -256,6 +305,7 @@ class LocalVoiceRuntime:
         if state_before not in {VoiceSessionState.LISTENING, VoiceSessionState.FOLLOW_UP}:
             return
         if state_before is VoiceSessionState.LISTENING and self.wake_command_timer_active and self.wake.detect_pcm(pcm):
+            self._wake_detections += 1
             self.endpointing.discard()
             await self._arm_wake_command_timer()
             return

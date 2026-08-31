@@ -8,7 +8,7 @@ it does not create a second domain authority.
 from .config import DesktopProductConfig, ProductConfigError, product_config_path
 from .lifecycle import DesktopPhase, DesktopStatus, JarvisDesktopLifecycle
 from .model import LocalModelDiscovery, LocalModelReferences
-from .secrets import LocalSecretStore, MemorySecretStore, platform_secret_store
+from .secret_store import LocalSecretStore, MemorySecretStore, platform_secret_store
 
 __all__ = [
     "DesktopPhase",

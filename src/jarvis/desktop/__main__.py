@@ -46,6 +46,10 @@ def main() -> None:
         if args.setup:
             submit(lifecycle.setup())
         status = submit(lifecycle.start())
+        if status.reason == "already_running":
+            if args.headless:
+                print(json.dumps({"phase": status.phase.value, "reason": status.reason}, ensure_ascii=False))
+            return
         if args.diagnostics:
             results = submit(DesktopDiagnostics(lifecycle).run())
             print(json.dumps([asdict(item) for item in results], ensure_ascii=False))

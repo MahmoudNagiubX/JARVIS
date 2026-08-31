@@ -52,8 +52,7 @@ class DesktopDiagnostics:
         results.append(DiagnosticResult("speaker", "PASS" if settings and settings.output_device else "FAIL", "selector_missing" if not settings or not settings.output_device else ""))
         return tuple(results)
 
-    @staticmethod
-    def _offline_checks(settings: DesktopProductConfig | None) -> list[DiagnosticResult]:
+    def _offline_checks(self, settings: DesktopProductConfig | None) -> list[DiagnosticResult]:
         if settings is None:
             return [DiagnosticResult("core_db", "UNKNOWN", "runtime_not_started")]
         assets = self.lifecycle.asset_manager.configured_or_discovered(settings.voice_config())

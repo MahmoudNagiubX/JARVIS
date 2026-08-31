@@ -119,6 +119,43 @@ class VoiceCore:
         self.tts = tts
         self.playback = playback
 
+    async def speak_safe_test(self, text: str = "JARVIS speaker test.") -> bool:
+        """Play a bounded fixed test phrase without invoking AgentRuntime."""
+
+        if self.playback is None or self._state in {VoiceSessionState.THINKING, VoiceSessionState.SPEAKING}:
+            return False
+        if not text or len(text) > 120:
+            raise ValueError("speaker test text is outside bounds")
+        self._state = VoiceSessionState.SPEAKING
+        await self._emit("voice.speaker_test_started", EventState.ACCEPTED)
+        audio: bytes | None = None
+        try:
+            self._tts_task = asyncio.create_task(self.tts.synthesize(text))
+            try:
+                audio = await self._tts_task
+            finally:
+                self._tts_task = None
+            if audio:
+                self._playback_task = asyncio.create_task(
+                    self.playback.play(audio, int(getattr(self.tts, "sample_rate", 16_000)))
+                )
+                try:
+                    await self._playback_task
+                finally:
+                    self._playback_task = None
+            if self._state is VoiceSessionState.SPEAKING:
+                self._state = VoiceSessionState.SLEEPING if self._wake_enabled else VoiceSessionState.LISTENING
+                await self._emit(
+                    "voice.speaker_test_completed",
+                    EventState.COMPLETED,
+                )
+            return True
+        except asyncio.CancelledError:
+            return False
+        finally:
+            if audio is not None:
+                del audio
+
     async def wake_detected(self) -> bool:
         """Transition a wake-enabled session to listening, interrupting safely."""
 

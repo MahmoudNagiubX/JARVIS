@@ -58,12 +58,31 @@ supervisor, shuts down Core, removes the HUD server, and releases the lock.
 
 The startup registration is current-user and reversible. It uses `pythonw`
 through Windows Script Host so login does not flash a console and contains no
-credential or identity secret.
+credential or identity secret. Setup also creates the idempotent current-user
+`Start Menu\\Programs\\JARVIS.lnk` targeting the same product interpreter and
+`jarvis.desktop` module. If the existing local voice venv is present, the
+product installs this checkout into that interpreter with `--no-deps` and
+`--no-build-isolation`, then verifies importability with `PYTHONPATH` and
+`JARVIS_VOICE_*` removed.
+
+The native settings surface exposes voice enablement, stable microphone and
+speaker selectors, bounded follow-up seconds, and the real Start-with-Windows
+toggle. Selector changes persist host API/name values and rebind only the
+existing physical audio boundary; no second VoiceCore or runtime authority is
+created.
 
 ## Acceptance boundary
 
+The native window includes the setup/status matrix, transient microphone and
+fixed safe speaker tests, repair action, settings, diagnostics, and a guided
+physical acceptance wizard. The wizard order is Speaker, Microphone, Wake,
+English, Egyptian Arabic, Mixed Arabic-English, Follow-Up, Barge-In, and
+Privacy Timeout. It can write only sanitized counts/statuses and cannot mark
+the evidence PASS before every human-required step passes.
+
 The automated productization matrix proves setup/reuse/repair, safe config,
-single-instance behavior, no-console startup registration, diagnostics, and
-sanitized acceptance evidence. Physical microphone speech, wake performance,
-audibility, and human voice quality remain operator acceptance items and are
-not claimed by automated tests.
+clean-tree import, product-interpreter import, Start Menu/no-console launcher
+properties, single-instance behavior, diagnostics, UI seams, and sanitized
+acceptance evidence. Physical microphone speech, wake performance, audibility,
+and human voice quality remain operator acceptance items and are not claimed
+by automated tests.

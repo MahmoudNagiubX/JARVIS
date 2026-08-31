@@ -32,6 +32,14 @@ class AcceptanceResult:
     safe_label: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class AcceptanceStepView:
+    step: AcceptanceStep
+    title: str
+    instruction: str
+    status: str
+
+
 @dataclass(slots=True)
 class PhysicalAcceptanceWizard:
     """Collect PASS/PARTIAL/FAIL facts without collecting private content."""
@@ -80,3 +88,76 @@ class PhysicalAcceptanceWizard:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.sanitized_document(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return path
+
+
+_STEP_INSTRUCTIONS: dict[AcceptanceStep, tuple[str, str]] = {
+    AcceptanceStep.SPEAKER: ("Speaker", "Play the fixed safe test and confirm: Did you hear JARVIS?"),
+    AcceptanceStep.MICROPHONE: ("Microphone", "Speak normally and verify the transient level meter; no recording is stored."),
+    AcceptanceStep.WAKE: ("Wake", 'Say "Hey Jarvis" 10 times and verify the safe detected-wake count.'),
+    AcceptanceStep.ENGLISH: ("English", "Complete one real English microphone-to-agent-to-Qwen-to-speaker turn."),
+    AcceptanceStep.ARABIC: ("Egyptian Arabic", "Say the Arabic real-tool prompt and verify the complete local tool turn."),
+    AcceptanceStep.MIXED: ("Mixed Arabic-English", 'Say: "Hey Jarvis, قولي الstatus بتاعك."'),
+    AcceptanceStep.FOLLOW_UP: ("Follow-Up", "Ask a second question without the wake word and verify the renewed window."),
+    AcceptanceStep.BARGE_IN: ("Barge-In", 'While a bounded response plays, say "Hey Jarvis" and verify playback stops.'),
+    AcceptanceStep.PRIVACY_TIMEOUT: ("Privacy Timeout", "Wake, remain silent, and verify return to sleep; later speech without wake is ignored."),
+}
+
+
+class PhysicalAcceptanceController:
+    """Headless controller seam used by the in-app human acceptance wizard."""
+
+    def __init__(self, wizard: PhysicalAcceptanceWizard | None = None) -> None:
+        self.wizard = wizard or PhysicalAcceptanceWizard()
+        self._index = 0
+
+    @property
+    def complete(self) -> bool:
+        return self.wizard.complete
+
+    @property
+    def current_step(self) -> AcceptanceStep | None:
+        return tuple(AcceptanceStep)[self._index] if self._index < len(AcceptanceStep) else None
+
+    def steps(self) -> tuple[AcceptanceStepView, ...]:
+        statuses = {step: self.status(step) for step in AcceptanceStep}
+        return tuple(
+            AcceptanceStepView(step, *_STEP_INSTRUCTIONS[step], statuses[step])
+            for step in AcceptanceStep
+        )
+
+    def status(self, step: AcceptanceStep) -> str:
+        for result in reversed(self.wizard.results):
+            if result.step == step.value:
+                return result.status
+        return "PENDING"
+
+    def instruction(self) -> str:
+        step = self.current_step
+        return _STEP_INSTRUCTIONS[step][1] if step is not None else "All physical acceptance steps are complete."
+
+    def record_current(
+        self,
+        status: str,
+        *,
+        count: int | None = None,
+        expected: int | None = None,
+        median_latency_ms: float | None = None,
+        safe_label: str | None = None,
+    ) -> AcceptanceResult:
+        step = self.current_step
+        if step is None:
+            raise ValueError("physical acceptance wizard is already complete")
+        result = self.wizard.record(
+            step,
+            status,
+            count=count,
+            expected=expected,
+            median_latency_ms=median_latency_ms,
+            safe_label=safe_label,
+        )
+        if status == "PASS":
+            self._index += 1
+        return result
+
+    def save(self, path: Path) -> Path:
+        return self.wizard.save(path)

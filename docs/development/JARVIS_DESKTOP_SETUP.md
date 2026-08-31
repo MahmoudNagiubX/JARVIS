@@ -18,7 +18,11 @@ safe settings, reconciles default microphone/speaker selectors, and registers
 reversible current-user login startup. No credential is printed or shown.
 When the existing local voice environment is present, the startup entry uses
 that environment's `pythonw.exe`; otherwise it uses the installed product
-interpreter.
+interpreter. First-run setup installs the local checkout into the existing
+voice venv with no dependencies or network access, verifies `import
+jarvis.desktop` with `PYTHONPATH` and all `JARVIS_VOICE_*` variables absent, and
+creates both the Startup VBS and current-user Start Menu
+`Programs\\JARVIS.lnk`. Neither launcher carries a secret.
 
 If the secure credential is missing or invalid after setup, the product shows
 `DEGRADED` with `Repair This Device`. Repair uses the existing enrollment
@@ -26,7 +30,11 @@ service and does not revoke unrelated devices, reset the database, or copy or
 download Qwen.
 
 The window and tray expose setup, HUD, pause/resume, diagnostics, settings,
-restart, and quit. Diagnostics reports safe names and PASS/FAIL reasons only.
+mic/speaker selectors, transient mic and fixed safe speaker tests, device
+repair, the real Start-with-Windows toggle, and the physical acceptance
+wizard. Diagnostics reports safe names and PASS/FAIL reasons only. The
+acceptance wizard records human observations in sanitized evidence and keeps
+physical status `PENDING` until all required steps are explicitly passed.
 Voice assets must already be present locally or be supplied by an approved
 cancellable provisioning provider; ordinary startup never downloads speech or
 brain assets.
@@ -38,6 +46,8 @@ Qwen GGUF in place and starts or attaches the one existing
 copy, or import model weights.
 
 Automated validation for this product is in
-`tests/test_phase_thirteen_zero_touch_productization.py`. Physical acceptance
-must be completed in the in-app wizard; raw audio, transcripts, TTS bytes, and
-window titles are not retained.
+`tests/test_phase_thirteen_zero_touch_productization.py` and
+`tests/test_phase_thirteen_zero_touch_final_remediation.py`. The tracked-tree
+gate is `scripts/verify_clean_tree_import.py`. Physical acceptance must be
+completed in the in-app wizard; raw audio, transcripts, TTS bytes, and window
+titles are not retained.

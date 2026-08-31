@@ -36,3 +36,19 @@ The normal runtime still defaults to `NoOpSpeechToText` and
 generated audio. Arabic `ar_JO-kareem-low` only establishes Arabic routing;
 Egyptian-Arabic intelligibility remains partial/deferred until an Egyptian
 speaker verifies it.
+
+## In-app physical wizard
+
+The installed desktop UI exposes the human acceptance flow in this exact
+order: Speaker, Microphone, Wake, English, Egyptian Arabic, Mixed
+Arabic-English, Follow-Up, Barge-In, and Privacy Timeout. Speaker and
+microphone checks are transient; the wake screen displays the safe detected-wake
+counter from the existing runner. Each step must be explicitly recorded by the
+operator, and the controller prevents advancing out of order. Evidence remains
+`PENDING` until all nine steps are PASS; automated tests never fabricate
+acoustic or language-quality PASS.
+
+The zero-touch final remediation also validates the tracked secure store,
+clean-archive imports, the exact product interpreter without `PYTHONPATH`, the
+secret-free Startup VBS and Start Menu shortcut, the UI seams, and the
+single-instance second-launch boundary.

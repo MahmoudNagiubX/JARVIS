@@ -145,3 +145,57 @@ claim human wake performance, transcription quality, speaker audibility,
 Egyptian-Arabic intelligibility, physical barge-in, or device-loss recovery.
 The sanitized product evidence is in
 `docs/phase13/evidence/PHYSICAL_REALTIME_VOICE.json`.
+
+## Zero-Touch Productization Independent GitHub Review Remediation
+
+The independent review found that the local `src/jarvis/desktop/secrets.py`
+implementation was hidden by the generic `secrets.*` ignore rule and was not
+present in the committed GitHub tree. It is now `secret_store.py`, explicitly
+tracked, and retains Windows Credential Manager with DPAPI CurrentUser fallback
+only; there is no plaintext fallback and the raw credential is absent from
+settings, SQLite, logs, CLI arguments, VBS, UI, evidence, and Git.
+
+The clean-tree gate is `scripts/verify_clean_tree_import.py`. It archives the
+staged/committed tree and imports `jarvis.desktop`,
+`JarvisDesktopLifecycle`, and `platform_secret_store` using only archived
+sources. The product installer targets only the existing local voice venv,
+uses offline `--no-deps --no-build-isolation` editable installation, and
+verifies importability with `PYTHONPATH` and `JARVIS_VOICE_*` removed.
+
+Setup now reconciles the secure device credential, safe settings, the
+current-user Startup VBS, and the idempotent current-user Start Menu
+`JARVIS.lnk`. The launcher targets `pythonw.exe`, carries only `-m
+jarvis.desktop`, and the actual registered VBS launch reached
+`desktop_start_ready` on NIGHTFURY. A second registered launch did not add a
+second product runtime; the two observed Windows processes are the normal
+venv launcher/interpreter process chain. Secure credential restore, same
+product device reuse, local Qwen readiness, all local voice assets, and
+mic/speaker selector resolution passed safe diagnostics.
+
+The native UI now contains the requested setup/status matrix, microphone and
+speaker selectors, transient mic and fixed safe speaker tests, bounded
+follow-up setting, voice and Start-with-Windows toggles, device repair,
+diagnostics, and a real guided physical acceptance wizard. Selector changes
+persist stable names and rebind only the existing audio boundary. The wizard
+requires Speaker, Microphone, Wake, English, Egyptian Arabic, Mixed
+Arabic-English, Follow-Up, Barge-In, and Privacy Timeout in order. It cannot
+write physical PASS before all human steps pass, and evidence remains
+`PENDING` until then.
+
+### Final automated closure
+
+- Productization focused remediation matrix: **43 passed, 0 failed**.
+- Phase 13 regression plus productization/remediation: **73 passed, 0 failed**.
+- Phase 12 regression: **45 passed, 25 subtests passed, 0 failed**.
+- Phase 11 regression: **26 passed, 0 failed**.
+- Phase 10 regression: **31 passed, 0 failed**.
+- Phase 09 regression: **39 passed, 0 failed**.
+- Phase 08 regression: **13 passed, 0 failed**.
+- Full repository suite: **291 passed, 25 subtests passed, 0 failed**.
+- `python -m compileall src tests`: **PASS**.
+- `git diff --check`: **PASS**.
+
+Physical voice remains **PENDING / PARTIAL**. No human wake performance,
+English/Arabic/mixed transcription quality, audibility, Egyptian-Arabic
+quality, physical barge-in, or device-loss recovery PASS is inferred from
+automated or subprocess checks.
