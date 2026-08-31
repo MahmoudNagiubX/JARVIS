@@ -93,7 +93,7 @@ class PhysicalAcceptanceWizard:
 _STEP_INSTRUCTIONS: dict[AcceptanceStep, tuple[str, str]] = {
     AcceptanceStep.SPEAKER: ("Speaker", "Play the fixed safe test and confirm: Did you hear JARVIS?"),
     AcceptanceStep.MICROPHONE: ("Microphone", "Speak normally and verify the transient level meter; no recording is stored."),
-    AcceptanceStep.WAKE: ("Wake", 'Say "Hey Jarvis" 10 times and verify the safe detected-wake count.'),
+    AcceptanceStep.WAKE: ("Wake", 'Start Wake Test, then say "Hey Jarvis" once when prompted for each isolated attempt.'),
     AcceptanceStep.ENGLISH: ("English", "Complete one real English microphone-to-agent-to-Qwen-to-speaker turn."),
     AcceptanceStep.ARABIC: ("Egyptian Arabic", "Say the Arabic real-tool prompt and verify the complete local tool turn."),
     AcceptanceStep.MIXED: ("Mixed Arabic-English", 'Say: "Hey Jarvis, قولي الstatus بتاعك."'),
@@ -118,11 +118,17 @@ class PhysicalAcceptanceController:
         self.require_microphone_probe = require_microphone_probe
         self.require_wake_detections = require_wake_detections
         self._microphone_probe: Any | None = None
+        self._wake_acceptance: Any | None = None
 
     def set_microphone_probe(self, result: Any) -> None:
         """Attach metrics-only evidence from the real live microphone probe."""
 
         self._microphone_probe = result
+
+    def set_wake_acceptance(self, result: Any) -> None:
+        """Attach the metrics-only result of the current backend wake test."""
+
+        self._wake_acceptance = result
 
     @property
     def complete(self) -> bool:
@@ -165,8 +171,17 @@ class PhysicalAcceptanceController:
             if self._microphone_probe is None or not bool(getattr(self._microphone_probe, "usable_signal", False)):
                 raise ValueError("microphone PASS requires a usable live probe")
         if step is AcceptanceStep.WAKE and status == "PASS" and self.require_wake_detections:
+            if self._wake_acceptance is not None:
+                result_status = getattr(self._wake_acceptance, "result", None)
+                if bool(getattr(self._wake_acceptance, "active", True)) or result_status not in {"PASS", "PARTIAL", "FAIL"}:
+                    raise ValueError("wake PASS requires completed backend detections")
+                count = getattr(self._wake_acceptance, "detections", count)
+                expected = getattr(self._wake_acceptance, "attempt_target", expected)
             if expected is None or count is None or count < expected:
                 raise ValueError("wake PASS requires backend detections")
+        if step is AcceptanceStep.WAKE and self._wake_acceptance is not None:
+            if bool(getattr(self._wake_acceptance, "active", True)) or getattr(self._wake_acceptance, "result", None) not in {"PASS", "PARTIAL", "FAIL"}:
+                raise ValueError("wake result requires completed backend detections")
         result = self.wizard.record(
             step,
             status,

@@ -102,6 +102,7 @@ class DesktopWindow:
         self._last_microphone_probe: MicrophoneProbeResult | None = None
         self._best_microphone: MicrophoneCandidateResult | None = None
         self._acceptance_controller: PhysicalAcceptanceController | None = None
+        self._acceptance_close: Callable[[], Any] | None = None
         self._ui_events: queue.Queue[Callable[[], Any]] = queue.Queue()
         self._voice_var: Any | None = None
         self._autostart_var: Any | None = None
@@ -471,11 +472,18 @@ class DesktopWindow:
         steps_text.pack(padx=16, pady=8)
         actions = tk.Frame(wizard, bg="#080b10")
         actions.pack(fill="x", padx=16, pady=8)
+        closed = False
 
         def evidence_path() -> Path:
             return self.lifecycle.config_path.parent / "PHYSICAL_REALTIME_VOICE.json"
 
+        def wake_snapshot() -> Any | None:
+            runner = self.lifecycle.runner
+            return getattr(runner, "wake_acceptance_snapshot", None) if runner is not None else None
+
         def refresh() -> None:
+            if closed:
+                return
             current = controller.current_step
             if current is None:
                 step_label.configure(text="COMPLETE - HUMAN ACCEPTANCE PASS")
@@ -484,35 +492,75 @@ class DesktopWindow:
                 title_text = next(item.title for item in controller.steps() if item.step is current)
                 step_label.configure(text=f"{controller._index + 1}/{len(AcceptanceStep)}  {title_text}")
                 instruction.configure(text=controller.instruction())
-            if current is AcceptanceStep.WAKE and self.lifecycle.runner is not None:
+            diagnostic = wake_snapshot()
+            if current is AcceptanceStep.WAKE and diagnostic is not None:
                 runner_diagnostics = getattr(self.lifecycle.runner, "diagnostics", {})
-                score = runner_diagnostics.get("last_wake_score")
                 threshold = runner_diagnostics.get("wake_threshold")
-                score_text = f"{float(score):.2f}" if isinstance(score, (int, float)) else "--"
                 threshold_text = f"{float(threshold):.2f}" if isinstance(threshold, (int, float)) else "--"
-                count_label.configure(
-                    text=(
-                        f"Detected wakes: {getattr(self.lifecycle.runner, 'wake_detections', 0)} / 10  "
-                        f"Wake confidence: {score_text}  Threshold: {threshold_text}"
+                last_text = f"{float(diagnostic.last_score):.2f}" if isinstance(diagnostic.last_score, (int, float)) else "--"
+                best_text = f"{float(diagnostic.best_score):.2f}" if isinstance(diagnostic.best_score, (int, float)) else "--"
+                if diagnostic.active:
+                    count_label.configure(
+                        text=(
+                            f"Wake Test\n"
+                            f"Attempt: {diagnostic.attempt_index} / {diagnostic.attempt_target}\n"
+                            f"Detected: {diagnostic.detections} / {diagnostic.attempt_index}\n"
+                            f"Current confidence: {last_text}\n"
+                            f"Best confidence: {best_text}\n"
+                            f"Threshold: {threshold_text}\n"
+                            "State: LISTENING FOR WAKE"
+                        )
                     )
-                )
+                elif diagnostic.result is not None:
+                    count_label.configure(
+                        text=(
+                            f"Wake test {diagnostic.result}: {diagnostic.detections} / "
+                            f"{diagnostic.attempt_target}\n"
+                            f"Best confidence: {best_text}  Threshold: {threshold_text}"
+                        )
+                    )
+                else:
+                    count_label.configure(text='Wake Test\nPress Start, then say "Hey Jarvis" once when prompted.')
             else:
                 count_label.configure(text="Human observation is required; automated tests cannot mark PASS.")
+            if current is AcceptanceStep.WAKE:
+                start_button.configure(state="normal" if diagnostic is None or not diagnostic.active else "disabled")
+                stop_button.configure(state="normal" if diagnostic is not None and diagnostic.active else "disabled")
+                pass_ready = (
+                    diagnostic is not None
+                    and not diagnostic.active
+                    and diagnostic.result == "PASS"
+                    and diagnostic.detections >= diagnostic.attempt_target
+                )
+                record_pass_button.configure(state="normal" if pass_ready else "disabled")
+                record_partial_button.configure(
+                    state="normal" if diagnostic is not None and not diagnostic.active and diagnostic.result in {"PASS", "PARTIAL", "FAIL"} else "disabled"
+                )
+                record_fail_button.configure(
+                    state="normal" if diagnostic is not None and not diagnostic.active and diagnostic.result in {"PASS", "PARTIAL", "FAIL"} else "disabled"
+                )
+            else:
+                for button in (start_button, stop_button, record_pass_button, record_partial_button, record_fail_button):
+                    button.configure(state="disabled")
             steps_text.configure(state="normal")
             steps_text.delete("1.0", "end")
             steps_text.insert("end", "\n".join(f"{item.title:<22} {item.status}" for item in controller.steps()))
             steps_text.configure(state="disabled")
 
         def record(status: str) -> None:
-            current = controller.current_step
-            if current is None:
-                return
-            count = None
-            expected = None
-            if current is AcceptanceStep.WAKE:
-                count = getattr(self.lifecycle.runner, "wake_detections", 0) if self.lifecycle.runner is not None else 0
-                expected = 10
             try:
+                current = controller.current_step
+                if current is None:
+                    return
+                count = None
+                expected = None
+                if current is AcceptanceStep.WAKE:
+                    diagnostic = wake_snapshot()
+                    if diagnostic is None or diagnostic.active or diagnostic.result is None:
+                        raise ValueError("wake acceptance backend test must complete")
+                    controller.set_wake_acceptance(diagnostic)
+                    count = diagnostic.detections
+                    expected = diagnostic.attempt_target
                 controller.record_current(status, count=count, expected=expected, safe_label="operator observed")
                 controller.save(evidence_path())
                 refresh()
@@ -521,12 +569,56 @@ class DesktopWindow:
             except Exception as exc:
                 messagebox.showerror("JARVIS acceptance", f"Acceptance step could not be recorded: {exc.__class__.__name__}")
 
+        def start_wake_test() -> None:
+            if controller.current_step is not AcceptanceStep.WAKE:
+                return
+            try:
+                diagnostic = self.run_async(self.lifecycle.start_wake_acceptance())
+                controller.set_wake_acceptance(diagnostic)
+            except Exception as exc:
+                messagebox.showerror("JARVIS wake test", f"Wake test could not start: {exc.__class__.__name__}")
+            refresh()
+
+        def stop_wake_test() -> None:
+            try:
+                diagnostic = self.run_async(self.lifecycle.stop_wake_acceptance())
+                controller.set_wake_acceptance(diagnostic)
+            except Exception as exc:
+                messagebox.showerror("JARVIS wake test", f"Wake test could not stop: {exc.__class__.__name__}")
+            refresh()
+
+        def close_acceptance() -> None:
+            nonlocal closed
+            if closed:
+                return
+            closed = True
+            try:
+                diagnostic = wake_snapshot()
+                if diagnostic is not None and diagnostic.active:
+                    self.run_async(self.lifecycle.stop_wake_acceptance())
+            except Exception:
+                pass
+            finally:
+                self._acceptance_close = None
+                wizard.destroy()
+
+        start_button = self._button(actions, "Start Wake Test", start_wake_test)
+        stop_button = self._button(actions, "Stop Test", stop_wake_test)
         self._button(actions, "Test Microphone", self._test_microphone)
         self._button(actions, "Test Speaker", self._test_speaker)
-        self._button(actions, "Record PASS", lambda: record("PASS"))
-        self._button(actions, "Record PARTIAL", lambda: record("PARTIAL"))
-        self._button(actions, "Record FAIL", lambda: record("FAIL"))
+        record_pass_button = self._button(actions, "Record PASS", lambda: record("PASS"))
+        record_partial_button = self._button(actions, "Record PARTIAL", lambda: record("PARTIAL"))
+        record_fail_button = self._button(actions, "Record FAIL", lambda: record("FAIL"))
+        wizard.protocol("WM_DELETE_WINDOW", close_acceptance)
+        self._acceptance_close = close_acceptance
         refresh()
+        def poll() -> None:
+            if closed:
+                return
+            refresh()
+            wizard.after(100, poll)
+
+        wizard.after(100, poll)
 
     def show_diagnostics(self) -> None:
         if self.root is None:
@@ -563,6 +655,10 @@ class DesktopWindow:
             self.root.mainloop()
 
     def close(self) -> None:
+        if self._acceptance_close is not None:
+            close_acceptance = self._acceptance_close
+            self._acceptance_close = None
+            close_acceptance()
         if self.root is not None:
             self.root.destroy()
             self.root = None

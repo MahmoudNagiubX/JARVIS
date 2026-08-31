@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import queue
 import time
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
@@ -35,6 +37,22 @@ class VoiceRunnerState(StrEnum):
     DEGRADED = "degraded"
     STOPPING = "stopping"
     STOPPED = "stopped"
+
+
+@dataclass(frozen=True, slots=True)
+class WakeAcceptanceSnapshot:
+    """Metrics-only state for one bounded physical wake acceptance run."""
+
+    active: bool
+    attempt_target: int
+    attempt_index: int
+    detections: int
+    misses: int
+    last_score: float | None
+    best_score: float | None
+    attempt_deadline: float | None
+    started_at: float | None
+    result: str | None
 
 
 class AudioInput(Protocol):
@@ -95,6 +113,21 @@ class LocalVoiceRuntime:
         self._last_wake_score: float | None = None
         self._last_input_metrics: SignalMetrics | None = None
         self._last_resampled_metrics: SignalMetrics | None = None
+        self._wake_acceptance_active = False
+        self._wake_acceptance_attempt_target = 10
+        self._wake_acceptance_attempt_index = 0
+        self._wake_acceptance_detections = 0
+        self._wake_acceptance_misses = 0
+        self._wake_acceptance_last_score: float | None = None
+        self._wake_acceptance_best_score: float | None = None
+        self._wake_acceptance_attempt_deadline: float | None = None
+        self._wake_acceptance_started_at: float | None = None
+        self._wake_acceptance_result: str | None = None
+        self._wake_acceptance_attempt_open = False
+        self._wake_acceptance_attempt_seconds = 3.5
+        self._wake_acceptance_cooldown_seconds = 0.1
+        self._wake_acceptance_signal: asyncio.Event | None = None
+        self._wake_acceptance_task: asyncio.Task[None] | None = None
 
     @property
     def state(self) -> VoiceRunnerState:
@@ -140,6 +173,25 @@ class LocalVoiceRuntime:
         return self._last_wake_score
 
     @property
+    def wake_acceptance_active(self) -> bool:
+        return self._wake_acceptance_active
+
+    @property
+    def wake_acceptance_snapshot(self) -> WakeAcceptanceSnapshot:
+        return WakeAcceptanceSnapshot(
+            active=self._wake_acceptance_active,
+            attempt_target=self._wake_acceptance_attempt_target,
+            attempt_index=self._wake_acceptance_attempt_index,
+            detections=self._wake_acceptance_detections,
+            misses=self._wake_acceptance_misses,
+            last_score=self._wake_acceptance_last_score,
+            best_score=self._wake_acceptance_best_score,
+            attempt_deadline=self._wake_acceptance_attempt_deadline,
+            started_at=self._wake_acceptance_started_at,
+            result=self._wake_acceptance_result,
+        )
+
+    @property
     def diagnostics(self) -> dict[str, int | float | None | bool | dict[str, float] | str]:
         """Return safe counters and levels; never include PCM or transcripts."""
 
@@ -163,6 +215,16 @@ class LocalVoiceRuntime:
             "wake_detections": self.wake_detections,
             "last_wake_score": self.last_wake_score,
             "wake_threshold": getattr(self.wake, "threshold", None),
+            "wake_acceptance": {
+                "active": self.wake_acceptance_active,
+                "attempt_target": self._wake_acceptance_attempt_target,
+                "attempt_index": self._wake_acceptance_attempt_index,
+                "detections": self._wake_acceptance_detections,
+                "misses": self._wake_acceptance_misses,
+                "last_score": self._wake_acceptance_last_score,
+                "best_score": self._wake_acceptance_best_score,
+                "result": self._wake_acceptance_result,
+            },
             "input_signal": metrics(self._last_input_metrics),
             "resampled_signal": metrics(self._last_resampled_metrics),
             **vad,
@@ -200,6 +262,7 @@ class LocalVoiceRuntime:
     async def stop(self) -> None:
         if self._state in {VoiceRunnerState.STOPPED, VoiceRunnerState.STOPPING}:
             return
+        await self.stop_wake_acceptance()
         self._state = VoiceRunnerState.STOPPING
         await self._cancel_wake_command_timer()
         if self._consumer_task is not None:
@@ -224,6 +287,7 @@ class LocalVoiceRuntime:
             return
         if self._state is not VoiceRunnerState.RUNNING:
             raise RuntimeError("local voice runner is not running")
+        await self.stop_wake_acceptance()
         await self._cancel_wake_command_timer()
         self.endpointing.discard()
         self.audio_input.stop()
@@ -362,6 +426,14 @@ class LocalVoiceRuntime:
                 del captured
 
     async def _process_pcm(self, pcm: bytes) -> None:
+        if self.wake_acceptance_active:
+            try:
+                detected = self._detect_wake(pcm)
+            except Exception:
+                await self.stop_wake_acceptance()
+                raise
+            self._record_wake_acceptance_frame(detected)
+            return
         state_before = self.voice.state
         if state_before in {VoiceSessionState.SLEEPING, VoiceSessionState.THINKING, VoiceSessionState.SPEAKING}:
             if self._detect_wake(pcm):
@@ -408,6 +480,129 @@ class LocalVoiceRuntime:
         if isinstance(score, (int, float)):
             self._last_wake_score = float(score)
         return detected
+
+    async def start_wake_acceptance(self, attempts: int = 10) -> WakeAcceptanceSnapshot:
+        """Start a bounded wake-only benchmark on the existing runner."""
+
+        if self._state is not VoiceRunnerState.RUNNING:
+            raise RuntimeError("wake acceptance requires a running voice runner")
+        if not 1 <= attempts <= 20:
+            raise ValueError("wake acceptance attempts are outside bounds")
+        if self._wake_acceptance_active:
+            raise RuntimeError("wake acceptance is already active")
+        await self._cancel_wake_command_timer()
+        self.endpointing.discard()
+        await self.voice.return_to_sleeping()
+        self._wake_acceptance_active = True
+        self._wake_acceptance_attempt_target = attempts
+        self._wake_acceptance_attempt_index = 1
+        self._wake_acceptance_detections = 0
+        self._wake_acceptance_misses = 0
+        self._wake_acceptance_last_score = None
+        self._wake_acceptance_best_score = None
+        self._wake_acceptance_attempt_deadline = time.monotonic() + self._wake_acceptance_attempt_seconds
+        self._wake_acceptance_started_at = time.monotonic()
+        self._wake_acceptance_result = None
+        self._wake_acceptance_attempt_open = True
+        self._wake_acceptance_signal = asyncio.Event()
+        self._wake_acceptance_task = asyncio.create_task(self._run_wake_acceptance())
+        return self.wake_acceptance_snapshot
+
+    async def stop_wake_acceptance(self) -> WakeAcceptanceSnapshot:
+        """Cancel an active benchmark and restore the normal sleeping boundary."""
+
+        if not self._wake_acceptance_active:
+            return self.wake_acceptance_snapshot
+        self._wake_acceptance_active = False
+        self._wake_acceptance_attempt_open = False
+        self._wake_acceptance_result = self._wake_acceptance_result or "CANCELLED"
+        if self._wake_acceptance_signal is not None:
+            self._wake_acceptance_signal.set()
+        task = self._wake_acceptance_task
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await self._restore_normal_wake()
+        return self.wake_acceptance_snapshot
+
+    def _record_wake_acceptance_frame(self, detected: bool) -> None:
+        score = self._last_wake_score
+        if isinstance(score, (int, float)):
+            self._wake_acceptance_last_score = float(score)
+            if self._wake_acceptance_best_score is None:
+                self._wake_acceptance_best_score = float(score)
+            else:
+                self._wake_acceptance_best_score = max(self._wake_acceptance_best_score, float(score))
+        if not detected or not self._wake_acceptance_attempt_open:
+            return
+        deadline = self._wake_acceptance_attempt_deadline
+        if deadline is not None and time.monotonic() > deadline:
+            return
+        self._wake_acceptance_attempt_open = False
+        self._wake_acceptance_detections += 1
+        if self._wake_acceptance_signal is not None:
+            self._wake_acceptance_signal.set()
+
+    async def _run_wake_acceptance(self) -> None:
+        current = asyncio.current_task()
+        try:
+            while self._wake_acceptance_active:
+                signal = self._wake_acceptance_signal
+                deadline = self._wake_acceptance_attempt_deadline
+                if signal is None or deadline is None:
+                    raise RuntimeError("wake acceptance session is not initialized")
+                try:
+                    await asyncio.wait_for(signal.wait(), max(0.0, deadline - time.monotonic()))
+                except asyncio.TimeoutError:
+                    if self._wake_acceptance_active and self._wake_acceptance_attempt_open:
+                        self._wake_acceptance_attempt_open = False
+                        self._wake_acceptance_misses += 1
+                signal.clear()
+                if not self._wake_acceptance_active:
+                    break
+                if self._wake_acceptance_attempt_open:
+                    continue
+                if self._wake_acceptance_attempt_index >= self._wake_acceptance_attempt_target:
+                    self._wake_acceptance_result = self._wake_acceptance_result_for(
+                        self._wake_acceptance_detections,
+                        self._wake_acceptance_attempt_target,
+                    )
+                    self._wake_acceptance_active = False
+                    break
+                await asyncio.sleep(self._wake_acceptance_cooldown_seconds)
+                if not self._wake_acceptance_active:
+                    break
+                self._wake_acceptance_attempt_index += 1
+                self._wake_acceptance_attempt_open = True
+                self._wake_acceptance_attempt_deadline = time.monotonic() + self._wake_acceptance_attempt_seconds
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._wake_acceptance_result = "FAIL"
+            self._wake_acceptance_active = False
+        finally:
+            if self._wake_acceptance_task is current:
+                self._wake_acceptance_task = None
+            self._wake_acceptance_active = False
+            self._wake_acceptance_attempt_open = False
+            self._wake_acceptance_attempt_deadline = None
+            await self._restore_normal_wake()
+
+    @staticmethod
+    def _wake_acceptance_result_for(detections: int, attempts: int) -> str:
+        pass_threshold = max(1, math.ceil(attempts * 0.8))
+        partial_threshold = max(1, math.ceil(attempts * 0.5))
+        if detections >= pass_threshold:
+            return "PASS"
+        if detections >= partial_threshold:
+            return "PARTIAL"
+        return "FAIL"
+
+    async def _restore_normal_wake(self) -> None:
+        self.endpointing.discard()
+        await self._cancel_wake_command_timer()
+        if self.voice.state not in {VoiceSessionState.SLEEPING, VoiceSessionState.STOPPED}:
+            await self.voice.return_to_sleeping()
 
     async def _dispatch(self, utterance: bytes) -> None:
         try:

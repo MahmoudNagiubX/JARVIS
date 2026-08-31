@@ -278,6 +278,20 @@ class JarvisDesktopLifecycle:
         self._status = replace(self._status, phase=DesktopPhase.READY, reason="ready", voice_state="running")
         return self._status
 
+    async def start_wake_acceptance(self, attempts: int = 10) -> Any:
+        """Start the bounded wake-only test on the existing local runner."""
+
+        if self.runner is None:
+            raise RuntimeError("voice_runner_unavailable")
+        return await self.runner.start_wake_acceptance(attempts)
+
+    async def stop_wake_acceptance(self) -> Any:
+        """Stop the bounded wake-only test on the existing local runner."""
+
+        if self.runner is None:
+            raise RuntimeError("voice_runner_unavailable")
+        return await self.runner.stop_wake_acceptance()
+
     async def update_audio_devices(
         self,
         input_device: VoiceDeviceSelector | None,

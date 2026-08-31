@@ -248,3 +248,30 @@ Physical human acceptance remains **PENDING / PARTIAL**. The only required
 operator action is to speak when the in-app probe says “Speak now...” and then
 complete the guided wake/voice steps; no terminal or manual numeric device
 index is required.
+
+## Wake Acceptance Wizard Final Closure
+
+The Wake step is now a guided, bounded diagnostic on the existing
+`LocalVoiceRuntime`. `Start Wake Test` and `Stop Test` control a ten-attempt
+session with isolated 3.5-second attempts, automatic miss/reset progression,
+100 ms UI polling, live confidence metrics, and PASS/PARTIAL/FAIL mapping at
+8/10, 5--7/10, and below 5/10. Diagnostic detections remain in the sleeping
+boundary and do not invoke STT, AgentRuntime, Qwen, TTS, follow-up, or the
+normal wake command timeout. The session counter is independent from the
+process-lifetime wake counter, and close, stop, completion, and failure restore
+normal voice wake behavior. Only sanitized counters and scores are exposed;
+raw audio is not retained.
+
+### Final closure validation
+
+- Wake acceptance focused matrix: **19 passed, 0 failed**.
+- Phase 13 regression including the wake wizard fix: **107 passed, 0 failed**.
+- Phase 08--12 regression: **154 passed, 25 subtests passed, 0 failed**.
+- Full repository suite: **325 passed, 25 subtests passed, 0 failed**.
+- `python -m compileall src tests`: **PASS**.
+- `git diff --check`: **PASS**.
+
+Physical human voice acceptance remains **PENDING / PARTIAL**. Automated tests
+prove the guided backend flow and its safety boundaries; they do not infer
+human wake performance, audibility, transcription quality, or the remaining
+physical acceptance steps.
