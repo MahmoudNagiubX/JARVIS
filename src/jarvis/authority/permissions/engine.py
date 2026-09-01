@@ -31,6 +31,9 @@ class PolicyPermissionEngine:
             PermissionRule("tool.computer.clipboard.read", PermissionEffect.ALLOW, "computer_clipboard_boundary"),
             PermissionRule("tool.computer.clipboard.write", PermissionEffect.ALLOW, "computer_clipboard_boundary"),
             PermissionRule("tool.computer.keyboard.type", PermissionEffect.ALLOW, "computer_keyboard_boundary"),
+            # BrowserActionService owns the inner read/approval decision. The
+            # outer tool wrapper must not create a second approval request.
+            PermissionRule("tool.browser.", PermissionEffect.ALLOW, "browser_action_boundary"),
             PermissionRule("tool.mcp.", PermissionEffect.ALLOW, "mcp_capability_boundary"),
             PermissionRule("mission.start", PermissionEffect.ALLOW, "bounded_mission_start"),
             PermissionRule("skill.", PermissionEffect.ALLOW, "registered_skill_execution"),

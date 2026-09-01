@@ -989,6 +989,7 @@ class RuntimeRepository:
             "estimated_duration": manifest.estimated_duration, "workspace_scope": manifest.workspace_scope,
             "network_requirement": manifest.network_requirement, "owner": manifest.owner,
             "status": manifest.status.value if hasattr(manifest.status, "value") else str(manifest.status),
+            "input_schema": dict(manifest.input_schema),
         })
 
     # Phase 07 bounded workspace intelligence ---------------------------

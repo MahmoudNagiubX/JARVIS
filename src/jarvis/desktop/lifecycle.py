@@ -35,7 +35,11 @@ from .startup import UserStartupManager
 PRODUCT_SECRET_KEY = "desktop-device-credential"
 PRODUCT_DEVICE_NAME = "NIGHTFURY Local Desktop"
 PRODUCT_SCOPES = ("tool.request",)
-PRODUCT_CAPABILITIES = ("computer.observe", "computer.input", "perception.screen")
+PRODUCT_CAPABILITIES = (
+    "computer.observe", "computer.input", "perception.screen", "research.local",
+    "browser.open_url", "browser.navigate", "browser.read_page", "browser.extract_text",
+    "browser.find_element", "browser.inspect_accessibility_tree", "browser.tabs",
+)
 
 
 class DesktopPhase(StrEnum):

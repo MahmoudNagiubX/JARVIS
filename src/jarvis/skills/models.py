@@ -51,6 +51,7 @@ class SkillManifest:
     network_requirement: str = "none"
     owner: str = "jarvis"
     status: SkillStatus = SkillStatus.ACTIVE
+    input_schema: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

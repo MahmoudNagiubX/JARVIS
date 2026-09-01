@@ -244,6 +244,7 @@ class CoreApplication:
             },
             "node_transport": self.runtime.satellite_transport.public_health(),
             "mcp": self.runtime.mcp.health_snapshot(),
+            "mcp_reporting": await self.runtime.mcp.health_report(),
         }
 
     async def satellite_connect(self, principal: DemoPrincipal, values: dict[str, object]) -> dict[str, Any]:

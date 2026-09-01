@@ -20,6 +20,7 @@ from ..bus import InMemoryEventBus
 from ..contracts import ApprovalRequest, AuditRecord, BrowserAction, BrowserCapability, BrowserResult, BrowserSession, DeviceIdentity, Identity, ToolContext
 from ..events import Event, EventCategory, EventState
 from ..persistence.repositories import RuntimeRepository
+from .policy import BrowserURLPolicy, BrowserURLPolicyError
 
 
 class _PageParser(HTMLParser):
@@ -69,8 +70,9 @@ class _ElementParser(HTMLParser):
 class LocalBrowserController:
     """Use urllib and HTML parsing for bounded read-only browser actions."""
 
-    def __init__(self, fetcher: Callable[[str], tuple[str, str]] | None = None, *, interaction_timeout_seconds: float = 10.0) -> None:
+    def __init__(self, fetcher: Callable[[str], tuple[str, str]] | None = None, *, interaction_timeout_seconds: float = 10.0, url_policy: BrowserURLPolicy | None = None) -> None:
         self._fetcher = fetcher
+        self._url_policy = url_policy or BrowserURLPolicy()
         self._sessions: dict[str, BrowserSession] = {}
         self._form_values: dict[tuple[str, str], str] = {}
         self._interaction_timeout_seconds = max(0.05, min(interaction_timeout_seconds, 30.0))
@@ -107,8 +109,12 @@ class LocalBrowserController:
 
     def _open_url(self, parameters: Mapping[str, object], context: ToolContext) -> BrowserResult:
         url = parameters.get("url")
-        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
-            return BrowserResult("denied", error_code="url_scheme_not_allowed")
+        if not isinstance(url, str):
+            return BrowserResult("denied", error_code="url_invalid")
+        try:
+            self._validate_url(url)
+        except BrowserURLPolicyError as exc:
+            return BrowserResult("denied", error_code=exc.code)
         session = BrowserSession(f"browser-{uuid4()}", context.identity.owner_id if context.identity else context.device.owner_id, context.device.device_id, url, (url,))
         self._sessions[session.session_id] = session
         return BrowserResult("succeeded", {"session_id": session.session_id, "url": url}, verified=True)
@@ -124,8 +130,12 @@ class LocalBrowserController:
 
     def _navigate(self, session: BrowserSession, parameters: Mapping[str, object]) -> BrowserResult:
         url = parameters.get("url")
-        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
-            return BrowserResult("denied", error_code="url_scheme_not_allowed")
+        if not isinstance(url, str):
+            return BrowserResult("denied", error_code="url_invalid")
+        try:
+            self._validate_url(url)
+        except BrowserURLPolicyError as exc:
+            return BrowserResult("denied", error_code=exc.code)
         history = session.history + (url,)
         updated = BrowserSession(session.session_id, session.owner_id, session.device_id, url, history)
         self._sessions[session.session_id] = updated
@@ -148,6 +158,8 @@ class LocalBrowserController:
             return BrowserResult("failed", error_code="browser_url_missing")
         try:
             html, final_url = await asyncio.to_thread(self._fetch, session.current_url)
+        except BrowserURLPolicyError as exc:
+            return BrowserResult("denied", error_code=exc.code)
         except (OSError, urllib.error.URLError, ValueError) as exc:
             return BrowserResult("failed", error_code=f"page_fetch_failed:{exc.__class__.__name__}")
         parser = _PageParser()
@@ -186,6 +198,8 @@ class LocalBrowserController:
             html, _ = await asyncio.wait_for(asyncio.to_thread(self._fetch, session.current_url or ""), self._interaction_timeout_seconds)
         except asyncio.TimeoutError:
             return BrowserResult("failed", error_code="browser_interaction_timeout")
+        except BrowserURLPolicyError as exc:
+            return BrowserResult("denied", error_code=exc.code)
         except (OSError, urllib.error.URLError, ValueError) as exc:
             return BrowserResult("failed", error_code=f"page_fetch_failed:{exc.__class__.__name__}")
         parser = _ElementParser()
@@ -198,6 +212,10 @@ class LocalBrowserController:
             href = attrs.get("href") if tag == "a" else None
             if href:
                 url = urljoin(session.current_url or "", href)
+                try:
+                    self._validate_url(url)
+                except BrowserURLPolicyError as exc:
+                    return BrowserResult("denied", error_code=exc.code)
                 updated = BrowserSession(session.session_id, session.owner_id, session.device_id, url, session.history + (url,))
                 self._sessions[session.session_id] = updated
                 return BrowserResult("succeeded", {"session_id": session.session_id, "selector": selector, "url": url, "action": "click"}, verified=True)
@@ -205,7 +223,7 @@ class LocalBrowserController:
         if capability is BrowserCapability.TYPE:
             self._form_values[(session.session_id, selector)] = value
             return BrowserResult("succeeded", {"session_id": session.session_id, "selector": selector, "value_length": len(value), "action": "type"}, verified=True)
-        return BrowserResult("succeeded", {"session_id": session.session_id, "selector": selector, "value": value, "action": "select"}, verified=True)
+        return BrowserResult("succeeded", {"session_id": session.session_id, "selector": selector, "value_length": len(value), "content_redacted": True, "action": "select"}, verified=True)
 
     @staticmethod
     def _matches_selector(tag: str, attrs: Mapping[str, str], selector: str) -> bool:
@@ -220,14 +238,26 @@ class LocalBrowserController:
         return tag == selector.casefold()
 
     def _fetch(self, url: str) -> tuple[str, str]:
+        self._validate_url(url)
         if self._fetcher is not None:
-            return self._fetcher(url)
+            body, final_url = self._fetcher(url)
+            self._validate_url(final_url)
+            return body, final_url
         request = urllib.request.Request(url, headers={"User-Agent": "JARVIS-local-browser/1"})
-        with urllib.request.urlopen(request, timeout=10) as response:
+        opener = urllib.request.build_opener(_SafeRedirectHandler(self._url_policy))
+        with opener.open(request, timeout=10) as response:
             body = response.read(2_000_001)
             if len(body) > 2_000_000:
                 raise ValueError("page_too_large")
-            return body.decode("utf-8", errors="replace"), response.geturl()
+            final_url = response.geturl()
+            self._url_policy.validate(final_url)
+            return body.decode("utf-8", errors="replace"), final_url
+
+    def _validate_url(self, url: str) -> str:
+        # Injected deterministic fetchers are intentionally allowed to use
+        # synthetic public hosts, but literal/private destinations are still
+        # rejected. Real urllib requests resolve before network I/O.
+        return self._url_policy.validate(url, resolve_dns=self._fetcher is None)
 
     @staticmethod
     def _session_data(session: BrowserSession) -> dict[str, object]:
@@ -247,6 +277,20 @@ class PlaywrightBrowserController:
         if inspect.isawaitable(result):
             result = await result
         return result
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, policy: BrowserURLPolicy) -> None:
+        super().__init__()
+        self._policy = policy
+        self._redirects = 0
+
+    def redirect_request(self, req: urllib.request.Request, fp: object, code: int, msg: str, headers: object, newurl: str) -> urllib.request.Request | None:
+        if self._redirects >= self._policy.MAX_REDIRECTS:
+            raise BrowserURLPolicyError("browser_redirect_limit")
+        self._policy.validate(newurl)
+        self._redirects += 1
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 class BrowserActionService:
@@ -272,7 +316,7 @@ class BrowserActionService:
             await self.audit.record(AuditRecord(f"audit-{uuid4()}", "browser.permission_denied", datetime.now(UTC), identity.identity_id, device.device_id, correlation, decision.effect.value, decision.reason_code, {"action": action.action}))
             if decision.effect.value == "require_approval" and self.approvals is not None:
                 approval_id = f"approval-{uuid4()}"
-                await self.approvals.request(ApprovalRequest(approval_id, required_capability, identity.owner_id, device.device_id, "browser action requires approval", datetime.now(UTC), datetime.now(UTC) + timedelta(minutes=10), {"action": action.action, "parameters": dict(action.parameters)}))
+                await self.approvals.request(ApprovalRequest(approval_id, required_capability, identity.owner_id, device.device_id, "browser action requires approval", datetime.now(UTC), datetime.now(UTC) + timedelta(minutes=10), self._approval_preview(action)))
                 self._pending[approval_id] = (action, identity, device)
                 await self._emit("browser.action_requested", identity.owner_id, correlation, {"action": action.action, "approval_id": approval_id}, EventState.ACCEPTED)
                 return BrowserResult("approval_required", error_code=decision.reason_code, approval_id=approval_id)
@@ -283,7 +327,7 @@ class BrowserActionService:
     async def decide(self, approval_id: str, approved: bool, decided_by: str) -> BrowserResult:
         pending = self._pending.get(approval_id)
         if pending is None or self.approvals is None:
-            raise KeyError(approval_id)
+            return BrowserResult("failed", error_code="browser_approval_unavailable", approval_id=approval_id)
         action, identity, device = pending
         decision = await self.approvals.decide(approval_id, approved, decided_by)
         self._pending.pop(approval_id, None)
@@ -304,6 +348,29 @@ class BrowserActionService:
         await self._emit(event_type, identity.owner_id, correlation, {"action": action.action, "error_code": result.error_code}, EventState.COMPLETED if result.status == "succeeded" else EventState.FAILED)
         await self.audit.record(AuditRecord(f"audit-{uuid4()}", event_type, datetime.now(UTC), identity.identity_id, device.device_id, correlation, result.status, result.error_code, {"action": action.action}))
         return BrowserResult(result.status, result.output, result.error_code, result.verified, approval_id)
+
+    @staticmethod
+    def _approval_preview(action: BrowserAction) -> dict[str, object]:
+        parameters = action.parameters
+        preview: dict[str, object] = {"action": action.action}
+        selector = parameters.get("selector")
+        if isinstance(selector, str):
+            preview["selector"] = selector[:200]
+        session_id = parameters.get("session_id")
+        if isinstance(session_id, str):
+            preview["session_id"] = session_id[:100]
+        if action.action == BrowserCapability.TYPE.value:
+            text = parameters.get("text")
+            preview.update({"text_length": len(text) if isinstance(text, str) else 0, "content_redacted": True})
+        elif action.action == BrowserCapability.SELECT.value:
+            value = parameters.get("value")
+            preview.update({"value_length": len(value) if isinstance(value, str) else 0, "content_redacted": True})
+        elif action.action == BrowserCapability.UPLOAD_FILE.value:
+            path = parameters.get("path")
+            preview.update({"path_name": str(path).replace("\\", "/").rsplit("/", 1)[-1][:120] if isinstance(path, str) else None, "path_redacted": True})
+        elif action.action in {BrowserCapability.NAVIGATE.value, BrowserCapability.CLICK.value}:
+            preview["target_metadata"] = "bounded browser destination"
+        return preview
 
     async def _emit(self, event_type: str, owner_id: str, correlation: str, payload: dict[str, object], state: EventState) -> None:
         event = Event.create(event_type, EventCategory.BROWSER, correlation_id=correlation, actor_id=owner_id, payload=payload, state=state)

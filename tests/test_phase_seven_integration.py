@@ -58,7 +58,7 @@ class PhaseSevenIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(replanned.plan and replanned.plan.steps)
 
     async def test_skills_progressive_loading_learning_and_permission_boundary(self) -> None:
-        self.assertEqual(len(self.runtime.skills.list()), 8)
+        self.assertEqual(len(self.runtime.skills.list()), 9)
         skill = self.runtime.skills.get("system_health_check")
         self.assertIsNotNone(skill)
         output = await self.runtime.skill_executor.execute("system_health_check", {}, self.identity, self.device)
@@ -132,7 +132,7 @@ class PhaseSevenIntegrationTests(unittest.IsolatedAsyncioTestCase):
         try:
             with urlopen(Request(f"{base}/v1/skills", headers=auth_headers)) as response:
                 skills = json.loads(response.read().decode())
-            self.assertEqual(len(skills["skills"]), 8)
+            self.assertEqual(len(skills["skills"]), 9)
             request = Request(f"{base}/v1/missions", data=json.dumps({**auth, "title": "API mission", "request": "inspect current status"}).encode(), headers={"Content-Type": "application/json"})
             with urlopen(request) as response:
                 mission = json.loads(response.read().decode())

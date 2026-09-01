@@ -54,12 +54,16 @@ class SkillExecutor:
         skill = self.registry.get(skill_id)
         if skill is None:
             return SkillOutput(skill_id, "unavailable", error_code="skill_not_found")
+        try:
+            normalized_values = self._validate_values(skill, values)
+        except ValueError:
+            return SkillOutput(skill_id, SkillExecutionStatus.FAILED.value, error_code="skill_input_invalid")
         now = datetime.now(UTC)
         execution = SkillExecution(
             execution_id=f"skill-execution-{uuid4()}", skill_id=skill_id, owner_id=identity.owner_id,
             identity_id=identity.identity_id, device_id=device.device_id, current_step=0,
             status=SkillExecutionStatus.QUEUED, correlation_id=f"skill-execution-{uuid4()}",
-            values=dict(values), created_at=now, updated_at=now,
+            values=normalized_values, created_at=now, updated_at=now,
         )
         self.repository.insert_skill_execution(execution)
         return await self._start(execution, skill, identity, device)
@@ -210,6 +214,35 @@ class SkillExecutor:
         if len(encoded) <= 8000:
             return dict(value)
         return {"truncated": True, "digest": hashlib.sha256(encoded.encode()).hexdigest(), "preview": encoded[:4000]}
+
+    @staticmethod
+    def _validate_values(skill: Skill, values: Mapping[str, object]) -> dict[str, object]:
+        if not isinstance(values, Mapping):
+            raise ValueError("skill_values_must_be_object")
+        normalized = dict(values)
+        schema = skill.manifest.input_schema
+        if not schema:
+            return normalized
+        properties = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
+        required = schema.get("required", ()) if isinstance(schema, Mapping) else ()
+        if not isinstance(properties, Mapping) or not isinstance(required, (list, tuple)):
+            raise ValueError("skill_input_schema_invalid")
+        if len(normalized) > 32 or any(not isinstance(key, str) for key in normalized):
+            raise ValueError("skill_input_bounds_exceeded")
+        unknown = set(normalized) - set(properties)
+        if unknown or any(key not in normalized for key in required):
+            raise ValueError("skill_input_keys_invalid")
+        for key, value in normalized.items():
+            rule = properties.get(key)
+            if not isinstance(rule, Mapping):
+                raise ValueError("skill_input_schema_invalid")
+            if rule.get("type") == "string":
+                if not isinstance(value, str) or "\x00" in value:
+                    raise ValueError("skill_input_string_invalid")
+                limit = rule.get("maxLength")
+                if isinstance(limit, int) and len(value) > limit:
+                    raise ValueError("skill_input_string_too_long")
+        return normalized
 
     @staticmethod
     def _json(value: object) -> object:

@@ -25,6 +25,7 @@ class MCPRegistry:
         self._clients: dict[str, MCPStdioClient] = {}
         self._tools: dict[str, tuple[MCPDiscoveredTool, ...]] = {}
         self._capabilities: dict[str, list[dict[str, object]]] = {}
+        self._product_owned_servers: set[str] = set()
 
     def add(self, config: MCPServerConfig, client: MCPStdioClient | None = None) -> None:
         if config.server_id in self._clients:
@@ -38,6 +39,7 @@ class MCPRegistry:
         if server_id in self._clients:
             raise ValueError(f"duplicate server: {server_id}")
         self._clients[server_id] = provider  # type: ignore[assignment]
+        self._product_owned_servers.add(server_id)
         advertised = getattr(provider, "tools", ())
         if isinstance(advertised, tuple):
             self._tools[server_id] = advertised
@@ -149,6 +151,26 @@ class MCPRegistry:
                 "capabilities": list(self._capabilities.get(server_id, ())),
             })
         return result
+
+    async def health_report(self) -> dict[str, object]:
+        """Report MCP foundation, product-owned, and optional external truth."""
+
+        product_servers = sorted(self._product_owned_servers)
+        external_servers = sorted(server_id for server_id in self._clients if server_id not in self._product_owned_servers)
+        external_states = [self.health(server_id).state.value for server_id in external_servers]
+        if not external_servers:
+            external = {"status": "not_configured", "configured": False, "fixture": False, "servers": []}
+        elif all(state == "ready" for state in external_states):
+            external = {"status": "pass", "configured": True, "fixture": False, "servers": external_servers}
+        elif any(state == "ready" for state in external_states):
+            external = {"status": "degraded", "configured": True, "fixture": False, "servers": external_servers}
+        else:
+            external = {"status": "failed", "configured": True, "fixture": False, "servers": external_servers}
+        return {
+            "foundation": {"status": "pass", "implementation": "jarvis.mcp"},
+            "product_owned_local": {"status": "pass" if product_servers else "not_configured", "servers": product_servers},
+            "external_optional": external,
+        }
 
     async def close(self) -> None:
         for client in tuple(self._clients.values()):

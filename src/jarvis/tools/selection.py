@@ -53,6 +53,10 @@ class ToolSchemaSelector:
     )
     STATUS_TOOLS = ("status.read",)
     ENGINEERING_TOOLS = ("project.tests.run",)
+    BROWSER_TOOLS = (
+        "browser.open_url", "browser.navigate", "browser.read_page", "browser.extract_text",
+        "browser.find_element", "browser.inspect_accessibility_tree", "browser.tabs",
+    )
     VISUAL_MARKERS = (
         "screen", "desktop", "active application", "active window", "current window",
         "what is on", "look at", "see what", "which application is active",
@@ -74,7 +78,14 @@ class ToolSchemaSelector:
         "شغل التستات", "رن التستات", "شغل tests", "اعمل test للمشروع", "اختبر المشروع",
         "شغل الunit tests",
     )
-    MCP_READ_MARKERS = ("workspace", "repository", "repo", "readme", "file", "directory", "document", "browser", "page", "research", "mcp")
+    BROWSER_MARKERS = (
+        "browser", "web", "web page", "page", "open this", "open and read", "navigate",
+        "read this page", "المتصفح", "صفحة", "افتح", "اقرأ",
+    )
+    MCP_READ_MARKERS = (
+        "workspace", "repository", "repo", "readme", "file", "directory", "document", "browser", "page", "research", "mcp",
+        "ملف", "ملفات", "اقرأ", "وريني", "افحص",
+    )
     MCP_WRITE_MARKERS = ("write", "edit", "create", "delete", "remove", "update", "submit", "send", "execute")
     MAX_SCHEMA_BYTES = 32_000
 
@@ -102,6 +113,8 @@ class ToolSchemaSelector:
             names.extend(self.STATUS_TOOLS)
         if self._matches_any(lowered, self.ENGINEERING_MARKERS):
             names.extend(self.ENGINEERING_TOOLS)
+        if self._matches_any(lowered, self.BROWSER_MARKERS):
+            names.extend(self.BROWSER_TOOLS)
 
         selected: list[ToolSpec] = []
         seen: set[str] = set()

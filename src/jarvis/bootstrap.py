@@ -60,7 +60,7 @@ from .proactive.service import DurableProactiveService
 from .notifications.service import NotificationService
 from .runtime.noop import NoOpSpeechToText, NoOpTextToSpeech
 from .scheduler.service import BackgroundScheduler
-from .tools.registry import ToolRegistry, default_registry, register_computer_tools, register_perception_tools
+from .tools.registry import ToolRegistry, default_registry, register_browser_tools, register_computer_tools, register_perception_tools
 from .tools.service import ToolExecutionService
 from .voice.core import VoiceCore
 from .voice.routing.service import VoiceRoutingService
@@ -305,7 +305,6 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     satellite_computer_controller = WindowsComputerController(satellite)
     computer_router = ComputerExecutionRouter(local_computer_controller, satellite_computer_controller)
     computer_actions = ComputerActionService(computer_router, repository, event_bus, permission, audit, approval)
-    tool_service.set_delegated_approval_resumer(computer_actions.decide)
 
     async def resolve_computer_target(owner_id: str, device_id: str) -> tuple[DeviceIdentity, str | None] | None:
         record = await device_fabric.get(owner_id, device_id)
@@ -323,6 +322,15 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         return target, adapter
     browser_controller = LocalBrowserController()
     browser_actions = BrowserActionService(browser_controller, repository, event_bus, permission, audit, approval)
+    register_browser_tools(registry, browser_actions)
+
+    async def resume_delegated_approval(approval_id: str, approved: bool, decided_by: str) -> object:
+        approval_row = repository.approval(approval_id)
+        if approval_row is not None and str(approval_row.get("action", "")).startswith("browser."):
+            return await browser_actions.decide(approval_id, approved, decided_by)
+        return await computer_actions.decide(approval_id, approved, decided_by)
+
+    tool_service.set_delegated_approval_resumer(resume_delegated_approval)
     home = HomeActionService(None, repository, event_bus, permission, audit, RestrictedMQTTTransport())
     communications = CommunicationsHub(repository, event_bus, approval, permission, audit, autonomy)
     local_channel = LocalCommunicationChannel()

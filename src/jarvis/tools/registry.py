@@ -10,7 +10,7 @@ import subprocess
 import sys
 from typing import Any
 
-from ..contracts import ToolContext, ToolResult, ToolResultRetention, ToolResultStatus
+from ..contracts import BrowserAction, ToolContext, ToolResult, ToolResultRetention, ToolResultStatus
 
 ToolHandler = Callable[[Mapping[str, Any], ToolContext], ToolResult | Awaitable[ToolResult]]
 
@@ -170,6 +170,57 @@ def default_registry() -> ToolRegistry:
             ),
         )
     )
+
+
+def register_browser_tools(registry: ToolRegistry, browser_actions: object) -> None:
+    """Expose browser reads and interactions through the existing authority."""
+
+    async def execute(action: str, arguments: Mapping[str, object], context: ToolContext) -> ToolResult:
+        if context.identity is None or context.device is None:
+            return ToolResult(ToolResultStatus.DENIED, error_code="identity_or_device_missing")
+        result = await browser_actions.execute(
+            BrowserAction(action, dict(arguments)),
+            context.identity,
+            context.device,
+            session_id=context.session_id,
+            correlation_id=context.correlation_id,
+        )
+        try:
+            status = ToolResultStatus(result.status)
+        except ValueError:
+            status = ToolResultStatus.FAILED
+        if status is ToolResultStatus.APPROVAL_REQUIRED:
+            return ToolResult(status, error_code=result.error_code, approval_id=result.approval_id)
+        return ToolResult(status, result.output, result.error_code, result.verified, result.approval_id)
+
+    schemas: tuple[tuple[str, str, Mapping[str, object], tuple[str, ...]], ...] = (
+        ("open_url", "Open a bounded public web URL in a JARVIS browser session.", {"type": "object", "properties": {"url": {"type": "string", "maxLength": 4096}}, "required": ["url"], "additionalProperties": False}, ("url",)),
+        ("navigate", "Navigate an existing browser session to a bounded public URL.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "url": {"type": "string", "maxLength": 4096}}, "required": ["session_id", "url"], "additionalProperties": False}, ("session_id", "url")),
+        ("read_page", "Read bounded untrusted text from an existing browser session.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}}, "required": ["session_id"], "additionalProperties": False}, ("session_id",)),
+        ("extract_text", "Extract bounded untrusted page text from an existing browser session.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}}, "required": ["session_id"], "additionalProperties": False}, ("session_id",)),
+        ("find_element", "Find a bounded element or link in an untrusted browser page.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "text": {"type": "string", "maxLength": 200}, "selector": {"type": "string", "maxLength": 200}}, "required": ["session_id"], "additionalProperties": False}, ("session_id",)),
+        ("inspect_accessibility_tree", "Read a bounded untrusted accessibility tree from a browser session.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}}, "required": ["session_id"], "additionalProperties": False}, ("session_id",)),
+        ("tabs", "List bounded JARVIS browser tabs.", {"type": "object", "properties": {}, "additionalProperties": False}, ()),
+        ("click", "Click one bounded selector after the browser approval gate.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "selector": {"type": "string", "maxLength": 200}}, "required": ["session_id", "selector"], "additionalProperties": False}, ("session_id", "selector")),
+        ("type", "Type bounded text after the browser approval gate; content is never durable.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "selector": {"type": "string", "maxLength": 200}, "text": {"type": "string", "maxLength": 2000}}, "required": ["session_id", "selector", "text"], "additionalProperties": False}, ("session_id", "selector", "text")),
+        ("select", "Select a bounded option after the browser approval gate; value is never durable.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "selector": {"type": "string", "maxLength": 200}, "value": {"type": "string", "maxLength": 200}}, "required": ["session_id", "selector", "value"], "additionalProperties": False}, ("session_id", "selector", "value")),
+    )
+    for action, description, schema, required in schemas:
+        registry.register(ToolSpec(
+            f"tool-browser-{action.replace('_', '-')}-v1",
+            f"browser.{action}",
+            "1",
+            description,
+            "read" if action in {"open_url", "navigate", "read_page", "extract_text", "find_element", "inspect_accessibility_tree", "tabs"} else "safe",
+            "tool.request",
+            frozenset({f"browser.{action}"}),
+            30.0,
+            action in {"open_url", "read_page", "extract_text", "find_element", "inspect_accessibility_tree", "tabs"},
+            lambda arguments, context, _action=action: execute(_action, arguments, context),
+            parameters_schema=schema,
+            retention=ToolResultRetention.EPHEMERAL,
+            argument_retention=ToolResultRetention.EPHEMERAL,
+        ))
 
 
 def register_perception_tools(registry: ToolRegistry, perception: object) -> None:

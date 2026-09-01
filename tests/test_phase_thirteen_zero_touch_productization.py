@@ -201,7 +201,11 @@ def test_product_device_uses_minimal_scopes_and_expected_capabilities(tmp_path: 
         row = runtime.repository.device(setup.device_id)
         assert row is not None
         assert json.loads(row["scopes_json"]) == ["tool.request"]
-        assert json.loads(row["capabilities_json"]) == ["computer.input", "computer.observe", "perception.screen"]
+        assert json.loads(row["capabilities_json"]) == [
+            "browser.extract_text", "browser.find_element", "browser.inspect_accessibility_tree",
+            "browser.navigate", "browser.open_url", "browser.read_page", "browser.tabs",
+            "computer.input", "computer.observe", "perception.screen", "research.local",
+        ]
     finally:
         runtime.database.close()
 

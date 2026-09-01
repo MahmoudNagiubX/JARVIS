@@ -70,7 +70,7 @@ class SkillRegistry:
         previous = skill.manifest.version
         parts = previous.split(".")
         version = f"{int(parts[0])}.{int(parts[1])}.{int(parts[2]) + 1}" if len(parts) == 3 and all(part.isdigit() for part in parts) else previous + ".1"
-        manifest = SkillManifest(skill.manifest.skill_id, skill.manifest.name, skill.manifest.description, version, skill.manifest.category, skill.manifest.inputs, skill.manifest.outputs, skill.manifest.required_capabilities, skill.manifest.risk_level, skill.manifest.autonomy_level, skill.manifest.estimated_duration, skill.manifest.workspace_scope, skill.manifest.network_requirement, skill.manifest.owner, skill.manifest.status)
+        manifest = SkillManifest(skill.manifest.skill_id, skill.manifest.name, skill.manifest.description, version, skill.manifest.category, skill.manifest.inputs, skill.manifest.outputs, skill.manifest.required_capabilities, skill.manifest.risk_level, skill.manifest.autonomy_level, skill.manifest.estimated_duration, skill.manifest.workspace_scope, skill.manifest.network_requirement, skill.manifest.owner, skill.manifest.status, skill.manifest.input_schema)
         updated = Skill(manifest, skill.steps, skill.instructions_path, skill.instructions)
         self._skills[manifest.skill_id] = updated
         record = SkillVersion(f"skill-version-{manifest.skill_id}-{version}", manifest.skill_id, version, manifest, source, change_reason, previous, datetime.now(UTC))
@@ -126,4 +126,32 @@ def builtin_skills() -> tuple[Skill, ...]:
         item("daily_brief", "Daily brief", "Generate an evidence-backed concise briefing.", "briefing.generate", category="briefing"),
         item("system_health_check", "System health check", "Read current JARVIS health and capability state.", "system.health", category="diagnostics"),
         item("backup_jarvis", "Backup JARVIS", "Create an explicit verified database backup.", "backup.create", capability="backup.create", risk="safe"),
+        Skill(
+            SkillManifest(
+                "workspace_read_file",
+                "Read workspace file",
+                "Read one registered workspace file through the governed local MCP capability.",
+                category="workspace",
+                inputs=("project_id", "path"),
+                outputs=("result",),
+                risk_level="read",
+                autonomy_level=1,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "project_id": {"type": "string", "maxLength": 200},
+                        "path": {"type": "string", "maxLength": 500},
+                    },
+                    "required": ["project_id", "path"],
+                    "additionalProperties": False,
+                },
+            ),
+            (SkillStep(
+                "workspace-read-file",
+                "Read workspace file",
+                "tool:mcp.workspace.read_file",
+                {"project_id": "", "path": ""},
+                risk_level="read",
+            ),),
+        ),
     )
