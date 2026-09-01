@@ -1,37 +1,70 @@
-# Phase 14 V3 donor source extraction
+# Phase 14 V3 Donor Source Extraction Manifest
 
-This is a source-level attribution and adaptation record. Donor code is not a
-runtime dependency and donor backends, mock data, cloud assets, and transports
-were not copied.
+This document records the exact extraction and adaptation actions taken across the delegated Packages A-E visual correction, followed by the F/G rendered QA pass. All adapted presentation mechanisms are product-owned React components that receive only canonical state from the JARVIS runtime projection. No donor backends, mock telemetry, cloud fonts/CDNs, WebGL, MediaPipe, gesture tracking, or weapon/threat semantics were imported.
 
-| Donor | Exact source | V3 treatment |
-|---|---|---|
-| 03 React UI library | `packages/jarvis-ui/src/components/ui/JWaveform.tsx` | Adapted waveform presentation through the existing product `JWaveform`; transport and props remain product-owned. |
-| 03 React UI library | `packages/jarvis-ui/src/components/ui/JNodeGraph.tsx` | Adapted deterministic node/link geometry into product-owned `PulseNetwork`. |
-| 03 React UI library | `packages/jarvis-ui/src/components/layout/JHudFrame.tsx`, `JHudBar.tsx`, `JHudFrameCard.tsx` | Used as HUD framing references; product-owned `HoloPanel`, labels, cards, and existing panels remain the implementation. |
-| 03 React UI library | `packages/jarvis-ui/src/components/charts/JRadarChart.tsx` | Used as radial information-design reference; product-owned `RadarSweep` renders only reported points. |
-| 04 mission control | `src/components/layout/nav-rail.tsx` | Adapted compact navigation and collapsible-rail idea into the existing `AppShell`; no router or state store copied. |
-| 04 mission control | `src/components/panels/activity-feed-panel.tsx`, `src/components/chat/chat-panel.tsx` | Used for density and hierarchy references; existing JARVIS activity/chat transport remains authoritative. |
-| 06 tool UI | `apps/www/components/tool-ui/progress-tracker/progress-tracker.tsx`, `plan/plan.tsx`, `approval-card/approval-card.tsx` | Used for readable progress, plan, and approval presentation; product-owned canonical action handlers remain in place. |
-| 07 cinematic React | `components/BootSequence.tsx`, `components/animations/ArcReactor.tsx`, `components/panels/WaveformCore.tsx`, `components/panels/ThreatRadar.tsx` | Extracted cinematic timing, glow, ring, waveform, and radar language only. Stark/weapon/threat semantics and runtime were excluded. |
-| 08 static tactical HUD | `ironman-hud.html` functions `drawReticle`, `drawCircularGauge`, `drawMiniBar`, `drawCompass` | Geometry and scanline references only; no Three.js CDN, animation loop, fabricated threat data, or weapon semantics. |
-| 09 static dashboard | `dashboard.html` functions `randomGreatCircle`, `fibonacciSphere`, `spawnPing`, `makeCurvedPanel` | Depth/node/curved-panel references only; no WebGL, face recognition, hand gesture, MediaPipe, remote assets, or mock telemetry. |
+## Donor Source Extraction Matrix
 
-Donors 02 and 05 were inspected as references but were not imported into the
-runtime. Donor 02 remains a static HUD reference with external-font concerns;
-donor 05 is an assistant-UI framework surface rather than a drop-in product
-component. Donor license and exclusion decisions remain in the Phase 14
-inventory and salvage map.
+| Donor ID & Path | Exact Source File | Action Word | Technical Treatment & Reason |
+|---|---|---|---|
+| **03_jarvis_ui_components** | `packages/jarvis-ui/src/components/ui/JOrb.tsx` | **ADAPTED** | Extracted 12-tick 30-degree geometry math (`TICK_ANGLES`), multi-tier concentric spinning ring durations (`getRingSpeeds`), and radial gradient glow structure into `ui/src/components/holographic/HoloRing.tsx`. Stripped donor mock audio hooks and static timer loops. |
+| **03_jarvis_ui_components** | `packages/jarvis-ui/src/components/ui/JArcReactor.tsx` | **ADAPTED** | Extracted 3-triangle petal geometry at 120-degree intervals, circumference dashoffset power arcs, and counter-rotating rings into `ui/src/components/hud/JArcReactor.tsx`. Bound power levels directly to real backend readiness state. |
+| **03_jarvis_ui_components** | `packages/jarvis-ui/src/components/ui/JWaveform.tsx` | **ADAPTED** | Extracted 18-bar CSS custom property height distribution into `ui/src/components/hud/JWaveform.tsx`. Bound active state strictly to real voice/thinking visual states. |
+| **03_jarvis_ui_components** | `packages/jarvis-ui/src/components/layout/JHudBar.tsx`, `JHudFrameCard.tsx`, `JHudFrame.tsx` | **WRAPPED** | Wrapped bracket corner styling, dot sequence rules, and heading geometry into product-owned `HudBar`, `HudFrameCard`, and `JHudFrame` in `DonorFusion.tsx`. |
+| **03_jarvis_ui_components** | `packages/jarvis-ui/src/components/ui/JCommandPalette.tsx` | **ADAPTED** | Extracted keyboard shortcut listener (`Ctrl+K`/`Escape`) and search filtering into `HudCommandPalette`. Bound actions exclusively to client router navigation, never autonomous tool execution. |
+| **07_cinematic_jarvis** | `components/animations/ArcReactor.tsx` | **ADAPTED** | Extracted 3-energy arm geometry (`0°`, `120°`, `240°`), dashed hex tracks, and radial blur filters into `HoloRing.tsx` and `JArcReactor.tsx`. Excluded Stark Industries trademark text and standalone fixed overlays. |
+| **07_cinematic_jarvis** | `components/BootSequence.tsx` | **ADAPTED** | Extracted pulsing signal pips and boot trace indicator into `ui/src/components/cinematic/CinematicBoot.tsx`. Replaced hardcoded Stark telemetry with real `SCENE // {STATE}` readouts. |
+| **07_cinematic_jarvis** | `components/animations/ParticleField.tsx` | **ADAPTED** | Extracted upward drift and fading particle choreography into pure CSS keyframed energy sparks (`.energy-spark`) in `ui/src/components/cinematic/AmbientEnergy.tsx`. Stripped heavy canvas rendering. |
+| **07_cinematic_jarvis** | `components/panels/ThreatRadar.tsx` | **REJECTED** | Rejected military/weapon threat classification and fake enemy blips. Retained only product-owned `RadarSweep` for verified local devices. |
+| **08_tactical_hud** | `ironman-hud.html` (`drawReticle`, lines 776–1050) | **ADAPTED** | Extracted tactical dual-hexagon geometry and crosshair tick coordinates into SVG polygon paths in `HoloRing.tsx`. Stripped Three.js canvas loops and CDN script tags. |
+| **08_tactical_hud** | `ironman-hud.html` (`drawCompassStrip`, lines 1146–1336) | **ADAPTED** | Extracted cardinal point divider ticks and focus vector presentation into `ui/src/components/tactical/CompassStrip.tsx`. Stripped canvas render loop in favor of lightweight HTML/CSS. |
+| **08_tactical_hud** | `ironman-hud.html` (`drawCircularGauge`, `drawMiniBar`) | **COMPOSED** | Composed gauge proportions and data arc indicators into `ui/src/components/holographic/Primitives.tsx` (`DataArc`, `DepthGrid`, `ScanPlane`). |
+| **09_holographic_3d** | `dashboard.html` (`fibonacciSphere`, `spawnPing`, `randomGreatCircle`) | **ADAPTED** | Extracted node-to-node pulse link transmission and traveling particle animation (`v3-link-pulse`) into `ui/src/components/holographic/PulseNetwork.tsx`. Stripped WebGL canvas, Three.js runtime, and fake network nodes. |
+| **09_holographic_3d** | `dashboard.html` (MediaPipe face mesh & hand gestures) | **REJECTED** | Rejected completely. No camera access, gesture tracking, biometric processing, or remote CDNs permitted in product runtime. |
+| **04_mission_control** | `src/components/layout/nav-rail.tsx` | **ADAPTED** | Adapted collapsible rail structure and glowing active route indicators with crimson energy accents into `ui/src/components/layout/AppShell.tsx`. Stripped donor router and zustand store. |
+| **02_jarvis_hud** | `server/hud/index.html` | **REJECTED** | Rejected as a direct import due to external Google Fonts CDN links and non-modular vanilla JS. Reused only scanline pulse styling ideas in `styles.css`. |
+| **05_assistant_ui** | Complete workspace | **REJECTED** | Rejected as framework dependency; JARVIS uses product-owned React state and canonical API client. |
+| **01_foundation_matrix** | Complete workspace | **REJECTED** | Foundational layout prototype; rejected as a direct runtime import due to non-modular canvas structure in favor of product-owned React components and canvas-free CSS matrix grid foundation. |
+| **03_jarvis_ui_components** | `packages/jarvis-ui/src/components/ui/JProgress.tsx` | **ADAPTED** | Extracted 16-tick bar geometry math, active tick ratio calculation, and smooth percentage fill tracks into `ui/src/components/operations/OperationsPrimitives.tsx` (`ProgressSurface`). Stripped static theme presets in favor of dynamic CSS tokens. |
+| **03_jarvis_ui_components** | `packages/jarvis-ui/src/components/ui/JActivityFeed.tsx` | **ADAPTED** | Extracted compact event row layout, status dot markers, and timestamp alignment into `ui/src/components/operations/OperationsPrimitives.tsx` (`RichMessage` tool activities). |
+| **04_mission_control** | `src/components/chat/message-bubble.tsx`, `src/lib/chat-utils.ts` | **ADAPTED** | Adapted message bubble hierarchy (owner vs assistant tags, formatted code block parsing, and expandable tool invocation details) into `ui/src/components/operations/OperationsPrimitives.tsx` (`RichMessage`). Stripped Next.js image optimization and Zustand store hooks. |
+| **04_mission_control** | `src/components/dashboard/widgets/task-pipeline-widget.tsx` | **ADAPTED** | Extracted 4-stage pipeline structure (`planning`, `active`, `review`, `closed`) and stage dot states into `ui/src/components/operations/OperationsPrimitives.tsx` (`MissionPipeline`). Bound directly to canonical mission status projection. |
+| **04_mission_control** | `src/components/ui/loader.tsx` | **COMPOSED** | Composed pulsing status dot choreography and active step indicator into `ui/src/components/operations/OperationsPrimitives.tsx` (`PlanSurface` active step pulse). |
+| **05_assistant_ui** | `templates/nuxt/app/components/assistant-ui/thread.vue`, `message.vue` | **ADAPTED** | Adapted thread viewport hierarchy, sticky bottom alignment, calm composer styling, and clear user/assistant separation into `ChatScreen`. Rejected Nuxt framework, Vue reactivity, and external assistant-ui package dependencies. |
+| **06_tool_ui** | `apps/www/components/tool-ui/plan/plan.tsx` | **ADAPTED** | Adapted sequential step connector lines, numbered circular status badges, and expandable step details into `ui/src/components/operations/OperationsPrimitives.tsx` (`PlanSurface`). Stripped Radix Accordion / Collapsible dependencies in favor of lightweight product-owned React state. |
+| **06_tool_ui** | `apps/www/components/tool-ui/progress-tracker/progress-tracker.tsx` | **ADAPTED** | Adapted step indicator state transitions (`completed`, `in-progress`, `pending`, `failed`) and live status aria attributes into `PlanSurface` and `MissionPipeline`. |
+| **06_tool_ui** | `apps/www/components/tool-ui/shared/decision-actions.tsx`, `tool-fallback.tsx` | **WRAPPED** | Wrapped action confirmation affordances and structured tool outcome presentations into `ToolSurfacePrimitives.tsx` (`ApprovalSurface`, `ToolFallbackSurface`). Stripped Zod schema parsing and external context provider. |
+| **03_jarvis_ui_components** | `packages/jarvis-ui/src/components/charts/JRadarChart.tsx` | **ADAPTED** | Extracted multi-axis polygon math and spoke geometry into `TacticalRadar` and device field topology. Stripped theme overrides in favor of pure CSS variables. |
+| **03_jarvis_ui_components** | `packages/jarvis-ui/src/components/charts/JGaugeChart.tsx` | **ADAPTED** | Extracted circular gauge sweep calculations (`START_DEG`, `SWEEP`) and needle value projections into `SystemGauge` and `ConfidenceMeter`. |
+| **03_jarvis_ui_components** | `packages/jarvis-ui/src/components/charts/JSparkline.tsx` | **ADAPTED** | Extracted SVG point distribution math and trend direction calculation into knowledge confidence and runtime trend metrics. |
+| **08_tactical_hud** | `ironman-hud.html` (`drawCircularGauge`, `drawMiniBar`, `drawCompass`) | **ADAPTED** | Extracted segmented mini-bar geometry (5 segments, skewX transforms) and directional cardinal ticks into `ConfidenceMeter` and `CompassStrip`. Stripped canvas render loops. |
+| **09_holographic_3d** | `dashboard.html` (`makeCurvedPanel`, `spawnPing`) | **ADAPTED** | Extracted panel corner styling and node signal pulse pips into `ContextScreen` situational matrix and device topology indicators. |
+| **04_mission_control** | `src/components/terminal/terminal-view.tsx`, `terminal-toolbar.tsx`, `split-pane-layout.tsx` | **ADAPTED** | Extracted worker terminal layout structure, read-only mode badge, sessionKind indicators, and artifact stat presentation into `EngineeringScreen` (`StatsSurface`, `CodeSurface`, `ToolFallbackSurface`). Excluded xterm.js runtime, PTY WebSocket transport, and terminal command input. |
+| **04_mission_control** | `src/components/panels/activity-feed-panel.tsx`, and browser-security presentation helpers | **ADAPTED** | Extracted safe capability deferral presentation with clear policy boundaries into `BrowserScreen` and `CitationSurface`. Excluded remote browser proxying and session hijacking code. |
+| **06_tool_ui** | `apps/www/components/ui/code-block.tsx`, `apps/www/components/tool-ui/terminal/terminal.tsx`, `assistant-ui/tool-fallback.tsx` | **ADAPTED** | Extracted read-only code header with filename badge, monospace code block rendering, and structured tool fallback summaries into `CodeSurface` and `ToolFallbackSurface`. Excluded shiki runtime, clipboard hooks, and Radix accordion dependencies. |
+| **03_jarvis_ui_components** | `packages/jarvis-ui/src/components/ui/JCommandPalette.tsx`, `JActivityFeed.tsx`, `JThemePicker.tsx`, `JHudFrameCard.tsx` | **ADAPTED** | Extracted command search keybinding affordances (Ctrl K), activity audit stream formatting with severity color accents, and HUD frame card containment into `AppShell`, `ActivityScreen`, and `SettingsScreen`. Excluded runtime theme switcher and demo state stores. |
+| **04_mission_control** | `src/components/settings/agent-runtimes-section.tsx`, `src/components/ui/theme-selector.tsx`, `src/components/panels/activity-feed-panel.tsx`, `src/components/ui/agent-card-helpers.ts` | **ADAPTED** | Extracted MCP capability matrix badges, runtime diagnostic cards, and notification severity markers into `SettingsScreen` and `NotificationsScreen`. Excluded dynamic runtime installer scripts, docker check endpoints, and custom store providers. |
+| **06_tool_ui** | `apps/www/components/tool-ui/preferences-panel/preferences-panel.tsx`, `tool-ui/shared/decision-actions.tsx`, `tool-ui/shared/tool-fallback.tsx` | **ADAPTED** | Extracted preference category links, read-only setting indicators, and two-option decision actions (Approve / Deny) into `SettingsScreen` and `ApprovalsScreen`. Excluded Radix select/switch dependencies and Zod receipt validation. |
 
-## Product-owned V3 files
+---
 
-- `ui/src/features/core/deriveVisualState.ts`
-- `ui/src/components/cinematic/CinematicHero.tsx`
-- `ui/src/components/cinematic/CinematicBoot.tsx`
-- `ui/src/components/cinematic/AmbientEnergy.tsx`
-- `ui/src/components/holographic/HolographicCore.tsx`
-- `ui/src/components/holographic/HoloRing.tsx`
-- `ui/src/components/holographic/PulseNetwork.tsx`
-- `ui/src/components/holographic/Primitives.tsx`
-- `ui/src/components/tactical/RadarSweep.tsx`
-- `ui/src/components/tactical/CompassStrip.tsx`
+## Product-Owned V3 Architecture Files
+
+The adapted donor visual components are cleanly isolated into the following product-owned visual foundation files:
+
+- `ui/src/features/core/deriveVisualState.ts` — Canonical visual state derivation (`idle`, `ready`, `thinking`, `tool`, `researching`, `waiting_approval`, `speaking`, `degraded`, `offline`, `error`)
+- `ui/src/components/cinematic/CinematicHero.tsx` — Flagship wallpaper hero scene with primary JARVIS identity and multi-layered HUD geometry
+- `ui/src/components/cinematic/CinematicBoot.tsx` — Subsystem boot indicator and scene state badge
+- `ui/src/components/cinematic/AmbientEnergy.tsx` — CSS-based particle drift and energy sparks
+- `ui/src/components/holographic/HolographicCore.tsx` — Holographic core container supporting Halo, Orb, and Traces concepts
+- `ui/src/components/holographic/HoloRing.tsx` — SVG concentric rings with 12-tick Donor 03 geometry and Donor 08 hex reticle
+- `ui/src/components/holographic/PulseNetwork.tsx` — Live capability connection links with traveling pulse particles
+- `ui/src/components/holographic/Primitives.tsx` — Holographic primitives (`DataArc`, `DepthGrid`, `ScanPlane`, `HoloPanel`, `HoloLabel`)
+- `ui/src/components/hud/JArcReactor.tsx` — SVG arc reactor with 3-triangle petals, level arcs, and SVG glow filter
+- `ui/src/components/hud/JWaveform.tsx` — Audio-reactive waveform bars
+- `ui/src/components/hud/DonorFusion.tsx` — HUD frames, command palette, activity feed, and KPI ticker
+- `ui/src/components/tactical/RadarSweep.tsx` — Tactical multi-ring radar showing reported connected devices
+- `ui/src/components/tactical/CompassStrip.tsx` — Directional focus vector with cardinal ticks
+- `ui/src/components/operations/OperationsPrimitives.tsx` — Tactical chat message bubbles, tool activity details, conversation rail, mission pipeline, plan surface, confidence meters, and tick progress tracks
+- `ui/src/components/tool-ui/ToolSurfacePrimitives.tsx` — Decision surfaces, citations, code viewers, and tool fallbacks
+- `ui/src/components/layout/AppShell.tsx` — Minimal command strip topbar, collapsible nav rail, workspace, and context dock
+- `ui/src/styles.css` — Comprehensive V3 design system tokens, color palette, and keyframe animations

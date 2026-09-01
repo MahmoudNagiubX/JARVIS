@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { isValidElement, type ReactNode } from 'react'
 import { jsonText, stringValue, tone } from '../../lib/format'
 
 export function Panel({ children, className = '', as: Tag = 'section' }: { children: ReactNode; className?: string; as?: 'section' | 'div' | 'article' }) {
@@ -25,7 +25,7 @@ export function Metric({ label, value, status }: { label: string; value: unknown
 }
 
 export function DetailList({ values }: { values: Record<string, unknown> }) {
-  return <dl className="detail-list">{Object.entries(values).map(([key, value]) => <div className="detail-row" key={key}><dt>{key}</dt><dd className={tone(value)}>{jsonText(value)}</dd></div>)}</dl>
+  return <dl className="detail-list">{Object.entries(values).map(([key, value]) => <div className="detail-row" key={key}><dt>{key}</dt><dd className={tone(value)}>{isValidElement(value) ? value : jsonText(value)}</dd></div>)}</dl>
 }
 
 export function SectionHeading({ eyebrow, title, description, action }: { eyebrow?: string; title: string; description?: string; action?: ReactNode }) {

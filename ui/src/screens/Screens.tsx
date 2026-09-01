@@ -5,8 +5,9 @@ import { JWaveform } from '../components/hud/JWaveform'
 import { HudActivityFeed, HudFrameCard, HudKpiTicker } from '../components/hud/DonorFusion'
 import { MatrixEventStrip, MatrixSignal } from '../components/foundation/MatrixFoundation'
 import { ContextCompass, SystemGauge, TacticalRadar } from '../components/visuals/TacticalHud'
+import { CompassStrip } from '../components/tactical/CompassStrip'
 import { CinematicHero } from '../components/cinematic/CinematicHero'
-import { ConversationRail, MissionPipeline, PlanSurface, ProgressSurface, RichMessage, RunInbox } from '../components/operations/OperationsPrimitives'
+import { ConfidenceMeter, ConversationRail, MissionPipeline, PlanSurface, ProgressSurface, RichMessage, RunInbox } from '../components/operations/OperationsPrimitives'
 import { ApprovalSurface, CitationSurface, CodeSurface, DataTable, StatsSurface, ToolFallbackSurface } from '../components/tool-ui/ToolSurfacePrimitives'
 import wallpaperUrl from '../assets/hero/ironman-owner-wallpaper.jpg'
 import { Button, DetailList, EmptyState, FramePanel, ListCard, LoadingState, Metric, Panel, SectionHeading, StatusBadge } from '../components/common/Primitives'
@@ -56,17 +57,96 @@ export function HomeScreen() {
   const system = projectionRecord(state, 'system')
   const voice = projectionRecord(state, 'voice')
   const presence = projectionRecord(state, 'presence')
-  const home = projectionRecord(state, 'home')
   const missions = projectionList(state, 'missions')
   const approvals = projectionList(state, 'approvals').filter((item) => stringValue(item.status, 'pending') === 'pending')
   const timeline = projectionList(state, 'timeline').slice(-6).reverse()
   const visualState = deriveVisualState(projection)
-  return <div className="screen command-center-screen"><SectionHeading eyebrow="COMMAND CENTER" title="Good to see you." description="The local operating picture: runtime state, current work, and owner attention in one calm surface." action={<Link className="button primary" to="/chat">New chat <span>↗</span></Link>} />
-    <div data-testid="wallpaper-hero"><CinematicHero wallpaper={wallpaperUrl} state={visualState} modelLabel={stringValue(system.model_alias, system.model_available ? 'Local brain ready' : 'Local brain unavailable')} description={system.offline ? 'Internet is unavailable. Local capabilities remain available.' : 'Runtime connected to the local application boundary.'} focusedWindow={stringValue(presence.focused_window, 'Not observed')} application={stringValue(presence.active_application || presence.active_app, 'No active application')} missionCount={missions.length} attentionCount={approvals.length} voiceState={stringValue(voice.state, 'sleeping')} deviceCount={projectionList(state, 'devices').length} /></div>
-    <HudKpiTicker items={[{ label: 'LOCAL BRAIN', value: system.model_available ? 'READY' : 'OFFLINE', status: system.model_available ? 'active' : 'unavailable' }, { label: 'DEVICES', value: projectionList(state, 'devices').length }, { label: 'MISSIONS', value: missions.length || 'IDLE', status: missions.length ? 'active' : 'idle' }, { label: 'APPROVALS', value: approvals.length || 'CLEAR', status: approvals.length ? 'pending' : 'clear' }, { label: 'MODE', value: stringValue(record(record(state.operations).mode).mode, 'NORMAL') }]} />
-    <div className="command-grid"><HudFrameCard title="What needs attention" eyebrow="OWNER QUEUE" accent={approvals.length ? 'crimson' : 'cyan'}>{approvals.length ? <div className="stack">{approvals.slice(0, 2).map((approval) => <ApprovalSurface key={stringValue(approval.approval_id || approval.id)} approval={approval} interactive={false} onDecision={async () => undefined} />)}<Link className="text-link" to="/approvals">Open approval center →</Link></div> : <EmptyState title="No pending approvals" detail="Consequential actions will appear here with a sanitized preview." />}</HudFrameCard><HudFrameCard title="Local capability spine" eyebrow="REAL-TIME PROJECTION"><div className="spine-heading"><span>LOCAL CAPABILITY SPINE</span><StatusBadge value={system.offline ? 'local' : 'online'} /></div><div className="spine-grid"><MatrixSignal label="RUNTIME" value={statusText(system.runtime_state)} status={system.runtime_state} /><MatrixSignal label="MODEL" value={system.model_available ? 'Ready' : 'Unavailable'} status={system.model_available ? 'active' : 'unavailable'} /><MatrixSignal label="MEMORY" value="Inspectable" status="active" /><MatrixSignal label="RESEARCH" value={projectionList(state, 'research').length || 'Idle'} status="active" /></div><ContextCompass label="FOCUSED WINDOW" value={stringValue(presence.focused_window, 'Not observed')} /><Link className="text-link" to="/context">Inspect current context →</Link></HudFrameCard><HudFrameCard title="Active work" eyebrow="MISSION SERVICE" accent="ice">{missions.length ? <MissionPreview missions={missions} /> : <EmptyState title="No active missions" detail="Create bounded work through the canonical mission service." />}<Link className="text-link" to="/missions">Open missions →</Link></HudFrameCard></div>
-    <div className="screen-grid two"><HudFrameCard title="Recent activity" eyebrow="EVENT PROJECTION"><HudActivityFeed events={timeline} /><MatrixEventStrip events={timeline} /><Link className="text-link" to="/activity">View complete timeline →</Link></HudFrameCard><HudFrameCard title="Quick health" eyebrow="LOCAL-FIRST"><div className="health-readouts"><SystemGauge label="Local model" value={system.model_available ? 100 : 0} detail={system.model_available ? 'Backend reports ready' : 'Backend reports unavailable'} /><DetailList values={{ Goals: projectionList(state, 'goals').length, Memory: 'Inspectable', Research: projectionList(state, 'research').length, 'Voice acceptance': 'Deferred by design', Generated: dateValue(projection?.generated_at) }} /></div><button className="text-link button-link" onClick={() => void refreshProjection()}>Refresh projection ↻</button></HudFrameCard></div>
-  </div>
+
+  return (
+    <div className="screen command-center-screen">
+      <SectionHeading
+        eyebrow="OPERATIONS"
+        title="Good to see you."
+        description="Live operational command center."
+        action={<Link className="button primary" to="/chat">New chat <span>↗</span></Link>}
+      />
+      <div data-testid="wallpaper-hero">
+        <CinematicHero
+          wallpaper={wallpaperUrl}
+          state={visualState}
+          description={system.offline ? 'Internet is unavailable. Local capabilities remain available.' : 'All systems nominal.'}
+          focusedWindow={stringValue(presence.focused_window, 'Not observed')}
+          application={stringValue(presence.active_application || presence.active_app, 'No active application')}
+          missionCount={missions.length}
+          attentionCount={approvals.length}
+          voiceState={stringValue(voice.state, 'sleeping')}
+          deviceCount={projectionList(state, 'devices').length}
+        />
+      </div>
+      <HudKpiTicker
+        items={[
+          { label: 'SYSTEM', value: system.model_available ? 'READY' : 'OFFLINE', status: system.model_available ? 'active' : 'unavailable' },
+          { label: 'DEVICES', value: projectionList(state, 'devices').length },
+          { label: 'MISSIONS', value: missions.length || 'IDLE', status: missions.length ? 'active' : 'idle' },
+          { label: 'APPROVALS', value: approvals.length || 'CLEAR', status: approvals.length ? 'pending' : 'clear' },
+          { label: 'MODE', value: stringValue(record(record(state.operations).mode).mode, 'NORMAL') },
+        ]}
+      />
+      <div className="command-grid">
+        <HudFrameCard title="Owner attention" eyebrow="ATTENTION" accent={approvals.length ? 'crimson' : 'cyan'}>
+          {approvals.length ? (
+            <div className="stack">
+              {approvals.slice(0, 2).map((approval) => (
+                <ApprovalSurface key={stringValue(approval.approval_id || approval.id)} approval={approval} interactive={false} onDecision={async () => undefined} />
+              ))}
+              <Link className="text-link" to="/approvals">Open approval center →</Link>
+            </div>
+          ) : (
+            <EmptyState title="No pending approvals" detail="You're all clear." />
+          )}
+        </HudFrameCard>
+
+        <HudFrameCard title="System spine" eyebrow="SYSTEM">
+          <div className="spine-heading">
+            <span>LOCAL CAPABILITY SPINE</span>
+            <StatusBadge value={system.offline ? 'local' : 'online'} />
+          </div>
+          <div className="spine-grid">
+            <MatrixSignal label="RUNTIME" value={statusText(system.runtime_state)} status={system.runtime_state} />
+            <MatrixSignal label="MODEL" value={system.model_available ? 'Ready' : 'Unavailable'} status={system.model_available ? 'active' : 'unavailable'} />
+            <MatrixSignal label="MEMORY" value="Inspectable" status="active" />
+            <MatrixSignal label="RESEARCH" value={projectionList(state, 'research').length || 'Idle'} status="active" />
+          </div>
+          <ContextCompass label="FOCUSED WINDOW" value={stringValue(presence.focused_window, 'Not observed')} />
+          <Link className="text-link" to="/context">Inspect current context →</Link>
+        </HudFrameCard>
+
+        <HudFrameCard title="Active work" eyebrow="MISSIONS" accent="ice">
+          {missions.length ? (
+            <MissionPreview missions={missions} />
+          ) : (
+            <EmptyState title="No active missions" detail="Ready for new instructions." />
+          )}
+          <Link className="text-link" to="/missions">Open missions →</Link>
+        </HudFrameCard>
+      </div>
+
+      <div className="screen-grid two">
+        <HudFrameCard title="Recent activity" eyebrow="ACTIVITY">
+          <HudActivityFeed events={timeline} />
+          <MatrixEventStrip events={timeline} />
+          <Link className="text-link" to="/activity">View complete timeline →</Link>
+        </HudFrameCard>
+        <HudFrameCard title="Diagnostics" eyebrow="DIAGNOSTICS">
+          <div className="health-readouts">
+            <SystemGauge label="Local model" value={system.model_available ? 100 : 0} detail={system.model_available ? 'Backend reports ready' : 'Backend reports unavailable'} />
+            <DetailList values={{ 'Local Model': stringValue(system.model_alias, system.model_available ? 'Ready' : 'Unavailable'), Goals: projectionList(state, 'goals').length, Memory: 'Inspectable', Research: projectionList(state, 'research').length, 'Voice acceptance': 'Deferred by design', Generated: dateValue(projection?.generated_at) }} />
+          </div>
+          <button className="text-link button-link" onClick={() => void refreshProjection()}>Refresh projection ↻</button>
+        </HudFrameCard>
+      </div>
+    </div>
+  )
 }
 
 function MissionPreview({ missions }: { missions: JsonRecord[] }) {
@@ -89,14 +169,28 @@ export function ChatScreen() {
   const conversation = screenData.conversations.find((item) => item.id === selected)
 
   useEffect(() => {
-    if (!selected) { setScreenData({ messages: [] }); return }
-    void api.get<{ messages?: unknown[] }>(`/conversations/${encodeURIComponent(selected)}/messages`).then((payload) => setScreenData({ messages: list(payload.messages) })).catch((error) => setMessageError(error instanceof Error ? error.message : 'Conversation history unavailable.'))
+    if (!selected) {
+      setScreenData({ messages: [] })
+      return
+    }
+    void api
+      .get<{ messages?: unknown[] }>(`/conversations/${encodeURIComponent(selected)}/messages`)
+      .then((payload) => setScreenData({ messages: list(payload.messages) }))
+      .catch((error) => setMessageError(error instanceof Error ? error.message : 'Conversation history unavailable.'))
   }, [api, selected, setScreenData])
 
   useEffect(() => {
     const runIds = [...new Set(screenData.messages.map((message) => stringValue(message.run_id, '')).filter(Boolean))]
-    if (!runIds.length) { setActivities({}); return }
-    void Promise.all(runIds.map(async (runId) => [runId, list((await api.get<{ tools?: unknown[] }>(`/runs/${encodeURIComponent(runId)}/activity`)).tools)] as const))
+    if (!runIds.length) {
+      setActivities({})
+      return
+    }
+    void Promise.all(
+      runIds.map(async (runId) => [
+        runId,
+        list((await api.get<{ tools?: unknown[] }>(`/runs/${encodeURIComponent(runId)}/activity`)).tools),
+      ] as const)
+    )
       .then((entries) => setActivities(Object.fromEntries(entries)))
       .catch((error) => setMessageError(error instanceof Error ? error.message : 'Run activity unavailable.'))
   }, [api, screenData.messages])
@@ -135,14 +229,24 @@ export function ChatScreen() {
       }
     }
     void reconcile()
-    return () => { disposed = true; if (timer) window.clearTimeout(timer) }
+    return () => {
+      disposed = true
+      if (timer) window.clearTimeout(timer)
+    }
   }, [activeRun?.runId, api])
 
-  async function send(event: React.FormEvent) {
-    event.preventDefault(); const text = draft.trim(); if (!text || sending) return
-    setSending(true); setMessageError('')
+  async function send(event?: React.FormEvent) {
+    if (event) event.preventDefault()
+    const text = draft.trim()
+    if (!text || sending) return
+    setSending(true)
+    setMessageError('')
     try {
-      const result = await api.post<JsonRecord>('/messages/start', { text, conversation_id: selected || undefined, client_message_id: `ui-${globalThis.crypto?.randomUUID?.() || Date.now()}` })
+      const result = await api.post<JsonRecord>('/messages/start', {
+        text,
+        conversation_id: selected || undefined,
+        client_message_id: `ui-${globalThis.crypto?.randomUUID?.() || Date.now()}`,
+      })
       const conversationId = stringValue(result.conversation_id, selected)
       const runId = stringValue(result.run_id, '')
       setSelected(conversationId)
@@ -150,73 +254,1084 @@ export function ChatScreen() {
       setDraft('')
       await refreshConversation(conversationId)
       if (!runId) setSending(false)
-    } catch (error) { setSending(false); setMessageError(error instanceof Error ? error.message : 'Message failed.') }
+    } catch (error) {
+      setSending(false)
+      setMessageError(error instanceof Error ? error.message : 'Message failed.')
+    }
+  }
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault()
+      void send()
+    }
   }
 
   async function cancel() {
     if (!activeRun?.runId) return
-    try { await api.post(`/runs/${encodeURIComponent(activeRun.runId)}/cancel`) } catch (error) { setError(error instanceof Error ? error.message : 'Run cancellation failed.') }
+    try {
+      await api.post(`/runs/${encodeURIComponent(activeRun.runId)}/cancel`)
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Run cancellation failed.')
+    }
   }
 
   const inboxRuns: JsonRecord[] = activeRun ? [{ run_id: activeRun.runId, state: activeRun.state, conversation_id: activeRun.conversationId }] : []
-  return <div className="screen"><SectionHeading eyebrow="CONVERSATION" title="Chat with JARVIS" description="The text path reaches the same local AgentRuntime, context, tools, permissions, and approvals." /><div className="chat-layout">{screenLoading ? <Panel><LoadingState label="Loading conversations…" /></Panel> : <ConversationRail conversations={screenData.conversations} selected={selected} onSelect={setSelected} onNew={() => { setSelected(''); setScreenData({ messages: [] }) }} />}<Panel className="chat-panel"><div className="panel-head"><div><span className="eyebrow">LOCAL AGENT RUNTIME</span><h2>{conversation ? stringValue(conversation.title, 'Conversation') : 'New conversation'}</h2></div><StatusBadge value={activeRun?.state === 'paused' ? 'approval' : sending ? 'processing' : 'ready'} /></div>{messageError && <div className="inline-error" role="alert">{messageError}</div>}{activeRun?.state === 'paused' && <div className="notice" role="status">Run paused pending approval.</div>}<RunInbox runs={inboxRuns} /><div className="message-list" aria-live="polite">{screenData.messages.length ? screenData.messages.map((message, index) => <RichMessage key={stringValue(message.message_id || message.id, `${message.created_at}-${index}`)} message={message} activity={activities[stringValue(message.run_id, '')]} />) : <EmptyState title="Start a conversation" detail="Ask a normal question and the local model will answer through the canonical runtime." />}{sending && <div className="message assistant pending-message"><span className="message-role">JARVIS</span><p>Working from the local runtime…</p><JWaveform active /></div>}</div><form className="composer" onSubmit={send}><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask JARVIS anything local…" aria-label="Message JARVIS" rows={3} required /><div className="composer-footer"><span className="muted small">Enter a message · no cloud provider</span><div>{activeRun && activeRun.state !== 'paused' && <Button variant="quiet" onClick={() => void cancel()}>Cancel run</Button>}<Button variant="primary" type="submit" disabled={sending || !draft.trim()}>{sending ? 'Processing…' : 'Send message ↗'}</Button></div></div></form></Panel></div></div>
+
+  return (
+    <div className="screen chat-screen">
+      <SectionHeading
+        eyebrow="CONVERSATION"
+        title="Chat with JARVIS"
+        description="Direct communication with local intelligence."
+      />
+      <div className="chat-layout">
+        {screenLoading ? (
+          <Panel><LoadingState label="Loading conversations…" /></Panel>
+        ) : (
+          <ConversationRail
+            conversations={screenData.conversations}
+            selected={selected}
+            onSelect={setSelected}
+            onNew={() => {
+              setSelected('')
+              setScreenData({ messages: [] })
+            }}
+          />
+        )}
+
+        <Panel className="chat-panel">
+          <div className="panel-head">
+            <div>
+              <span className="eyebrow">NEURAL EXCHANGE</span>
+              <h2>{conversation ? stringValue(conversation.title, 'Conversation') : 'New conversation'}</h2>
+            </div>
+            <StatusBadge value={activeRun?.state === 'paused' ? 'approval' : sending ? 'processing' : 'ready'} />
+          </div>
+
+          {messageError && <div className="inline-error" role="alert">{messageError}</div>}
+          {activeRun?.state === 'paused' && <div className="notice" role="status">Run paused pending approval.</div>}
+
+          <RunInbox runs={inboxRuns} />
+
+          <div className="message-list" aria-live="polite">
+            {screenData.messages.length ? (
+              screenData.messages.map((message, index) => (
+                <RichMessage
+                  key={stringValue(message.message_id || message.id, `${message.created_at}-${index}`)}
+                  message={message}
+                  activity={activities[stringValue(message.run_id, '')]}
+                />
+              ))
+            ) : (
+              <EmptyState
+                title="Start a conversation"
+                detail="Ask a normal question and the local model will answer through the canonical runtime."
+              />
+            )}
+
+            {sending && (
+              <div className="message assistant pending-message">
+                <span className="message-role">JARVIS</span>
+                <p>Working from the local runtime…</p>
+                <JWaveform active />
+              </div>
+            )}
+          </div>
+
+          <form className="composer" onSubmit={send}>
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask JARVIS anything local…"
+              aria-label="Message JARVIS"
+              rows={3}
+              required
+            />
+            <div className="composer-footer">
+              <span className="muted small">Local runtime · Private boundary</span>
+              <div>
+                {activeRun && activeRun.state !== 'paused' && (
+                  <Button variant="quiet" onClick={() => void cancel()}>Cancel run</Button>
+                )}
+                <Button variant="primary" type="submit" disabled={sending || !draft.trim()}>
+                  {sending ? 'Processing…' : 'Send message ↗'}
+                </Button>
+              </div>
+            </div>
+          </form>
+        </Panel>
+      </div>
+    </div>
+  )
 }
 
 export function MissionsScreen() {
-  const { api, projection, refreshProjection, setError } = useJarvis(); const missions = projectionList(record(projection), 'missions'); const [title, setTitle] = useState(''); const [creating, setCreating] = useState(false); const [filter, setFilter] = useState('all')
+  const { api, projection, refreshProjection, setError } = useJarvis()
+  const missions = projectionList(record(projection), 'missions')
+  const [title, setTitle] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [filter, setFilter] = useState('all')
+
   const filtered = missions.filter((item) => filter === 'all' || stringValue(item.status) === filter)
-  async function create(event: React.FormEvent) { event.preventDefault(); if (!title.trim()) return; setCreating(true); try { await api.post('/missions', { title: title.trim(), request: title.trim(), plan: true }); setTitle(''); await refreshProjection() } catch (error) { setError(error instanceof Error ? error.message : 'Mission creation failed.') } finally { setCreating(false) } }
-  async function action(item: JsonRecord, name: string) { try { await api.post(`/missions/${encodeURIComponent(stringValue(item.mission_id || item.id))}/${name}`, {}) ; await refreshProjection() } catch (error) { setError(error instanceof Error ? error.message : 'Mission action failed.') } }
+
+  async function create(event: React.FormEvent) {
+    event.preventDefault()
+    if (!title.trim()) return
+    setCreating(true)
+    try {
+      await api.post('/missions', { title: title.trim(), request: title.trim(), plan: true })
+      setTitle('')
+      await refreshProjection()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Mission creation failed.')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  async function action(item: JsonRecord, name: string) {
+    try {
+      await api.post(`/missions/${encodeURIComponent(stringValue(item.mission_id || item.id))}/${name}`, {})
+      await refreshProjection()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Mission action failed.')
+    }
+  }
+
   const leadMission = filtered[0]
-  const planSteps = leadMission ? [{ label: `Goal: ${stringValue(leadMission.goal_id, 'Bounded mission')}`, status: leadMission.status }, { label: stringValue(leadMission.current_step, 'No active step'), status: leadMission.status }, { label: `Tool activity: ${list(leadMission.tool_activity).length || 'not reported'}`, status: leadMission.status }] : []
-  return <div className="screen"><SectionHeading eyebrow="OPERATIONS" title="Missions & goals" description="Bounded work already owned by the canonical mission and goal services." /><Panel className="toolbar-panel"><div className="filter-tabs">{['all', 'active', 'scheduled', 'waiting_approval', 'paused', 'completed', 'failed'].map((item) => <button className={filter === item ? 'selected' : ''} key={item} onClick={() => setFilter(item)}>{item === 'all' ? 'All' : statusText(item)}</button>)}</div><form className="inline-form" onSubmit={create}><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Create a bounded mission…" aria-label="Mission title" /><Button variant="primary" type="submit" disabled={creating || !title.trim()}>{creating ? 'Creating…' : 'Create mission'}</Button></form></Panel><MissionPipeline missions={filtered} />{leadMission && <div className="screen-grid two"><PlanSurface title={stringValue(leadMission.title || leadMission.request, 'Mission plan')} steps={planSteps} /><ProgressSurface label="Server-reported mission state" status={leadMission.status} value={typeof leadMission.progress === 'number' ? leadMission.progress : undefined} /></div>}<div className="screen-grid two">{filtered.length ? filtered.map((item) => <ListCard key={stringValue(item.mission_id || item.id)} title={stringValue(item.title || item.request, 'Untitled mission')} status={item.status} meta={`Updated ${dateValue(item.updated_at)}`}><DetailList values={{ Goal: stringValue(item.goal_id, 'None'), 'Current step': stringValue(item.current_step, 'Not started'), 'Tool activity': list(item.tool_activity).length || 'Not reported', 'Elapsed': stringValue(item.elapsed, 'Not reported') }} />{['draft', 'planned', 'paused'].includes(stringValue(item.status)) && <div className="card-actions inline"><Button onClick={() => void action(item, 'start')}>Start</Button>{stringValue(item.status) === 'paused' && <Button onClick={() => void action(item, 'resume')}>Resume</Button>}</div>}{['running', 'active'].includes(stringValue(item.status)) && <div className="card-actions inline"><Button onClick={() => void action(item, 'pause')}>Pause</Button><Button variant="danger" onClick={() => void action(item, 'cancel')}>Cancel</Button></div>}</ListCard>) : <Panel><EmptyState title="No missions in this view" detail="Production state is empty until the canonical mission service creates work." /></Panel>}</div></div>
+  const planSteps = leadMission
+    ? [
+        { label: `Goal: ${stringValue(leadMission.goal_id, 'Bounded mission')}`, status: leadMission.status },
+        { label: stringValue(leadMission.current_step, 'No active step'), status: leadMission.status },
+        { label: `Tool activity: ${list(leadMission.tool_activity).length || 'not reported'}`, status: leadMission.status },
+      ]
+    : []
+
+  return (
+    <div className="screen missions-screen">
+      <SectionHeading
+        eyebrow="OPERATIONS"
+        title="Missions & goals"
+        description="Tactical operations grid and execution tracking."
+      />
+
+      <Panel className="toolbar-panel">
+        <div className="filter-tabs">
+          {['all', 'active', 'scheduled', 'waiting_approval', 'paused', 'completed', 'failed'].map((item) => (
+            <button
+              className={filter === item ? 'selected' : ''}
+              key={item}
+              onClick={() => setFilter(item)}
+            >
+              {item === 'all' ? 'All' : statusText(item)}
+            </button>
+          ))}
+        </div>
+        <form className="inline-form" onSubmit={create}>
+          <input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="Create a bounded mission…"
+            aria-label="Mission title"
+          />
+          <Button variant="primary" type="submit" disabled={creating || !title.trim()}>
+            {creating ? 'Creating…' : 'Create mission'}
+          </Button>
+        </form>
+      </Panel>
+
+      <MissionPipeline missions={filtered} />
+
+      {leadMission && (
+        <div className="screen-grid two">
+          <PlanSurface
+            title={stringValue(leadMission.title || leadMission.request, 'Mission plan')}
+            steps={planSteps}
+          />
+          <ProgressSurface
+            label="Execution progress"
+            status={leadMission.status}
+            value={typeof leadMission.progress === 'number' ? leadMission.progress : undefined}
+          />
+        </div>
+      )}
+
+      <div className="screen-grid two">
+        {filtered.length ? (
+          filtered.map((item) => (
+            <ListCard
+              key={stringValue(item.mission_id || item.id)}
+              title={stringValue(item.title || item.request, 'Untitled mission')}
+              status={item.status}
+              meta={`Updated ${dateValue(item.updated_at)}`}
+            >
+              <DetailList
+                values={{
+                  Goal: stringValue(item.goal_id, 'None'),
+                  'Current step': stringValue(item.current_step, 'Not started'),
+                  'Tool activity': list(item.tool_activity).length || 'Not reported',
+                  Elapsed: stringValue(item.elapsed, 'Not reported'),
+                }}
+              />
+              {['draft', 'planned', 'paused'].includes(stringValue(item.status)) && (
+                <div className="card-actions inline">
+                  <Button onClick={() => void action(item, 'start')}>Start</Button>
+                  {stringValue(item.status) === 'paused' && (
+                    <Button onClick={() => void action(item, 'resume')}>Resume</Button>
+                  )}
+                </div>
+              )}
+              {['running', 'active'].includes(stringValue(item.status)) && (
+                <div className="card-actions inline">
+                  <Button onClick={() => void action(item, 'pause')}>Pause</Button>
+                  <Button variant="danger" onClick={() => void action(item, 'cancel')}>Cancel</Button>
+                </div>
+              )}
+            </ListCard>
+          ))
+        ) : (
+          <Panel>
+            <EmptyState
+              title="No missions in this view"
+              detail="Production state is empty until the canonical mission service creates work."
+            />
+          </Panel>
+        )}
+      </div>
+    </div>
+  )
 }
 
 export function MemoryScreen() {
-  const { api, screenData, screenLoading, setScreenData, setError } = useJarvis(); const [query, setQuery] = useState(''); const [editing, setEditing] = useState<JsonRecord | null>(null); const [content, setContent] = useState('')
-  async function search(event?: React.FormEvent) { event?.preventDefault(); try { const payload = await api.get<{ memories?: unknown[] }>(`/memory?limit=50${query.trim() ? `&q=${encodeURIComponent(query.trim())}` : ''}`); setScreenData({ memories: list(payload.memories) }) } catch (error) { setError(error instanceof Error ? error.message : 'Memory search failed.') } }
-  async function save(event: React.FormEvent) { event.preventDefault(); if (!editing || !content.trim()) return; try { await api.patch(`/memory/${encodeURIComponent(stringValue(editing.memory_id || editing.id))}`, { content: content.trim() }); setEditing(null); await search() } catch (error) { setError(error instanceof Error ? error.message : 'Memory update failed.') } }
-  async function remove(item: JsonRecord) { if (!window.confirm('Delete this memory through the canonical MemoryService?')) return; try { await api.delete(`/memory/${encodeURIComponent(stringValue(item.memory_id || item.id))}`, {}); await search() } catch (error) { setError(error instanceof Error ? error.message : 'Memory deletion failed.') } }
-  return <div className="screen"><SectionHeading eyebrow="PERSONAL KNOWLEDGE" title="Memory center" description="Inspect durable accepted knowledge. Fresh world observations remain separate from memory." /><Panel className="toolbar-panel"><form className="search-form" onSubmit={(event) => void search(event)}><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search memories by text, type, or source…" aria-label="Search memories" /><Button variant="primary" type="submit">Search</Button></form></Panel>{screenLoading ? <LoadingState /> : <div className="screen-grid two">{screenData.memories.length ? screenData.memories.map((item) => <ListCard key={stringValue(item.memory_id || item.id)} title={stringValue(item.content, 'Empty memory')} meta={`${stringValue(item.category, 'memory')} · ${shortDate(item.updated_at || item.created_at)}`}><DetailList values={{ Source: stringValue(item.source || item.source_reference, 'Unknown'), Confidence: item.confidence ?? 'Not reported', Sensitivity: stringValue(item.sensitivity, 'Not reported'), Validity: stringValue(item.validity, 'Not reported') }} /><div className="card-actions inline"><Button onClick={() => { setEditing(item); setContent(stringValue(item.content, '')) }}>Edit</Button><Button variant="danger" onClick={() => void remove(item)}>Delete</Button></div></ListCard>) : <Panel><EmptyState title="No memories found" detail="Memory remains empty until the canonical MemoryService accepts a record." /></Panel>}</div>}{editing && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setEditing(null)}><Panel className="modal" as="div"><div className="panel-head"><h2>Edit memory</h2><button className="icon-button" onClick={() => setEditing(null)} aria-label="Close memory editor">×</button></div><form onSubmit={save}><label className="field-label" htmlFor="memory-content">Content</label><textarea id="memory-content" value={content} onChange={(event) => setContent(event.target.value)} rows={7} required /><div className="card-actions inline"><Button variant="primary" type="submit">Save memory</Button><Button onClick={() => setEditing(null)}>Cancel</Button></div></form></Panel></div>}</div>
+  const { api, screenData, screenLoading, setScreenData, setError } = useJarvis()
+  const [query, setQuery] = useState('')
+  const [editing, setEditing] = useState<JsonRecord | null>(null)
+  const [content, setContent] = useState('')
+
+  async function search(event?: React.FormEvent) {
+    event?.preventDefault()
+    try {
+      const payload = await api.get<{ memories?: unknown[] }>(
+        `/memory?limit=50${query.trim() ? `&q=${encodeURIComponent(query.trim())}` : ''}`
+      )
+      setScreenData({ memories: list(payload.memories) })
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Memory search failed.')
+    }
+  }
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault()
+    if (!editing || !content.trim()) return
+    try {
+      await api.patch(`/memory/${encodeURIComponent(stringValue(editing.memory_id || editing.id))}`, {
+        content: content.trim(),
+      })
+      setEditing(null)
+      await search()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Memory update failed.')
+    }
+  }
+
+  async function remove(item: JsonRecord) {
+    if (!window.confirm('Delete this memory through the canonical MemoryService?')) return
+    try {
+      await api.delete(`/memory/${encodeURIComponent(stringValue(item.memory_id || item.id))}`, {})
+      await search()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Memory deletion failed.')
+    }
+  }
+
+  return (
+    <div className="screen memory-screen" data-testid="memory-screen">
+      <SectionHeading
+        eyebrow="PERSONAL KNOWLEDGE"
+        title="Memory center"
+        description="Inspect durable accepted knowledge. Fresh world observations remain separate from memory."
+      />
+      <Panel className="toolbar-panel">
+        <form className="search-form" onSubmit={(event) => void search(event)}>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search memories by text, type, or source…"
+            aria-label="Search memories"
+          />
+          <Button variant="primary" type="submit">Search</Button>
+        </form>
+      </Panel>
+      {screenLoading ? (
+        <LoadingState />
+      ) : (
+        <div className="screen-grid two">
+          {screenData.memories.length ? (
+            screenData.memories.map((item) => (
+              <ListCard
+                key={stringValue(item.memory_id || item.id)}
+                title={stringValue(item.content, 'Empty memory')}
+                meta={`${stringValue(item.category, 'memory')} · ${shortDate(item.updated_at || item.created_at)}`}
+              >
+                <DetailList
+                  values={{
+                    Source: stringValue(item.source || item.source_reference, 'Unknown'),
+                    Confidence: item.confidence !== undefined ? <ConfidenceMeter value={item.confidence} /> : 'Not reported',
+                    Sensitivity: stringValue(item.sensitivity, 'Not reported'),
+                    Validity: stringValue(item.validity, 'Not reported'),
+                  }}
+                />
+                <div className="card-actions inline">
+                  <Button onClick={() => { setEditing(item); setContent(stringValue(item.content, '')) }}>Edit</Button>
+                  <Button variant="danger" onClick={() => void remove(item)}>Delete</Button>
+                </div>
+              </ListCard>
+            ))
+          ) : (
+            <Panel>
+              <EmptyState
+                title="No memories found"
+                detail="Memory remains empty until the canonical MemoryService accepts a record."
+              />
+            </Panel>
+          )}
+        </div>
+      )}
+      {editing && (
+        <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setEditing(null)}>
+          <Panel className="modal" as="div">
+            <div className="panel-head">
+              <h2>Edit memory</h2>
+              <button className="icon-button" onClick={() => setEditing(null)} aria-label="Close memory editor">×</button>
+            </div>
+            <form onSubmit={save}>
+              <label className="field-label" htmlFor="memory-content">Content</label>
+              <textarea
+                id="memory-content"
+                value={content}
+                onChange={(event) => setContent(event.target.value)}
+                rows={7}
+                required
+              />
+              <div className="card-actions inline">
+                <Button variant="primary" type="submit">Save memory</Button>
+                <Button onClick={() => setEditing(null)}>Cancel</Button>
+              </div>
+            </form>
+          </Panel>
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function ContextScreen() {
-  const { projection, screenData } = useJarvis(); const state = record(projection); const presence = projectionRecord(state, 'presence'); const home = projectionRecord(state, 'home'); const context = screenData.context; const world = record(context.world_state || context.world)
-  return <div className="screen"><SectionHeading eyebrow="LIVE PROJECTION" title="Current context" description="Fresh, bounded observations from perception, presence, workspace, and world-state services. Viewing this does not persist it to Memory." /><div className="screen-grid two"><FramePanel title="Desktop and presence" eyebrow="SOURCE-OWNED"><DetailList values={{ 'Active device': stringValue(presence.active_device_id, 'Not observed'), 'Active application': stringValue(presence.active_application || presence.active_app, 'Not observed'), 'Focused window': stringValue(presence.focused_window, 'Not observed'), Workspace: stringValue(presence.current_workspace, 'Not observed'), Session: stringValue(record(state.conversation).session_id, 'No active session'), Freshness: dateValue(context.generated_at || projection?.generated_at) }} /></FramePanel><FramePanel title="World state" eyebrow="BOUNDED FACTS">{Object.keys(world).length ? <DetailList values={Object.fromEntries(Object.entries(world).slice(0, 10).map(([key, value]) => [key, typeof value === 'object' ? 'Structured observation' : value]))} /> : <EmptyState title="No fresh world-state facts" detail="JARVIS will show observations when an approved provider reports them." />}</FramePanel></div><FramePanel title="Home context" eyebrow="CONNECTED SERVICES" status={home.available ? 'connected' : 'offline'}><DetailList values={{ Controller: home.available ? 'Live controller connected' : 'No live home controller connected', Entities: list(home.entities).length, Policy: 'No fake devices' }} /></FramePanel></div>
+  const { projection, screenData } = useJarvis()
+  const state = record(projection)
+  const presence = projectionRecord(state, 'presence')
+  const home = projectionRecord(state, 'home')
+  const context = screenData.context
+  const world = record(context.world_state || context.world)
+
+  const focusedWindow = stringValue(presence.focused_window, 'Not observed')
+  const activeApp = stringValue(presence.active_application || presence.active_app, 'Not observed')
+
+  return (
+    <div className="screen context-screen" data-testid="context-screen">
+      <SectionHeading
+        eyebrow="LIVE PROJECTION"
+        title="Current context"
+        description="Fresh, bounded observations from perception, presence, workspace, and world-state services. Viewing this does not persist it to Memory."
+      />
+      <div className="screen-grid two">
+        <FramePanel title="Desktop and presence" eyebrow="SOURCE-OWNED">
+          <div className="context-vector-preview">
+            <CompassStrip label="FOCUSED WINDOW" value={focusedWindow} />
+          </div>
+          <DetailList
+            values={{
+              'Active device': stringValue(presence.active_device_id, 'Not observed'),
+              'Active application': activeApp,
+              'Focused window': focusedWindow,
+              Workspace: stringValue(presence.current_workspace, 'Not observed'),
+              Session: stringValue(record(state.conversation).session_id, 'No active session'),
+              Freshness: dateValue(context.generated_at || projection?.generated_at),
+            }}
+          />
+        </FramePanel>
+        <FramePanel title="World state" eyebrow="BOUNDED FACTS">
+          {Object.keys(world).length ? (
+            <DetailList
+              values={Object.fromEntries(
+                Object.entries(world)
+                  .slice(0, 10)
+                  .map(([key, value]) => [key, typeof value === 'object' ? 'Structured observation' : value])
+              )}
+            />
+          ) : (
+            <EmptyState
+              title="No fresh world-state facts"
+              detail="JARVIS will show observations when an approved provider reports them."
+            />
+          )}
+        </FramePanel>
+      </div>
+      <FramePanel title="Home context" eyebrow="CONNECTED SERVICES" status={home.available ? 'connected' : 'offline'}>
+        <DetailList
+          values={{
+            Controller: home.available ? 'Live controller connected' : 'No live home controller connected',
+            Entities: list(home.entities).length,
+            Policy: 'No fake devices',
+          }}
+        />
+      </FramePanel>
+    </div>
+  )
 }
 
-export function OperationsScreen() { const { projection } = useJarvis(); const state = record(projection); const operations = projectionRecord(state, 'operations'); const focus = projectionRecord(state, 'focus'); const modes = projectionList(state, 'automations'); const followups = projectionList(state, 'follow_ups'); return <div className="screen"><SectionHeading eyebrow="PERSONAL OPERATIONS" title="Operations" description="Modes, focus, briefings, automations, and follow-ups from the existing authorities." /><div className="screen-grid three"><FramePanel title="Current mode" status={record(operations.mode).mode || 'normal'}><DetailList values={{ Mode: stringValue(record(operations.mode).mode, 'normal'), 'Focus session': focus ? 'Active' : 'Inactive', 'Follow-ups': followups.length }} /><Link className="text-link" to="/notifications">Review attention queue →</Link></FramePanel><FramePanel title="Automations" status={modes.length ? 'active' : 'idle'}>{modes.length ? modes.slice(0, 6).map((item) => <div className="compact-row" key={stringValue(item.rule_id || item.id)}><strong>{stringValue(item.name || item.rule_id, 'Automation rule')}</strong><StatusBadge value={item.enabled ? 'enabled' : 'paused'} /></div>) : <EmptyState title="No automations configured" detail="Rules appear here only when the canonical operations service creates them." />}</FramePanel><FramePanel title="Follow-ups" status={followups.length ? 'pending' : 'clear'}>{followups.length ? followups.slice(0, 5).map((item) => <div className="compact-row" key={stringValue(item.follow_up_id || item.id)}><div><strong>{stringValue(item.subject || item.title, 'Follow-up')}</strong><span>{dateValue(item.due_at || item.created_at)}</span></div><StatusBadge value={item.status || 'active'} /></div>) : <EmptyState title="No active follow-ups" detail="Resolved items remain in the backend history." />}</FramePanel></div></div> }
+export function OperationsScreen() {
+  const { projection } = useJarvis()
+  const state = record(projection)
+  const operations = projectionRecord(state, 'operations')
+  const focus = projectionRecord(state, 'focus')
+  const modes = projectionList(state, 'automations')
+  const followups = projectionList(state, 'follow_ups')
 
-export function ResearchScreen() { const { api, screenData, screenLoading, setScreenData, refreshProjection, setError } = useJarvis(); const [query, setQuery] = useState(''); const [starting, setStarting] = useState(false); const [evidence, setEvidence] = useState<JsonRecord[]>([])
-  async function start(event: React.FormEvent) { event.preventDefault(); if (!query.trim()) return; setStarting(true); try { await api.post('/research/runs', { query: query.trim() }); setQuery(''); await Promise.all([refreshProjection(), load()]) } catch (error) { setError(error instanceof Error ? error.message : 'Research request failed.') } finally { setStarting(false) } }
-  async function load() { const payload = await api.get<{ runs?: unknown[] }>('/research/runs'); setScreenData({ research: list(payload.runs) }) }
-  async function showEvidence(item: JsonRecord) { try { const id = stringValue(item.run_id || item.id); const payload = await api.get<unknown>(`/research/runs/${encodeURIComponent(id)}/evidence`); setEvidence(list(evidenceFromPayload(payload))) } catch (error) { setError(error instanceof Error ? error.message : 'Evidence unavailable.') } }
-  return <div className="screen"><SectionHeading eyebrow="EVIDENCE LEDGER" title="Research" description="Persisted research runs and evidence. Web access remains explicit when the provider is unavailable." /><Panel className="toolbar-panel"><form className="search-form" onSubmit={(event) => void start(event)}><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Start a local research request…" aria-label="Research request" /><Button variant="primary" type="submit" disabled={starting || !query.trim()}>{starting ? 'Starting…' : 'Start research'}</Button></form></Panel><div className="screen-grid two">{screenLoading ? <LoadingState /> : screenData.research.length ? screenData.research.map((item) => <ListCard key={stringValue(item.run_id || item.id)} title={stringValue(item.query, 'Research run')} status={item.status} meta={dateValue(item.created_at)}><DetailList values={{ Completed: dateValue(item.completed_at), Sources: item.source_count ?? item.evidence_count ?? 'Not reported', Error: stringValue(item.error_code, 'None') }} /><div className="card-actions inline"><Button onClick={() => void showEvidence(item)}>View evidence</Button>{['queued', 'running', 'started'].includes(stringValue(item.status)) && <Button variant="danger" onClick={() => void api.post(`/research/runs/${encodeURIComponent(stringValue(item.run_id || item.id))}/cancel`, {}).then(load).catch((error) => setError(error instanceof Error ? error.message : 'Research cancellation failed.'))}>Cancel</Button>}</div></ListCard>) : <Panel><EmptyState title="No research runs" detail="Research runs appear here when the existing ResearchService is used." /></Panel>}</div>{evidence.length > 0 && <Panel className="evidence-panel"><div className="panel-head"><h2>Evidence</h2><Button onClick={() => setEvidence([])}>Close</Button></div><CitationSurface evidence={evidence} /></Panel>}</div>
+  return (
+    <div className="screen operations-screen">
+      <SectionHeading
+        eyebrow="OPERATIONS"
+        title="Operations console"
+        description="Real-time mode, focus state, automations, and follow-ups."
+      />
+      <div className="screen-grid three">
+        <FramePanel title="Current mode" eyebrow="MODE & FOCUS" status={record(operations.mode).mode || 'normal'}>
+          <DetailList
+            values={{
+              Mode: stringValue(record(operations.mode).mode, 'normal'),
+              'Focus session': focus ? 'Active' : 'Inactive',
+              'Follow-ups': followups.length,
+            }}
+          />
+          <Link className="text-link" to="/notifications">Review attention queue →</Link>
+        </FramePanel>
+
+        <FramePanel title="Automations" eyebrow="AUTOMATION RULES" status={modes.length ? 'active' : 'idle'}>
+          {modes.length ? (
+            modes.slice(0, 6).map((item) => (
+              <div className="compact-row" key={stringValue(item.rule_id || item.id)}>
+                <strong>{stringValue(item.name || item.rule_id, 'Automation rule')}</strong>
+                <StatusBadge value={item.enabled ? 'enabled' : 'paused'} />
+              </div>
+            ))
+          ) : (
+            <EmptyState
+              title="No automations configured"
+              detail="Rules appear here only when the canonical operations service creates them."
+            />
+          )}
+        </FramePanel>
+
+        <FramePanel title="Follow-ups" eyebrow="ATTENTION QUEUE" status={followups.length ? 'pending' : 'clear'}>
+          {followups.length ? (
+            followups.slice(0, 5).map((item) => (
+              <div className="compact-row" key={stringValue(item.follow_up_id || item.id)}>
+                <div>
+                  <strong>{stringValue(item.subject || item.title, 'Follow-up')}</strong>
+                  <span>{dateValue(item.due_at || item.created_at)}</span>
+                </div>
+                <StatusBadge value={item.status || 'active'} />
+              </div>
+            ))
+          ) : (
+            <EmptyState
+              title="No active follow-ups"
+              detail="Resolved items remain in the backend history."
+            />
+          )}
+        </FramePanel>
+      </div>
+    </div>
+  )
 }
 
-export function SkillsScreen() { const { api, projection, refreshProjection, setError } = useJarvis(); const skills = projectionList(record(projection), 'skills'); async function toggle(item: JsonRecord) { const id = stringValue(item.skill_id || item.id); const enabled = Boolean(item.enabled ?? item.status === 'enabled'); try { await api.post(`/skills/${encodeURIComponent(id)}/${enabled ? 'disable' : 'enable'}`, {}); await refreshProjection() } catch (error) { setError(error instanceof Error ? error.message : 'Skill policy update failed.') } } return <div className="screen"><SectionHeading eyebrow="CAPABILITY REGISTRY" title="Skills" description="Installed skill metadata from the product-owned registry. Enablement and execution remain policy-controlled." /><div className="screen-grid three">{skills.length ? skills.map((item) => <ListCard key={stringValue(item.skill_id || item.id)} title={stringValue(item.name || item.skill_id, 'Skill')} status={item.enabled ? 'enabled' : item.status || 'disabled'} meta={stringValue(item.source, 'Product registry')}><p className="card-copy">{stringValue(item.description, 'No description')}</p><DetailList values={{ Version: item.version || item.current_version || 'Not reported', Risk: item.risk_level || 'Not reported', Capabilities: list(item.capabilities).length || 'Not reported', 'Last used': dateValue(item.last_used) }} /><div className="card-actions"><Button onClick={() => void toggle(item)}>{item.enabled ? 'Disable' : 'Enable'}</Button></div></ListCard>) : <Panel><EmptyState title="No skills installed" detail="The registry is the source of truth; no fixture skills are shown." /></Panel>}</div>{skills.length > 0 && <DataTable columns={['name', 'source', 'status', 'risk_level']} rows={skills} />}</div> }
+export function ResearchScreen() {
+  const { api, screenData, screenLoading, setScreenData, refreshProjection, setError } = useJarvis()
+  const [query, setQuery] = useState('')
+  const [starting, setStarting] = useState(false)
+  const [evidence, setEvidence] = useState<JsonRecord[]>([])
 
-export function DevicesScreen() { const { projection } = useJarvis(); const devices = projectionList(record(projection), 'devices'); return <div className="screen"><SectionHeading eyebrow="DEVICE FABRIC" title="Devices & home" description="Actual registered device and home-controller state. A device is never marked live without backend evidence." /><div className="device-overview"><div><TacticalRadar points={devices.length} label="DEVICE RADAR" /><ContextCompass label="REGISTERED FIELD" value={`${devices.length} device${devices.length === 1 ? '' : 's'}`} /></div><div className="screen-grid two">{devices.length ? devices.map((item) => <ListCard key={stringValue(item.device_id || item.id)} title={stringValue(item.name || item.device_id, 'Device')} status={item.status} meta={stringValue(item.role, 'Registered device')}><DetailList values={{ Device: stringValue(item.device_id || item.id), 'Last seen': dateValue(item.last_seen), Capabilities: list(item.capabilities).length ? `${list(item.capabilities).length} reported` : 'None reported', Health: stringValue(item.health, 'Not reported') }} /></ListCard>) : <Panel><EmptyState title="No registered devices" detail="Connect a device through the canonical device authority." /></Panel>}</div></div><Panel><EmptyState title="No live home controller connected" detail="Home integration will appear when configured; the UI does not fabricate device state." /></Panel></div> }
+  async function start(event: React.FormEvent) {
+    event.preventDefault()
+    if (!query.trim()) return
+    setStarting(true)
+    try {
+      await api.post('/research/runs', { query: query.trim() })
+      setQuery('')
+      await Promise.all([refreshProjection(), load()])
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Research request failed.')
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  async function load() {
+    const payload = await api.get<{ runs?: unknown[] }>('/research/runs')
+    setScreenData({ research: list(payload.runs) })
+  }
+
+  async function showEvidence(item: JsonRecord) {
+    try {
+      const id = stringValue(item.run_id || item.id)
+      const payload = await api.get<unknown>(`/research/runs/${encodeURIComponent(id)}/evidence`)
+      setEvidence(list(evidenceFromPayload(payload)))
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Evidence unavailable.')
+    }
+  }
+
+  return (
+    <div className="screen research-screen" data-testid="research-screen">
+      <SectionHeading
+        eyebrow="EVIDENCE LEDGER"
+        title="Research"
+        description="Persisted research runs and evidence. Web access remains explicit when the provider is unavailable."
+      />
+      <Panel className="toolbar-panel">
+        <form className="search-form" onSubmit={(event) => void start(event)}>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Start a local research request…"
+            aria-label="Research request"
+          />
+          <Button variant="primary" type="submit" disabled={starting || !query.trim()}>
+            {starting ? 'Starting…' : 'Start research'}
+          </Button>
+        </form>
+      </Panel>
+      <div className="screen-grid two">
+        {screenLoading ? (
+          <LoadingState />
+        ) : screenData.research.length ? (
+          screenData.research.map((item) => (
+            <ListCard
+              key={stringValue(item.run_id || item.id)}
+              title={stringValue(item.query, 'Research run')}
+              status={item.status}
+              meta={dateValue(item.created_at)}
+            >
+              <DetailList
+                values={{
+                  Completed: dateValue(item.completed_at),
+                  Sources: item.source_count ?? item.evidence_count ?? 'Not reported',
+                  Error: stringValue(item.error_code, 'None'),
+                }}
+              />
+              <div className="card-actions inline">
+                <Button onClick={() => void showEvidence(item)}>View evidence</Button>
+                {['queued', 'running', 'started'].includes(stringValue(item.status)) && (
+                  <Button
+                    variant="danger"
+                    onClick={() =>
+                      void api
+                        .post(`/research/runs/${encodeURIComponent(stringValue(item.run_id || item.id))}/cancel`, {})
+                        .then(load)
+                        .catch((error) => setError(error instanceof Error ? error.message : 'Research cancellation failed.'))
+                    }
+                  >
+                    Cancel
+                  </Button>
+                )}
+              </div>
+            </ListCard>
+          ))
+        ) : (
+          <Panel>
+            <EmptyState
+              title="No research runs"
+              detail="Research runs appear here when the existing ResearchService is used."
+            />
+          </Panel>
+        )}
+      </div>
+      {evidence.length > 0 && (
+        <Panel className="evidence-panel">
+          <div className="panel-head">
+            <h2>Evidence</h2>
+            <Button onClick={() => setEvidence([])}>Close</Button>
+          </div>
+          <CitationSurface evidence={evidence} />
+        </Panel>
+      )}
+    </div>
+  )
+}
+
+export function SkillsScreen() {
+  const { api, projection, refreshProjection, setError } = useJarvis()
+  const skills = projectionList(record(projection), 'skills')
+
+  async function toggle(item: JsonRecord) {
+    const id = stringValue(item.skill_id || item.id)
+    const enabled = Boolean(item.enabled ?? item.status === 'enabled')
+    try {
+      await api.post(`/skills/${encodeURIComponent(id)}/${enabled ? 'disable' : 'enable'}`, {})
+      await refreshProjection()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Skill policy update failed.')
+    }
+  }
+
+  return (
+    <div className="screen skills-screen" data-testid="skills-screen">
+      <SectionHeading
+        eyebrow="CAPABILITY REGISTRY"
+        title="Skills"
+        description="Installed skill metadata from the product-owned registry. Enablement and execution remain policy-controlled."
+      />
+      <div className="screen-grid three">
+        {skills.length ? (
+          skills.map((item) => (
+            <ListCard
+              key={stringValue(item.skill_id || item.id)}
+              title={stringValue(item.name || item.skill_id, 'Skill')}
+              status={item.enabled ? 'enabled' : item.status || 'disabled'}
+              meta={stringValue(item.source, 'Product registry')}
+            >
+              <p className="card-copy">{stringValue(item.description, 'No description')}</p>
+              <DetailList
+                values={{
+                  Version: item.version || item.current_version || 'Not reported',
+                  Risk: item.risk_level || 'Not reported',
+                  Capabilities: list(item.capabilities).length || 'Not reported',
+                  'Last used': dateValue(item.last_used),
+                }}
+              />
+              <div className="card-actions">
+                <Button onClick={() => void toggle(item)}>{item.enabled ? 'Disable' : 'Enable'}</Button>
+              </div>
+            </ListCard>
+          ))
+        ) : (
+          <Panel>
+            <EmptyState
+              title="No skills installed"
+              detail="The registry is the source of truth; no fixture skills are shown."
+            />
+          </Panel>
+        )}
+      </div>
+      {skills.length > 0 && <DataTable columns={['name', 'source', 'status', 'risk_level']} rows={skills} />}
+    </div>
+  )
+}
+
+export function DevicesScreen() {
+  const { projection } = useJarvis()
+  const devices = projectionList(record(projection), 'devices')
+  const home = projectionRecord(record(projection), 'home')
+
+  return (
+    <div className="screen devices-screen" data-testid="devices-screen">
+      <SectionHeading
+        eyebrow="DEVICE FABRIC"
+        title="Devices & home"
+        description="Actual registered device and home-controller state. A device is never marked live without backend evidence."
+      />
+      <div className="device-overview">
+        <div>
+          <TacticalRadar points={devices.length} label="DEVICE RADAR" />
+          <ContextCompass label="REGISTERED FIELD" value={`${devices.length} device${devices.length === 1 ? '' : 's'}`} />
+        </div>
+        <div className="screen-grid two">
+          {devices.length ? (
+            devices.map((item) => (
+              <ListCard
+                key={stringValue(item.device_id || item.id)}
+                title={stringValue(item.name || item.device_id, 'Device')}
+                status={item.status}
+                meta={stringValue(item.role, 'Registered device')}
+              >
+                <DetailList
+                  values={{
+                    Device: stringValue(item.device_id || item.id),
+                    'Last seen': dateValue(item.last_seen),
+                    Capabilities: list(item.capabilities).length ? `${list(item.capabilities).length} reported` : 'None reported',
+                    Health: stringValue(item.health, 'Not reported'),
+                  }}
+                />
+              </ListCard>
+            ))
+          ) : (
+            <Panel>
+              <EmptyState
+                title="No registered devices"
+                detail="Connect a device through the canonical device authority."
+              />
+            </Panel>
+          )}
+        </div>
+      </div>
+      <Panel>
+        {home.available ? (
+          <DetailList
+            values={{
+              'Home controller': 'Connected',
+              Entities: list(home.entities).length,
+              Policy: 'Backend verified only',
+            }}
+          />
+        ) : (
+          <EmptyState
+            title="No live home controller connected"
+            detail="Home integration will appear when configured; the UI does not fabricate device state."
+          />
+        )}
+      </Panel>
+    </div>
+  )
+}
 
 export function NotificationsScreen() {
   const { api, projection, refreshProjection, setError } = useJarvis()
   const notifications = projectionList(record(projection), 'notifications')
   const [filter, setFilter] = useState<NotificationFilter>('all')
   const visible = useMemo(() => filterNotifications(notifications, filter), [filter, notifications])
+
   async function dismiss(item: JsonRecord) {
-    try { await api.post(`/notifications/${encodeURIComponent(stringValue(item.notification_id || item.id))}/dismiss`, {}); await refreshProjection() }
-    catch (error) { setError(error instanceof Error ? error.message : 'Notification dismissal failed.') }
+    try {
+      await api.post(`/notifications/${encodeURIComponent(stringValue(item.notification_id || item.id))}/dismiss`, {})
+      await refreshProjection()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Notification dismissal failed.')
+    }
   }
-  const filters: Array<[NotificationFilter, string]> = [['all', 'All'], ['unread', 'Unread'], ['important', 'Important'], ['proactive', 'Proactive'], ['system', 'System']]
-  return <div className="screen"><SectionHeading eyebrow="OWNER ATTENTION" title="Notifications" description="Unread, proactive, and system notices from the existing notification service." /><div className="filter-tabs large">{filters.map(([value, label]) => <button className={filter === value ? 'selected' : ''} key={value} onClick={() => setFilter(value)}>{label}{value === 'all' && <span> {notifications.length}</span>}</button>)}</div><Panel>{visible.length ? <div className="notification-list">{visible.map((item) => <div className="notification-row" key={stringValue(item.notification_id || item.id)}><span className={`notification-marker ${tone(item.severity)}`} /><div><div className="card-heading"><strong>{stringValue(item.title, 'Notification')}</strong><StatusBadge value={item.severity || 'info'} /></div><p>{stringValue(item.message, '')}</p><span className="muted small">{dateValue(item.created_at)}</span></div>{!item.dismissed && <Button variant="quiet" onClick={() => void dismiss(item)}>Dismiss</Button>}</div>)}</div> : <EmptyState title="No notifications in this view" detail="JARVIS will surface important changes without turning local operation into noise." />}</Panel></div>
+
+  const filters: Array<[NotificationFilter, string]> = [
+    ['all', 'All'],
+    ['unread', 'Unread'],
+    ['important', 'Important'],
+    ['proactive', 'Proactive'],
+    ['system', 'System'],
+  ]
+
+  return (
+    <div className="screen notifications-screen" data-testid="notifications-screen">
+      <SectionHeading
+        eyebrow="OWNER ATTENTION"
+        title="Notifications"
+        description="Unread, proactive, and system notices from the existing notification service."
+      />
+      <div className="filter-tabs large">
+        {filters.map(([value, label]) => (
+          <button
+            className={filter === value ? 'selected' : ''}
+            key={value}
+            onClick={() => setFilter(value)}
+          >
+            {label}
+            {value === 'all' && <span> {notifications.length}</span>}
+          </button>
+        ))}
+      </div>
+      <Panel>
+        {visible.length ? (
+          <div className="notification-list">
+            {visible.map((item) => (
+              <div className="notification-row" key={stringValue(item.notification_id || item.id)}>
+                <span className={`notification-marker ${tone(item.severity)}`} />
+                <div>
+                  <div className="card-heading">
+                    <strong>{stringValue(item.title, 'Notification')}</strong>
+                    <StatusBadge value={item.severity || 'info'} />
+                  </div>
+                  <p>{stringValue(item.message, '')}</p>
+                  <span className="muted small">{dateValue(item.created_at)}</span>
+                </div>
+                {!item.dismissed && (
+                  <Button variant="quiet" onClick={() => void dismiss(item)}>
+                    Dismiss
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            title="No notifications in this view"
+            detail="JARVIS will surface important changes without turning local operation into noise."
+          />
+        )}
+      </Panel>
+    </div>
+  )
 }
 
-export function ApprovalsScreen() { const { api, projection, refreshProjection, setError } = useJarvis(); const approvals = projectionList(record(projection), 'approvals'); async function decision(item: JsonRecord, approved: boolean) { const runId = stringValue(item.run_id || item.pending_run_id, ''); if (!runId) return; try { await api.post(`/approvals/${encodeURIComponent(stringValue(item.approval_id || item.id))}`, { run_id: runId, approved }); await refreshProjection() } catch (error) { setError(error instanceof Error ? error.message : 'Approval decision failed.') } } return <div className="screen"><SectionHeading eyebrow="OWNER CONTROL" title="Approval center" description="Consequential actions remain backend-authoritative. Each decision is owner-scoped, CSRF-protected, and audited." /><div className="screen-grid two">{approvals.length ? approvals.map((item) => <ApprovalSurface key={stringValue(item.approval_id || item.id)} approval={item} onDecision={(approved) => decision(item, approved)} />) : <Panel><EmptyState title="No pending approvals" detail="JARVIS will show the exact action, target, reason, risk, and sanitized preview here." /></Panel>}</div></div> }
+export function ApprovalsScreen() {
+  const { api, projection, refreshProjection, setError } = useJarvis()
+  const approvals = projectionList(record(projection), 'approvals')
 
-export function ActivityScreen() { const { projection } = useJarvis(); const timeline = projectionList(record(projection), 'timeline'); return <div className="screen"><SectionHeading eyebrow="AUDIT PROJECTION" title="Activity" description="A readable owner-facing timeline. Sensitive payloads are redacted before reaching this projection." /><FramePanel title="Runtime timeline" eyebrow={`${timeline.length} RECORDED EVENTS`}><ActivityList events={timeline} limit={100} /></FramePanel></div> }
+  async function decision(item: JsonRecord, approved: boolean) {
+    const runId = stringValue(item.run_id || item.pending_run_id, '')
+    if (!runId) return
+    try {
+      await api.post(`/approvals/${encodeURIComponent(stringValue(item.approval_id || item.id))}`, {
+        run_id: runId,
+        approved,
+      })
+      await refreshProjection()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Approval decision failed.')
+    }
+  }
 
-export function EngineeringScreen() { const { projection } = useJarvis(); const items = projectionList(record(projection), 'worker_delegations').concat(projectionList(record(projection), 'engineering')); const artifacts = items.reduce((total, item) => total + (typeof item.artifact_count === 'number' ? item.artifact_count : 0), 0); const output = items.map((item) => stringValue(item.output || item.result, '')).find(Boolean); return <div className="screen"><SectionHeading eyebrow="DEVELOPER WORKERS" title="Engineering" description="Read-only worker and engineering-session state. Terminal streaming remains intentionally deferred." /><StatsSurface items={[{ label: 'Workers', value: items.length }, { label: 'Artifacts', value: artifacts || 'Not reported' }, { label: 'Transport', value: 'Local authority' }]} /><div className="screen-grid two">{items.length ? items.map((item, index) => <ListCard key={stringValue(item.session_id || item.worker_id, String(index))} title={stringValue(item.provider || item.worker_id, 'Engineering session')} status={item.status} meta={stringValue(item.session_id || item.worker_id)}><DetailList values={{ Session: stringValue(item.session_id, 'Not reported'), 'Last action': stringValue(item.last_action || item.action, 'Not reported'), Artifacts: item.artifact_count ?? 'Not reported' }} /></ListCard>) : <Panel><EmptyState title="No active engineering workers" detail="Worker state appears when the existing engineering service creates a session." /></Panel>}</div>{output ? <CodeSurface code={output} filename="canonical-worker-output.txt" /> : <ToolFallbackSurface name="Engineering output" result="No canonical code or diff artifact is currently reported." />}</div> }
+  return (
+    <div className="screen approvals-screen" data-testid="approvals-screen">
+      <SectionHeading
+        eyebrow="OWNER CONTROL"
+        title="Approval center"
+        description="Consequential actions remain backend-authoritative. Each decision is owner-scoped, CSRF-protected, and audited."
+      />
+      <div className="screen-grid two">
+        {approvals.length ? (
+          approvals.map((item) => (
+            <ApprovalSurface
+              key={stringValue(item.approval_id || item.id)}
+              approval={item}
+              onDecision={(approved) => decision(item, approved)}
+            />
+          ))
+        ) : (
+          <Panel>
+            <EmptyState
+              title="No pending approvals"
+              detail="JARVIS will show the exact action, target, reason, risk, and sanitized preview here."
+            />
+          </Panel>
+        )}
+      </div>
+    </div>
+  )
+}
 
-export function BrowserScreen() { return <div className="screen"><SectionHeading eyebrow="SAFE CAPABILITY SURFACE" title="Browser" description="Browser work remains behind the existing browser authority, session, permission, and approval policy." /><Panel className="deferred-panel"><span className="deferred-icon">↗</span><h2>No live browser job</h2><StatusBadge value="unavailable" /><p>The product UI will display real browser capability results when a configured local controller reports them. It does not fabricate tabs, navigation, or web content.</p><Link className="button secondary" to="/approvals">Review approvals</Link></Panel></div> }
+export function ActivityScreen() {
+  const { projection } = useJarvis()
+  const timeline = projectionList(record(projection), 'timeline')
 
-export function SettingsScreen() { const { projection, screenData } = useJarvis(); const health = screenData.health; const system = projectionRecord(record(projection), 'system'); const model = record(health.local_model || health.model); const voice = projectionRecord(record(projection), 'voice'); const mcp = list(health.mcp); return <div className="screen"><SectionHeading eyebrow="CONFIGURATION" title="Settings & health" description="Operational truth, privacy controls, and safe product surfaces for the local runtime." /><div className="settings-grid"><FramePanel title="System health" status={health.state || system.runtime_state}><DetailList values={{ Core: health.state || system.runtime_state || 'Not reported', Database: health.database || 'Not reported', 'Local model': model.available || system.model_available ? 'Ready' : 'Unavailable', Provider: model.provider || system.model_provider || 'Not reported', Voice: voice.state || 'No active voice session', Venom: record(health.venom).status || 'Not connected' }} /></FramePanel><FramePanel title="MCP capabilities" eyebrow="LOCAL-FIRST" status={mcp.length ? stringValue(mcp[0].state, 'not configured') : 'not configured'}>{mcp.length ? mcp.map((item, index) => <div className="compact-row" key={stringValue(item.server_id, String(index))}><div><strong>{stringValue(item.display_name || item.server_id, 'MCP server')}</strong><span>{String(item.tool_count ?? 0)} discovered tools</span><span>{list(item.capabilities).map((capability) => stringValue(record(capability).name)).filter(Boolean).join(' · ') || 'No discovered tools'}</span></div><StatusBadge value={stringValue(item.state, 'unknown')} /></div>) : <EmptyState title="No MCP servers configured" detail="Only backend-confirmed local capability state appears here." />}</FramePanel><FramePanel title="Privacy center" eyebrow="LOCAL POLICY"><DetailList values={{ 'Local brain': 'YES', 'Raw audio stored': 'NO', 'Raw screenshots stored': 'NO', 'Core cloud dependency': 'NO', Memory: 'Inspectable / editable / deletable', Credentials: 'HttpOnly session boundary' }} /><div className="notice">Physical voice acceptance is intentionally deferred. Normal voice operational state remains visible when the backend reports it.</div></FramePanel><FramePanel title="Preferences" eyebrow="PRODUCT SURFACE"><div className="settings-list"><div>General <span>Read-only in this release; no editable preference control is exposed.</span></div><Link to="/devices">Devices <span>Registered device status</span></Link><Link to="/skills">Skills <span>Policy-controlled capabilities</span></Link><div>Advanced diagnostics <span>Available through the desktop repair surface; not a fabricated in-app route.</span></div></div></FramePanel><FramePanel title="Voice status" eyebrow="OPERATIONAL ONLY"><div className="voice-status"><JWaveform active={['listening', 'speaking'].includes(stringValue(voice.state))} /><DetailList values={{ State: statusText(voice.state || 'sleeping'), Microphone: stringValue(voice.microphone, 'Not reported'), Speaker: stringValue(voice.speaker, 'Not reported'), Wake: stringValue(voice.wake, 'Not reported'), STT: stringValue(voice.stt, 'Not reported'), TTS: stringValue(voice.tts, 'Not reported') }} /></div></FramePanel></div></div> }
+  return (
+    <div className="screen activity-screen" data-testid="activity-screen">
+      <SectionHeading
+        eyebrow="AUDIT PROJECTION"
+        title="Activity"
+        description="A readable owner-facing timeline. Sensitive payloads are redacted before reaching this projection."
+      />
+      <FramePanel title="Runtime timeline" eyebrow={`${timeline.length} RECORDED EVENTS`}>
+        <ActivityList events={timeline} limit={100} />
+      </FramePanel>
+    </div>
+  )
+}
+
+export function EngineeringScreen() {
+  const { projection } = useJarvis()
+  const items = projectionList(record(projection), 'worker_delegations').concat(
+    projectionList(record(projection), 'engineering')
+  )
+  const artifacts = items.reduce(
+    (total, item) => total + (typeof item.artifact_count === 'number' ? item.artifact_count : 0),
+    0
+  )
+  const output = items.map((item) => stringValue(item.output || item.result, '')).find(Boolean)
+
+  return (
+    <div className="screen engineering-screen" data-testid="engineering-screen">
+      <SectionHeading
+        eyebrow="DEVELOPER WORKERS"
+        title="Engineering"
+        description="Read-only worker and engineering-session state. Terminal streaming remains intentionally deferred."
+      />
+      <StatsSurface
+        items={[
+          { label: 'Workers', value: items.length },
+          { label: 'Artifacts', value: artifacts || 'Not reported' },
+          { label: 'Transport', value: 'Local authority' },
+        ]}
+      />
+      <div className="screen-grid two">
+        {items.length ? (
+          items.map((item, index) => (
+            <ListCard
+              key={stringValue(item.session_id || item.worker_id, String(index))}
+              title={stringValue(item.provider || item.worker_id, 'Engineering session')}
+              status={item.status}
+              meta={stringValue(item.session_id || item.worker_id)}
+            >
+              <DetailList
+                values={{
+                  Session: stringValue(item.session_id, 'Not reported'),
+                  'Last action': stringValue(item.last_action || item.action, 'Not reported'),
+                  Artifacts: item.artifact_count ?? 'Not reported',
+                }}
+              />
+            </ListCard>
+          ))
+        ) : (
+          <Panel>
+            <EmptyState
+              title="No active engineering workers"
+              detail="Worker state appears when the existing engineering service creates a session."
+            />
+          </Panel>
+        )}
+      </div>
+      {output ? (
+        <CodeSurface code={output} filename="canonical-worker-output.txt" />
+      ) : (
+        <ToolFallbackSurface
+          name="Engineering output"
+          result="No canonical code or diff artifact is currently reported."
+        />
+      )}
+    </div>
+  )
+}
+
+export function BrowserScreen() {
+  return (
+    <div className="screen browser-screen" data-testid="browser-screen">
+      <SectionHeading
+        eyebrow="SAFE CAPABILITY SURFACE"
+        title="Browser"
+        description="Browser work remains behind the existing browser authority, session, permission, and approval policy."
+      />
+      <Panel className="deferred-panel">
+        <span className="deferred-icon" aria-hidden="true">↗</span>
+        <h2>No live browser job</h2>
+        <StatusBadge value="unavailable" />
+        <p>
+          The product UI will display real browser capability results when a configured local controller reports them.
+          It does not fabricate tabs, navigation, or web content.
+        </p>
+        <Link className="button secondary" to="/approvals">
+          Review approvals
+        </Link>
+      </Panel>
+    </div>
+  )
+}
+
+export function SettingsScreen() {
+  const { projection, screenData } = useJarvis()
+  const health = screenData.health
+  const system = projectionRecord(record(projection), 'system')
+  const model = record(health.local_model || health.model)
+  const voice = projectionRecord(record(projection), 'voice')
+  const mcp = list(health.mcp)
+
+  return (
+    <div className="screen settings-screen" data-testid="settings-screen">
+      <SectionHeading
+        eyebrow="CONFIGURATION"
+        title="Settings & health"
+        description="Operational truth, privacy controls, and safe product surfaces for the local runtime."
+      />
+      <div className="settings-grid">
+        <FramePanel title="System health" status={health.state || system.runtime_state}>
+          <DetailList
+            values={{
+              Core: health.state || system.runtime_state || 'Not reported',
+              Database: health.database || 'Not reported',
+              'Local model': model.available || system.model_available ? 'Ready' : 'Unavailable',
+              Provider: model.provider || system.model_provider || 'Not reported',
+              Voice: voice.state || 'No active voice session',
+              Venom: record(health.venom).status || 'Not connected',
+            }}
+          />
+        </FramePanel>
+
+        <FramePanel
+          title="MCP capabilities"
+          eyebrow="LOCAL-FIRST"
+          status={mcp.length ? stringValue(mcp[0].state, 'not configured') : 'not configured'}
+        >
+          {mcp.length ? (
+            mcp.map((item, index) => (
+              <div className="compact-row" key={stringValue(item.server_id, String(index))}>
+                <div>
+                  <strong>{stringValue(item.display_name || item.server_id, 'MCP server')}</strong>
+                  <span>{String(item.tool_count ?? 0)} discovered tools</span>
+                  <span>
+                    {list(item.capabilities)
+                      .map((capability) => stringValue(record(capability).name))
+                      .filter(Boolean)
+                      .join(' · ') || 'No discovered tools'}
+                  </span>
+                </div>
+                <StatusBadge value={stringValue(item.state, 'unknown')} />
+              </div>
+            ))
+          ) : (
+            <EmptyState
+              title="No MCP servers configured"
+              detail="Only backend-confirmed local capability state appears here."
+            />
+          )}
+        </FramePanel>
+
+        <FramePanel title="Privacy center" eyebrow="LOCAL POLICY">
+          <DetailList
+            values={{
+              'Local brain': 'YES',
+              'Raw audio stored': 'NO',
+              'Raw screenshots stored': 'NO',
+              'Core cloud dependency': 'NO',
+              Memory: 'Inspectable / editable / deletable',
+              Credentials: 'HttpOnly session boundary',
+            }}
+          />
+          <div className="notice">
+            Physical voice acceptance is intentionally deferred. Normal voice operational state remains visible when
+            the backend reports it.
+          </div>
+        </FramePanel>
+
+        <FramePanel title="Preferences" eyebrow="PRODUCT SURFACE">
+          <div className="settings-list">
+            <div>
+              General <span>Read-only in this release; no editable preference control is exposed.</span>
+            </div>
+            <Link to="/devices">
+              Devices <span>Registered device status</span>
+            </Link>
+            <Link to="/skills">
+              Skills <span>Policy-controlled capabilities</span>
+            </Link>
+            <div>
+              Advanced diagnostics <span>Available through the desktop repair surface; not a fabricated in-app route.</span>
+            </div>
+          </div>
+        </FramePanel>
+
+        <FramePanel title="Voice status" eyebrow="OPERATIONAL ONLY">
+          <div className="voice-status">
+            <JWaveform active={['listening', 'speaking'].includes(stringValue(voice.state))} />
+            <DetailList
+              values={{
+                State: statusText(voice.state || 'sleeping'),
+                Microphone: stringValue(voice.microphone, 'Not reported'),
+                Speaker: stringValue(voice.speaker, 'Not reported'),
+                Wake: stringValue(voice.wake, 'Not reported'),
+                STT: stringValue(voice.stt, 'Not reported'),
+                TTS: stringValue(voice.tts, 'Not reported'),
+              }}
+            />
+          </div>
+        </FramePanel>
+      </div>
+    </div>
+  )
+}

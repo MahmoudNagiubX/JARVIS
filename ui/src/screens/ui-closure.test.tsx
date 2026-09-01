@@ -272,4 +272,273 @@ describe('Phase 14 final closure screens', () => {
     expect(radar).toHaveAttribute('data-reported-points', '2')
     expect(within(radar).getAllByTestId('radar-point')).toHaveLength(2)
   })
+
+  it('renders memory lattice with confidence meter and allows opening edit modal', async () => {
+    window.location.hash = '#/memory'
+    const memories = [
+      {
+        memory_id: 'mem-1',
+        content: 'Prefers dark mode and local-first execution.',
+        category: 'preference',
+        confidence: 90,
+        source: 'conversation',
+        sensitivity: 'low',
+        validity: 'valid',
+      },
+    ]
+    const api = apiFor(baseProjection, vi.fn(async () => ({})), { '/memory?limit=50': { memories } })
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('memory-screen')).toBeInTheDocument()
+    expect(await screen.findByText('Prefers dark mode and local-first execution.')).toBeInTheDocument()
+    expect(screen.getByTestId('confidence-meter')).toHaveTextContent('90%')
+
+    // Open edit modal
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.getByRole('heading', { name: 'Edit memory' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Content' })).toHaveValue('Prefers dark mode and local-first execution.')
+
+    // Close edit modal
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('heading', { name: 'Edit memory' })).not.toBeInTheDocument()
+  })
+
+  it('renders situational context with focus vector compass and bounded facts', async () => {
+    window.location.hash = '#/context'
+    const projection = {
+      ...baseProjection,
+      presence: {
+        focused_window: 'Visual Studio Code',
+        active_application: 'Code.exe',
+        active_device_id: 'DESKTOP-JARVIS',
+      },
+    }
+    const api = apiFor(projection, vi.fn(async () => ({})), {
+      '/context': {
+        world_state: { 'network.online': true, 'audio.muted': false },
+      },
+    })
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('context-screen')).toBeInTheDocument()
+    expect(screen.getAllByText('Visual Studio Code').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Code.exe').length).toBeGreaterThan(0)
+    expect(screen.getByText('Desktop and presence')).toBeInTheDocument()
+  })
+
+  it('renders engineering worker delegator surface with code output and artifact metrics', async () => {
+    window.location.hash = '#/engineering'
+    const projection = {
+      ...baseProjection,
+      worker_delegations: [
+        {
+          session_id: 'worker-1',
+          worker_id: 'worker-codex',
+          provider: 'Codex CLI',
+          status: 'running',
+          last_action: 'Running tests',
+          artifact_count: 3,
+          output: 'PASS src/screens/ui-closure.test.tsx\nAll tests completed.',
+        },
+      ],
+    }
+    const api = apiFor(projection, vi.fn(async () => ({})))
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('engineering-screen')).toBeInTheDocument()
+    expect(screen.getByText('Codex CLI')).toBeInTheDocument()
+    expect(screen.getAllByText('3').length).toBeGreaterThan(0)
+    expect(screen.getByText(/PASS src\/screens\/ui-closure.test.tsx/)).toBeInTheDocument()
+    expect(screen.getByText('canonical-worker-output.txt')).toBeInTheDocument()
+  })
+
+  it('renders browser safe capability surface with deferred state and approval link', async () => {
+    window.location.hash = '#/browser'
+    const api = apiFor(baseProjection, vi.fn(async () => ({})))
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('browser-screen')).toBeInTheDocument()
+    expect(screen.getByText('No live browser job')).toBeInTheDocument()
+    expect(screen.getByText(/The product UI will display real browser capability results/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Review approvals' })).toHaveAttribute('href', '#/approvals')
+  })
+
+  it('allows starting a research run and cancelling an active run', async () => {
+    window.location.hash = '#/research'
+    const post = vi.fn(async () => ({}))
+    const api = apiFor(baseProjection, post, {
+      '/research/runs': {
+        runs: [
+          { run_id: 'run-active', query: 'Quantum algorithms', status: 'running', created_at: '2026-08-31T12:00:00Z' },
+        ],
+      },
+    })
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('research-screen')).toBeInTheDocument()
+    expect(await screen.findByText('Quantum algorithms')).toBeInTheDocument()
+
+    // Start a new research run
+    const input = screen.getByRole('textbox', { name: 'Research request' })
+    fireEvent.change(input, { target: { value: 'Neural architectures' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start research' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/research/runs', { query: 'Neural architectures' }))
+
+    // Cancel active run
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/research/runs/run-active/cancel', {}))
+  })
+
+  it('allows toggling skill enablement through canonical skills API', async () => {
+    window.location.hash = '#/skills'
+    const post = vi.fn(async () => ({}))
+    const projection = {
+      ...baseProjection,
+      skills: [
+        {
+          skill_id: 'skill-python',
+          name: 'Python Execution',
+          description: 'Executes sandboxed Python scripts.',
+          enabled: true,
+          status: 'enabled',
+          source: 'Product registry',
+          version: '1.2.0',
+          risk_level: 'medium',
+          capabilities: [{ name: 'python.run' }],
+        },
+      ],
+    }
+    const api = apiFor(projection, post)
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('skills-screen')).toBeInTheDocument()
+    expect(screen.getAllByText('Python Execution').length).toBeGreaterThan(0)
+    expect(screen.getByText('Executes sandboxed Python scripts.')).toBeInTheDocument()
+
+    const disableBtn = screen.getByRole('button', { name: 'Disable' })
+    fireEvent.click(disableBtn)
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/skills/skill-python/disable', {}))
+  })
+
+  it('allows dismissing unread notifications through canonical notifications API', async () => {
+    window.location.hash = '#/notifications'
+    const post = vi.fn(async () => ({}))
+    const projection = {
+      ...baseProjection,
+      notifications: [
+        {
+          notification_id: 'notif-1',
+          title: 'High Temperature Alert',
+          message: 'Reactor temperature is elevated.',
+          severity: 'critical',
+          dismissed: false,
+          created_at: '2026-08-31T12:00:00Z',
+        },
+      ],
+    }
+    const api = apiFor(projection, post)
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('notifications-screen')).toBeInTheDocument()
+    expect(screen.getByText('High Temperature Alert')).toBeInTheDocument()
+
+    const dismissBtn = screen.getByRole('button', { name: 'Dismiss' })
+    fireEvent.click(dismissBtn)
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/notifications/notif-1/dismiss', {}))
+  })
+
+  it('allows denying a pending approval with canonical run correlation', async () => {
+    window.location.hash = '#/approvals'
+    const post = vi.fn(async () => ({}))
+    const projection = {
+      ...baseProjection,
+      approvals: [
+        {
+          approval_id: 'approval-2',
+          action: 'file.delete',
+          reason: 'Deleting temporary logs',
+          risk: 'high',
+          status: 'pending',
+          run_id: 'run-99',
+        },
+      ],
+    }
+    const api = apiFor(projection, post)
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('approvals-screen')).toBeInTheDocument()
+    expect(screen.getByText('file.delete')).toBeInTheDocument()
+
+    const denyBtn = screen.getByRole('button', { name: 'Deny' })
+    fireEvent.click(denyBtn)
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/approvals/approval-2', { run_id: 'run-99', approved: false }))
+  })
+
+  it('renders activity timeline events with audit projection and timestamps', async () => {
+    window.location.hash = '#/activity'
+    const projection = {
+      ...baseProjection,
+      timeline: [
+        {
+          event_id: 'event-1',
+          event_type: 'session.restored',
+          category: 'session',
+          severity: 'info',
+          timestamp: '2026-08-31T12:00:00Z',
+        },
+      ],
+    }
+    const api = apiFor(projection, vi.fn(async () => ({})))
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('activity-screen')).toBeInTheDocument()
+    expect(screen.getByText('1 RECORDED EVENTS')).toBeInTheDocument()
+    expect(screen.getByText('session restored')).toBeInTheDocument()
+  })
+
+  it('renders settings diagnostic health, MCP capabilities, and privacy boundary', async () => {
+    window.location.hash = '#/settings'
+    const projection = {
+      ...baseProjection,
+      system: {
+        runtime_state: 'ready',
+        offline: false,
+        model_available: true,
+        model_alias: 'local-qwen',
+        model_provider: 'Local Ollama',
+      },
+      voice: {
+        state: 'listening',
+        microphone: 'Default Mic',
+        speaker: 'Default Output',
+      },
+    }
+    const api = apiFor(projection, vi.fn(async () => ({})), {
+      '/health': {
+        state: 'ready',
+        database: 'Connected SQLite',
+        local_model: { available: true, provider: 'Local Ollama' },
+        mcp: [
+          {
+            server_id: 'filesystem-server',
+            display_name: 'Local Filesystem MCP',
+            tool_count: 5,
+            state: 'ready',
+            capabilities: [{ name: 'fs.read' }, { name: 'fs.write' }],
+          },
+        ],
+      },
+      '/personalization/profile': { owner_name: 'Tony Stark' },
+    })
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('settings-screen')).toBeInTheDocument()
+    expect(screen.getByText('System health')).toBeInTheDocument()
+    expect(await screen.findByText('Connected SQLite')).toBeInTheDocument()
+    expect(screen.getAllByText('Local Ollama').length).toBeGreaterThan(0)
+    expect(screen.getByText('Local Filesystem MCP')).toBeInTheDocument()
+    expect(screen.getByText('5 discovered tools')).toBeInTheDocument()
+    expect(screen.getByText('fs.read · fs.write')).toBeInTheDocument()
+    expect(screen.getByText('Privacy center')).toBeInTheDocument()
+  })
 })
