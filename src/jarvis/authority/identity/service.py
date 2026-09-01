@@ -14,9 +14,10 @@ import json
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from ...bus import InMemoryEventBus
-from ...contracts import DeviceIdentity, Identity
+from ...contracts import AuditRecord, DeviceIdentity, Identity
 from ...events import Event, EventCategory, EventState
 from ...persistence.repositories import RuntimeRepository
 
@@ -217,3 +218,62 @@ class IdentityService:
         )
         self.repository.append_event(event)
         await self.event_bus.publish(event)
+
+    async def reconcile_product_device(
+        self,
+        credential: str,
+        device_id: str,
+        target_capabilities: tuple[str, ...] | list[str] | set[str] | frozenset[str],
+        *,
+        expected_owner_id: str | None = None,
+    ) -> DeviceIdentity | None:
+        device = await self.authenticate(credential, device_id)
+        if device is None:
+            return None
+        if expected_owner_id is not None and device.owner_id != expected_owner_id:
+            return None
+        target_caps = frozenset(target_capabilities)
+        if target_caps == device.capabilities:
+            return device
+        new_capabilities = tuple(sorted(set(target_capabilities)))
+        self.repository.update_device_capabilities(device.device_id, new_capabilities)
+        now = datetime.now(UTC)
+        reconciled = DeviceIdentity(
+            device_id=device.device_id,
+            owner_id=device.owner_id,
+            device_kind=device.device_kind,
+            platform=device.platform,
+            capabilities=frozenset(new_capabilities),
+            scopes=device.scopes,
+            authenticated_at=now,
+            credential_id=device.credential_id,
+        )
+        event = Event.create(
+            "device.reconciled",
+            EventCategory.DEVICE,
+            correlation_id=f"device-{device.device_id}",
+            actor_id=device.owner_id,
+            payload={
+                "owner_id": device.owner_id,
+                "device_id": device.device_id,
+                "capabilities": list(new_capabilities),
+            },
+            state=EventState.COMPLETED,
+        )
+        self.repository.append_event(event)
+        self.repository.insert_audit(
+            AuditRecord(
+                f"audit-{uuid4()}",
+                "device.reconciled",
+                now,
+                device.owner_id,
+                device.device_id,
+                f"device-{device.device_id}",
+                "success",
+                "device_capabilities_reconciled",
+                {"capabilities": list(new_capabilities)},
+            )
+        )
+        if self.event_bus is not None:
+            await self.event_bus.publish(event)
+        return reconciled

@@ -208,6 +208,13 @@ class RuntimeRepository:
                 (iso(timestamp), device_id),
             )
 
+    def update_device_capabilities(self, device_id: str, capabilities: Sequence[str]) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "UPDATE devices SET capabilities_json = ? WHERE id = ?",
+                (json_text(sorted(set(capabilities))), device_id),
+            )
+
     def create_session(self, owner_id: str, device_id: str) -> SessionRecord:
         now = utc_now()
         record = SessionRecord(new_id("session"), owner_id, device_id, "active", now, now, None)

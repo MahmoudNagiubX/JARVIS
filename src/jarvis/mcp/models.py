@@ -14,14 +14,14 @@ from enum import StrEnum
 _SCHEMA_KEYS = frozenset({
     "type", "properties", "required", "additionalProperties", "items", "enum",
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "minLength",
-    "maxLength", "minItems", "maxItems", "pattern",
+    "maxLength", "minItems", "maxItems",
 })
 _SCHEMA_TYPES = frozenset({"object", "array", "string", "number", "integer", "boolean", "null"})
 _SCHEMA_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,63}\Z")
+_SAFE_ENUM_STRING = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,63}\Z")
 _SCHEMA_MAX_DEPTH = 8
 _SCHEMA_MAX_PROPERTIES = 64
 _SCHEMA_MAX_ENUM = 32
-_SCHEMA_MAX_PATTERN = 256
 _SCHEMA_MAX_BYTES = 16_384
 
 
@@ -84,12 +84,16 @@ def _sanitize_schema_node(value: Mapping[str, object], *, depth: int) -> dict[st
     if isinstance(raw_enum, (list, tuple)) and len(raw_enum) <= _SCHEMA_MAX_ENUM:
         enum: list[object] = []
         for item in raw_enum:
-            if isinstance(item, (str, int, float, bool)) or item is None:
-                if isinstance(item, str) and len(item) > 256:
-                    continue
-                if isinstance(item, float) and not math.isfinite(item):
-                    continue
+            if isinstance(item, str):
+                if _SAFE_ENUM_STRING.fullmatch(item):
+                    enum.append(item)
+            elif isinstance(item, bool):
                 enum.append(item)
+            elif isinstance(item, (int, float)):
+                if not isinstance(item, bool) and math.isfinite(item):
+                    enum.append(item)
+            elif item is None:
+                enum.append(None)
         if enum:
             result["enum"] = enum
     for key in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"):
@@ -100,14 +104,6 @@ def _sanitize_schema_node(value: Mapping[str, object], *, depth: int) -> dict[st
         bound = value.get(key)
         if isinstance(bound, int) and not isinstance(bound, bool) and 0 <= bound <= 1_000_000:
             result[key] = bound
-    pattern = value.get("pattern")
-    if isinstance(pattern, str) and len(pattern) <= _SCHEMA_MAX_PATTERN:
-        try:
-            re.compile(pattern)
-        except re.error:
-            pass
-        else:
-            result["pattern"] = pattern
     return {key: result[key] for key in _SCHEMA_KEYS if key in result}
 
 

@@ -208,9 +208,14 @@ class JarvisDesktopLifecycle:
         runtime = self._new_runtime(settings)
         self.runtime = runtime
         try:
-            device = await runtime.identity.authenticate(credential, settings.device_id)
             identity = await runtime.identity.get_identity(settings.identity_id)
-            if device is None or identity is None or device.owner_id != identity.owner_id:
+            if identity is None:
+                await self._degrade_after_runtime(runtime, "device_credential_requires_repair")
+                return self._status
+            device = await runtime.identity.reconcile_product_device(
+                credential, settings.device_id, PRODUCT_CAPABILITIES, expected_owner_id=identity.owner_id
+            )
+            if device is None:
                 await self._degrade_after_runtime(runtime, "device_credential_requires_repair")
                 return self._status
             self.identity, self.device = identity, device
@@ -524,8 +529,10 @@ class JarvisDesktopLifecycle:
     async def _reuse_or_enroll(self, runtime: Any, settings: DesktopProductConfig, identity: Identity) -> tuple[str | None, Any]:
         stored = self._secret_store().get(PRODUCT_SECRET_KEY)
         if stored and settings.device_id:
-            device = await runtime.identity.authenticate(stored, settings.device_id)
-            if device is not None and device.owner_id == identity.owner_id:
+            device = await runtime.identity.reconcile_product_device(
+                stored, settings.device_id, PRODUCT_CAPABILITIES, expected_owner_id=identity.owner_id
+            )
+            if device is not None:
                 return None, device
         issued, device = await self._enroll(runtime, identity)
         return issued, device
