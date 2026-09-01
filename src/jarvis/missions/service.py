@@ -81,7 +81,7 @@ class MissionService:
         current = await self._required(owner_id, mission_id)
         if current.status not in {MissionStatus.DRAFT, MissionStatus.FAILED, MissionStatus.BLOCKED, MissionStatus.PLANNED, MissionStatus.READY}:
             raise ValueError(f"mission cannot be planned from {current.status.value}")
-        plan = self.planner.plan(current, available_capabilities=available_capabilities, constraints=constraints)
+        plan = current.plan if (current.plan and current.plan.steps and not available_capabilities and not constraints) else self.planner.plan(current, available_capabilities=available_capabilities, constraints=constraints)
         updated = replace(current, plan=plan, status=MissionStatus.READY, current_step=0, blocked_reason=None, approval_id=None, updated_at=datetime.now(UTC))
         self._save(updated)
         await self._emit("mission.planned", updated, EventState.COMPLETED)

@@ -92,9 +92,17 @@ class DurableWorldStateService:
 
     async def facts(self, query: WorldStateQuery) -> tuple[WorldStateFact, ...]:
         rows = self.repository.world_facts(query.owner_id, query.key_prefix, query.include_expired)
+        now = datetime.now(UTC)
         grouped: dict[str, WorldStateFact] = {}
         for row in rows:
             fact = self._fact(row)
+            if not query.include_expired:
+                if fact.conflict_state == "expired":
+                    continue
+                if fact.expires_at and fact.expires_at <= now:
+                    continue
+                if fact.freshness and (fact.observed_at + timedelta(seconds=fact.freshness)) <= now:
+                    continue
             current = grouped.get(fact.key)
             if current is None or self._rank(fact) > self._rank(current):
                 grouped[fact.key] = fact
@@ -116,7 +124,12 @@ class DurableWorldStateService:
         now = datetime.now(UTC)
         expired = 0
         for row in self.repository.world_facts(owner_id, include_expired=True):
-            if row["expires_at"] and datetime.fromisoformat(row["expires_at"]) <= now and row["conflict_state"] != "expired":
+            is_expired = False
+            if row["expires_at"] and datetime.fromisoformat(row["expires_at"]) <= now:
+                is_expired = True
+            elif row.get("freshness") and (datetime.fromisoformat(row["observed_at"]) + timedelta(seconds=float(row["freshness"]))) <= now:
+                is_expired = True
+            if is_expired and row["conflict_state"] != "expired":
                 self.repository.update_world_fact(row["id"], conflict_state="expired")
                 expired += 1
                 await self._emit("world_state.expired", owner_id, {"fact_id": row["id"], "key": row["key"]}, EventState.COMPLETED)

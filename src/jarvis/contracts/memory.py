@@ -79,6 +79,10 @@ class MemoryQuery:
     statuses: tuple[str, ...] = ("active",)
     include_archived: bool = False
     limit: int = 10
+    scope: str | None = None
+    scopes: tuple[str, ...] = ()
+    max_item_bytes: int = 2048
+    max_total_bytes: int = 8192
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +96,7 @@ class MemoryCandidate:
     confidence: float = 0.8
     sensitivity: str = MemorySensitivity.PERSONAL.value
     tags: tuple[str, ...] = ()
+    scope: str = "owner"
 
 
 class MemoryStore(Protocol):

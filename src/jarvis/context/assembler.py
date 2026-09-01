@@ -45,8 +45,36 @@ class ContextAssembler:
         await self.memory.remember_from_conversation(identity.owner_id, text, source_reference)
         await self.personalization.learn_from_text(identity.owner_id, text)
 
-    async def assemble(self, identity: Identity, device: DeviceIdentity, query: str, *, session_id: str = "perception") -> AgentContextSnapshot:
-        memories = await self.memory.search(MemoryQuery(identity.owner_id, query, limit=6))
+    async def assemble(
+        self,
+        identity: Identity,
+        device: DeviceIdentity,
+        query: str,
+        *,
+        session_id: str = "perception",
+        scope: str | None = None,
+        scopes: tuple[str, ...] = (),
+        project_id: str | None = None,
+    ) -> AgentContextSnapshot:
+        effective_scopes: list[str] = list(scopes)
+        if scope and scope not in effective_scopes:
+            effective_scopes.append(scope)
+        if project_id:
+            proj_scope = f"project:{project_id}"
+            if proj_scope not in effective_scopes:
+                effective_scopes.append(proj_scope)
+        query_scope = effective_scopes[0] if len(effective_scopes) == 1 else None
+        query_scopes = tuple(effective_scopes) if len(effective_scopes) > 1 else ()
+
+        memories = await self.memory.search(MemoryQuery(
+            identity.owner_id,
+            query,
+            limit=6,
+            scope=query_scope,
+            scopes=query_scopes,
+            max_item_bytes=2048,
+            max_total_bytes=4096,
+        ))
         facts = await self.world_state.facts(WorldStateQuery(identity.owner_id))
         goals = await self.goals.list(identity.owner_id, ("active", "waiting", "blocked", "proposed", "draft"))
         findings = await self.proactive.list(identity.owner_id, active_only=True)
@@ -64,6 +92,15 @@ class ContextAssembler:
         if self.capabilities is not None:
             capability_names.extend(item.capability_id for item in self.capabilities.list(device_id=device.device_id))
         desktop = self.desktop_context.safe_context(identity.owner_id, device.device_id, session_id) if self.desktop_context is not None else {"available": False}
+        memory_bytes = sum(len(item.content.encode("utf-8")) for item in memories)
+        selection_metadata = {
+            "selected_memory_ids": [item.memory_id for item in memories],
+            "selected_memory_count": len(memories),
+            "memory_byte_estimate": memory_bytes,
+            "selected_world_facts": len(fact_data),
+            "active_goal_ids": [item.goal_id for item in goals[:8]],
+            "active_finding_ids": [item.finding_id for item in findings[:6]],
+        }
         return AgentContextSnapshot(
             identity={"identity_id": identity.identity_id, "owner_id": identity.owner_id, "display_name": identity.display_name, "roles": sorted(identity.roles), "device_id": device.device_id},
             memories=memory_data,
@@ -74,6 +111,7 @@ class ContextAssembler:
             tool_capabilities=tuple(sorted(set(capability_names))),
             evidence=evidence,
             desktop_context=desktop,
+            metadata=selection_metadata,
         )
 
     @staticmethod

@@ -629,6 +629,8 @@ class RuntimeRepository:
         category: str | None = None,
         source: str | None = None,
         tags: Sequence[str] = (),
+        scope: str | None = None,
+        scopes: Sequence[str] = (),
     ) -> list[dict[str, Any]]:
         placeholders = ",".join("?" for _ in statuses)
         archived_clause = "" if include_archived else " AND archived = 0"
@@ -643,6 +645,13 @@ class RuntimeRepository:
         if source:
             conditions.append("source = ?")
             values.append(source)
+        if scope:
+            conditions.append("scope = ?")
+            values.append(scope)
+        elif scopes:
+            scope_placeholders = ",".join("?" for _ in scopes)
+            conditions.append(f"scope IN ({scope_placeholders})")
+            values.extend(scopes)
         if tags:
             conditions.extend("tags_json LIKE ?" for _ in tags)
             values.extend(f'%"{tag}"%' for tag in tags)

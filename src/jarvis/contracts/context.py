@@ -17,6 +17,7 @@ class AgentContextSnapshot:
     tool_capabilities: tuple[str, ...] = ()
     evidence: tuple[str, ...] = ()
     desktop_context: Mapping[str, object] = field(default_factory=dict)
+    metadata: Mapping[str, object] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -29,4 +30,5 @@ class AgentContextSnapshot:
             "tool_capabilities": list(self.tool_capabilities),
             "evidence": list(self.evidence),
             "desktop_context": dict(self.desktop_context),
+            "metadata": dict(self.metadata),
         }

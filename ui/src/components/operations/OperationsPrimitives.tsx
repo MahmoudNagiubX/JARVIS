@@ -191,7 +191,7 @@ export function RunInbox({ runs }: { runs: JsonRecord[] }) {
  */
 export function MissionPipeline({ missions }: { missions: JsonRecord[] }) {
   const stages = [
-    { key: 'planning', label: 'planning', statuses: ['draft', 'planned'] },
+    { key: 'planning', label: 'planning', statuses: ['draft', 'planned', 'ready'] },
     { key: 'active', label: 'active', statuses: ['active', 'running'] },
     { key: 'review', label: 'review', statuses: ['waiting_approval', 'paused'] },
     { key: 'closed', label: 'closed', statuses: ['completed', 'failed', 'cancelled'] },

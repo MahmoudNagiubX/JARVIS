@@ -198,11 +198,13 @@ class JarvisRuntime:
         self.state = RuntimeState.STARTING
         await self.models.start()
         reconciled = self.repository.reconcile_active_runs()
-        if reconciled:
+        reconciled_missions = self.repository.reconcile_missions()
+        reconciled_research = self.repository.reconcile_research_runs()
+        if reconciled or reconciled_missions or reconciled_research:
             recovery = Event.create(
                 "system.runtime.reconciled", EventCategory.SYSTEM,
                 correlation_id=self.runtime_id, state=EventState.COMPLETED,
-                payload={"reconciled_runs": reconciled},
+                payload={"reconciled_runs": reconciled, "reconciled_missions": reconciled_missions, "reconciled_research": reconciled_research},
             )
             self.repository.append_event(recovery)
             await self.event_bus.publish(recovery)
@@ -273,7 +275,10 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     effective_config = config or JarvisConfig.from_env()
     if effective_config.runtime_role == "satellite":
         raise ValueError("satellite role must use python -m jarvis.satellite_agent")
-    database_path = ":memory:" if effective_config.environment in {"test", "offline-test"} else effective_config.database_path
+    if effective_config.environment in {"test", "offline-test"}:
+        database_path = effective_config.database_path if (effective_config.database_path and effective_config.database_path != "data/jarvis.sqlite3") else ":memory:"
+    else:
+        database_path = effective_config.database_path
     database = SQLiteDatabase(database_path)
     backup_service = SQLiteBackupService(database)
     repository = RuntimeRepository(database)

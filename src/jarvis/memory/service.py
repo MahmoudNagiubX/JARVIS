@@ -58,6 +58,7 @@ class DurableMemoryService:
             candidate.confidence,
             candidate.sensitivity,
             tuple(sorted(set(candidate.tags))),
+            scope=getattr(candidate, "scope", "owner") or "owner",
         )
         await self._emit("memory.candidate", candidate.owner_id, {"accepted": True, "category": candidate.category})
         existing = self._find_duplicate(candidate)
@@ -84,6 +85,7 @@ class DurableMemoryService:
             updated_at=now,
             confidence=float(candidate.confidence),
             sensitivity=candidate.sensitivity,
+            scope=candidate.scope,
             retention_policy=MemoryRetention.PERMANENT.value,
             supersedes=previous.memory_id if previous else None,
             tags=candidate.tags,
@@ -112,6 +114,7 @@ class DurableMemoryService:
             record.confidence,
             record.sensitivity,
             record.tags,
+            scope=record.scope,
         )
         decision = self.policy.evaluate(candidate)
         if not decision.allowed:
@@ -130,6 +133,8 @@ class DurableMemoryService:
             query.category,
             query.source,
             query.tags,
+            query.scope,
+            query.scopes,
         )
         records = tuple(self._record(row) for row in rows)
         return KeywordMemoryRetriever.rank(records, query)
@@ -148,37 +153,78 @@ class DurableMemoryService:
         structured_data: Mapping[str, object] | None = None,
         tags: tuple[str, ...] | None = None,
         sensitivity: str | None = None,
+        scope: str | None = None,
     ) -> MemoryRecord:
         current = await self.get(owner_id, memory_id)
         if current is None:
             raise KeyError(memory_id)
+        new_content = content if content is not None else current.content
+        new_category = category if category is not None else current.category
+        new_tags = tuple(tags if tags is not None else current.tags)
+        new_sensitivity = sensitivity if sensitivity is not None else current.sensitivity
+        new_scope = scope if scope is not None else current.scope
+
+        if structured_data is not None:
+            new_struct = dict(structured_data)
+        elif content is not None and content != current.content:
+            extracted = DeterministicMemoryExtractor.extract_sync(owner_id, new_content, current.source_reference)
+            if extracted and extracted[0].structured_data:
+                new_struct = dict(extracted[0].structured_data)
+                if category is None and extracted[0].category != "fact":
+                    new_category = extracted[0].category
+                if tags is None and extracted[0].tags:
+                    new_tags = extracted[0].tags
+            else:
+                new_struct = {}
+        else:
+            new_struct = dict(current.structured_data)
+
         candidate = MemoryCandidate(
             owner_id,
-            content if content is not None else current.content,
-            category if category is not None else current.category,
+            new_content,
+            new_category,
             current.source,
             current.source_reference,
-            structured_data if structured_data is not None else current.structured_data,
+            new_struct,
             current.confidence,
-            sensitivity if sensitivity is not None else current.sensitivity,
-            tags if tags is not None else current.tags,
+            new_sensitivity,
+            new_tags,
+            scope=new_scope,
         )
         decision = self.policy.evaluate(candidate)
         if not decision.allowed:
             raise ValueError(decision.reason)
-        row = self.repository.update_memory(
-            owner_id,
-            memory_id,
+
+        now = datetime.now(UTC)
+        new_record = MemoryRecord(
+            memory_id=f"memory-{uuid4()}",
+            owner_id=owner_id,
             content=decision.normalized_content,
+            created_at=now,
+            kind=current.kind,
+            metadata={"provenance": current.source_reference, "corrected_from": current.memory_id},
             category=candidate.category,
-            structured_data_json=json.dumps(dict(candidate.structured_data), sort_keys=True, ensure_ascii=False, separators=(",", ":")),
+            structured_data=candidate.structured_data,
+            source=current.source,
+            source_reference=current.source_reference,
+            updated_at=now,
+            confidence=float(candidate.confidence),
             sensitivity=candidate.sensitivity,
-            tags_json=json.dumps(list(candidate.tags), ensure_ascii=False),
-            updated_at=datetime.now(UTC),
+            scope=candidate.scope,
+            retention_policy=current.retention_policy,
+            status="active",
+            supersedes=current.memory_id,
+            tags=candidate.tags,
+            pinned=current.pinned,
+            archived=False,
         )
-        await self._audit(owner_id, "memory.updated", "updated", {"memory_id": memory_id})
-        await self._emit("memory.updated", owner_id, {"memory_id": memory_id}, EventState.COMPLETED)
-        return self._record(row)
+        self.repository.insert_memory(new_record)
+        self.repository.update_memory(owner_id, current.memory_id, status="superseded", updated_at=now)
+        await self._emit("memory.conflict", owner_id, {"memory_id": new_record.memory_id, "previous_id": current.memory_id, "category": candidate.category})
+        await self._emit("memory.superseded", owner_id, {"memory_id": current.memory_id, "by": new_record.memory_id})
+        await self._audit(owner_id, "memory.updated", "updated", {"memory_id": new_record.memory_id, "supersedes": current.memory_id})
+        await self._emit("memory.updated", owner_id, {"memory_id": new_record.memory_id, "supersedes": current.memory_id}, EventState.COMPLETED)
+        return new_record
 
     async def correct(self, owner_id: str, memory_id: str, content: str) -> MemoryRecord:
         return await self.update(owner_id, memory_id, content=content)
@@ -224,7 +270,9 @@ class DurableMemoryService:
         now = datetime.now(UTC)
         expired = 0
         archived = 0
-        for record in await self.search(MemoryQuery(owner_id, statuses=("active",), include_archived=True, limit=100)):
+        rows = self.repository.memories(owner_id, statuses=("active",), include_archived=True)
+        for row in rows:
+            record = self._record(row)
             if record.valid_until and record.valid_until <= now:
                 self.repository.update_memory(owner_id, record.memory_id, status="expired", updated_at=now)
                 expired += 1
@@ -234,7 +282,10 @@ class DurableMemoryService:
         return {"expired": expired, "archived": archived}
 
     def _find_duplicate(self, candidate: MemoryCandidate) -> MemoryRecord | None:
+        candidate_scope = getattr(candidate, "scope", "owner") or "owner"
         for record in self._records(candidate.owner_id, ("active",)):
+            if record.scope != candidate_scope:
+                continue
             if record.content.casefold() == candidate.content.casefold():
                 return record
             key = candidate.structured_data.get("key")
@@ -246,8 +297,17 @@ class DurableMemoryService:
         key = candidate.structured_data.get("key")
         if not key:
             return None
+        candidate_scope = getattr(candidate, "scope", "owner") or "owner"
         for record in self._records(candidate.owner_id, ("active",)):
-            if record.category == candidate.category and record.structured_data.get("key") == key and record.content.casefold() != candidate.content.casefold():
+            if (
+                record.category == candidate.category
+                and record.scope == candidate_scope
+                and record.structured_data.get("key") == key
+                and (
+                    record.content.casefold() != candidate.content.casefold()
+                    or record.structured_data.get("value") != candidate.structured_data.get("value")
+                )
+            ):
                 return record
         return None
 

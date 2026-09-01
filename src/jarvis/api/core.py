@@ -412,7 +412,7 @@ class CoreApplication:
         return asdict(record) if record else None
 
     async def update_memory(self, owner_id: str, memory_id: str, values: dict[str, object]) -> dict[str, Any]:
-        allowed = {"content", "category", "structured_data", "tags", "sensitivity"}
+        allowed = {"content", "category", "structured_data", "tags", "sensitivity", "scope"}
         unknown = set(values) - allowed
         if unknown:
             raise ValueError(f"unsupported memory fields: {sorted(unknown)}")
@@ -424,6 +424,7 @@ class CoreApplication:
             structured_data=values.get("structured_data") if isinstance(values.get("structured_data"), dict) else None,
             tags=tuple(values["tags"]) if isinstance(values.get("tags"), list) and all(isinstance(item, str) for item in values["tags"]) else None,
             sensitivity=values.get("sensitivity") if isinstance(values.get("sensitivity"), str) else None,
+            scope=values.get("scope") if isinstance(values.get("scope"), str) else None,
         )
         return asdict(record)
 

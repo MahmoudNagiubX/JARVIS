@@ -419,7 +419,7 @@ export function MissionsScreen() {
 
       <Panel className="toolbar-panel">
         <div className="filter-tabs">
-          {['all', 'active', 'scheduled', 'waiting_approval', 'paused', 'completed', 'failed'].map((item) => (
+          {['all', 'ready', 'active', 'running', 'scheduled', 'waiting_approval', 'paused', 'completed', 'failed'].map((item) => (
             <button
               className={filter === item ? 'selected' : ''}
               key={item}
@@ -460,37 +460,46 @@ export function MissionsScreen() {
 
       <div className="screen-grid two">
         {filtered.length ? (
-          filtered.map((item) => (
-            <ListCard
-              key={stringValue(item.mission_id || item.id)}
-              title={stringValue(item.title || item.request, 'Untitled mission')}
-              status={item.status}
-              meta={`Updated ${dateValue(item.updated_at)}`}
-            >
-              <DetailList
-                values={{
-                  Goal: stringValue(item.goal_id, 'None'),
-                  'Current step': stringValue(item.current_step, 'Not started'),
-                  'Tool activity': list(item.tool_activity).length || 'Not reported',
-                  Elapsed: stringValue(item.elapsed, 'Not reported'),
-                }}
-              />
-              {['draft', 'planned', 'paused'].includes(stringValue(item.status)) && (
+          filtered.map((item) => {
+            const st = stringValue(item.status)
+            return (
+              <ListCard
+                key={stringValue(item.mission_id || item.id)}
+                title={stringValue(item.title || item.request, 'Untitled mission')}
+                status={item.status}
+                meta={`Updated ${dateValue(item.updated_at)}`}
+              >
+                <DetailList
+                  values={{
+                    Goal: stringValue(item.goal_id, 'None'),
+                    'Current step': stringValue(item.current_step, 'Not started'),
+                    'Tool activity': list(item.tool_activity).length || 'Not reported',
+                    Elapsed: stringValue(item.elapsed, 'Not reported'),
+                  }}
+                />
                 <div className="card-actions inline">
-                  <Button onClick={() => void action(item, 'start')}>Start</Button>
-                  {stringValue(item.status) === 'paused' && (
-                    <Button onClick={() => void action(item, 'resume')}>Resume</Button>
+                  {['ready', 'planned'].includes(st) && (
+                    <Button variant="primary" onClick={() => void action(item, 'start')}>Start</Button>
+                  )}
+                  {st === 'draft' && (
+                    <Button variant="primary" onClick={() => void action(item, 'plan')}>Plan</Button>
+                  )}
+                  {st === 'paused' && (
+                    <Button variant="primary" onClick={() => void action(item, 'resume')}>Resume</Button>
+                  )}
+                  {st === 'waiting_approval' && (
+                    <Button variant="primary" onClick={() => void action(item, 'resume')}>Resume</Button>
+                  )}
+                  {['running', 'active'].includes(st) && (
+                    <Button onClick={() => void action(item, 'pause')}>Pause</Button>
+                  )}
+                  {!['completed', 'failed', 'cancelled'].includes(st) && (
+                    <Button variant="danger" onClick={() => void action(item, 'cancel')}>Cancel</Button>
                   )}
                 </div>
-              )}
-              {['running', 'active'].includes(stringValue(item.status)) && (
-                <div className="card-actions inline">
-                  <Button onClick={() => void action(item, 'pause')}>Pause</Button>
-                  <Button variant="danger" onClick={() => void action(item, 'cancel')}>Cancel</Button>
-                </div>
-              )}
-            </ListCard>
-          ))
+              </ListCard>
+            )
+          })
         ) : (
           <Panel>
             <EmptyState
@@ -507,19 +516,26 @@ export function MissionsScreen() {
 export function MemoryScreen() {
   const { api, screenData, screenLoading, setScreenData, setError } = useJarvis()
   const [query, setQuery] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('all')
   const [editing, setEditing] = useState<JsonRecord | null>(null)
   const [content, setContent] = useState('')
 
-  async function search(event?: React.FormEvent) {
+  async function search(event?: React.FormEvent, cat: string = categoryFilter) {
     event?.preventDefault()
     try {
-      const payload = await api.get<{ memories?: unknown[] }>(
-        `/memory?limit=50${query.trim() ? `&q=${encodeURIComponent(query.trim())}` : ''}`
-      )
+      let url = `/memory?limit=50`
+      if (query.trim()) url += `&q=${encodeURIComponent(query.trim())}`
+      if (cat !== 'all') url += `&category=${encodeURIComponent(cat)}`
+      const payload = await api.get<{ memories?: unknown[] }>(url)
       setScreenData({ memories: list(payload.memories) })
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Memory search failed.')
     }
+  }
+
+  function onSelectCategory(cat: string) {
+    setCategoryFilter(cat)
+    void search(undefined, cat)
   }
 
   async function save(event: React.FormEvent) {
@@ -536,6 +552,17 @@ export function MemoryScreen() {
     }
   }
 
+  async function togglePin(item: JsonRecord) {
+    try {
+      const memId = stringValue(item.memory_id || item.id)
+      const pinned = !Boolean(item.pinned)
+      await api.post(`/memory/${encodeURIComponent(memId)}/pin`, { enabled: pinned })
+      await search()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Memory pin failed.')
+    }
+  }
+
   async function remove(item: JsonRecord) {
     if (!window.confirm('Delete this memory through the canonical MemoryService?')) return
     try {
@@ -546,6 +573,13 @@ export function MemoryScreen() {
     }
   }
 
+  const provenanceLabel = (src: string) => {
+    if (src === 'user' || src === 'owner') return 'Owner stated'
+    if (src === 'conversation') return 'Conversation extracted'
+    if (src === 'api') return 'Direct entry'
+    return src || 'Unknown'
+  }
+
   return (
     <div className="screen memory-screen" data-testid="memory-screen">
       <SectionHeading
@@ -554,6 +588,17 @@ export function MemoryScreen() {
         description="Inspect durable accepted knowledge. Fresh world observations remain separate from memory."
       />
       <Panel className="toolbar-panel">
+        <div className="filter-tabs">
+          {['all', 'fact', 'preference', 'project', 'task', 'goal', 'profile', 'decision'].map((cat) => (
+            <button
+              key={cat}
+              className={categoryFilter === cat ? 'selected' : ''}
+              onClick={() => onSelectCategory(cat)}
+            >
+              {cat === 'all' ? 'All' : statusText(cat)}
+            </button>
+          ))}
+        </div>
         <form className="search-form" onSubmit={(event) => void search(event)}>
           <input
             value={query}
@@ -577,13 +622,15 @@ export function MemoryScreen() {
               >
                 <DetailList
                   values={{
-                    Source: stringValue(item.source || item.source_reference, 'Unknown'),
+                    Provenance: provenanceLabel(stringValue(item.source, '')),
+                    Source: stringValue(item.source_reference || item.source, 'Unknown'),
                     Confidence: item.confidence !== undefined ? <ConfidenceMeter value={item.confidence} /> : 'Not reported',
-                    Sensitivity: stringValue(item.sensitivity, 'Not reported'),
-                    Validity: stringValue(item.validity, 'Not reported'),
+                    Sensitivity: stringValue(item.sensitivity, 'personal'),
+                    Status: item.pinned ? 'Pinned' : stringValue(item.status, 'active'),
                   }}
                 />
                 <div className="card-actions inline">
+                  <Button onClick={() => void togglePin(item)}>{item.pinned ? 'Unpin' : 'Pin'}</Button>
                   <Button onClick={() => { setEditing(item); setContent(stringValue(item.content, '')) }}>Edit</Button>
                   <Button variant="danger" onClick={() => void remove(item)}>Delete</Button>
                 </div>
