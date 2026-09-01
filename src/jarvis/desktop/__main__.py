@@ -49,6 +49,8 @@ def main() -> None:
         if status.reason == "already_running":
             if args.headless:
                 print(json.dumps({"phase": status.phase.value, "reason": status.reason}, ensure_ascii=False))
+            else:
+                lifecycle.open_existing_hud()
             return
         if args.diagnostics:
             results = submit(DesktopDiagnostics(lifecycle).run())

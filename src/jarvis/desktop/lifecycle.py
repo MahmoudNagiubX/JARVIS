@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from ..authority.identity.service import EnrollmentGrant
 from ..bootstrap import JarvisRuntime, create_runtime
@@ -473,6 +474,32 @@ class JarvisDesktopLifecycle:
             self._status = replace(self._status, app_url=self._app_base_url())
         return opened
 
+    def open_existing_hud(self) -> bool:
+        """Reopen the already-running owner's local app from lock metadata."""
+
+        url = self.instance_lock.metadata().get("app_url")
+        if not isinstance(url, str):
+            return False
+        try:
+            parsed = urlparse(url)
+            port = parsed.port
+        except ValueError:
+            return False
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname != "127.0.0.1"
+            or port is None
+            or not 1 <= port <= 65535
+            or parsed.path != "/app"
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+            or parsed.username
+            or parsed.password
+        ):
+            return False
+        return bool(webbrowser.open(url))
+
     def _load_settings(self, *, defaults: bool) -> DesktopProductConfig:
         try:
             return DesktopProductConfig.load(self.config_path)
@@ -589,6 +616,9 @@ class JarvisDesktopLifecycle:
         from ..api.http import CoreHttpServer
 
         self._hud_server = CoreHttpServer(CoreApplication(self.runtime), host="127.0.0.1", port=0)
+        app_url = self._app_base_url()
+        if app_url:
+            self.instance_lock.publish_metadata(app_url=app_url)
         if credential and self.identity is not None and self.device is not None:
             token = self._hud_server.issue_desktop_bootstrap(credential, self.device.device_id, self.identity.identity_id)
             self._app_bootstrap_url = f"{self._app_base_url()}#bootstrap={token}"

@@ -1,10 +1,7 @@
 import type { ReactNode } from 'react'
+import { HolographicCore as HolographicCoreV3 } from '../holographic/HolographicCore'
 
-/**
- * Lightweight SVG adaptation of donor 09_holographic_3d depth rings and
- * pulse language. It has no synthetic graph, face identity, camera input, or
- * permanent WebGL loop.
- */
+/** Compatibility adapter for the V2 import path; the V3 ring owns the visual core. */
 export function HolographicCore({ children, active = false }: { children: ReactNode; active?: boolean }) {
-  return <div className={`holographic-core ${active ? 'is-active' : ''}`}><span className="holo-ring ring-a" aria-hidden="true" /><span className="holo-ring ring-b" aria-hidden="true" /><span className="holo-ring ring-c" aria-hidden="true" /><span className="holo-grid" aria-hidden="true" /><div className="holo-core-label">{children}</div></div>
+  return <div className={`holographic-core ${active ? 'is-active' : ''}`}><HolographicCoreV3 state={active ? 'ready' : 'idle'}>{children}</HolographicCoreV3></div>
 }

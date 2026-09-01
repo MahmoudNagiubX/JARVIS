@@ -90,3 +90,15 @@ The V2 palette and accessibility rules are recorded in
 `docs/phase14/ui-refactor/VISUAL_SYSTEM_V2.md`. Donor 07 and donor 08 had no
 license evidence in the inspected roots and donor 02/09 contained runtime or
 identity boundaries, so their visual contributions remain reference-only.
+
+## Phase 14 V3 cinematic rebuild update - 2026-09-01
+
+The V3 visual extraction record is `docs/phase14/v3/DONOR_SOURCE_EXTRACTION.md`.
+It names the exact donor component/function paths used as presentation
+references and records the exclusions. V3 uses the owner-supplied wallpaper as
+the only hero artwork and adds product-owned SVG/CSS primitives under
+`ui/src/components/{cinematic,holographic,tactical}`. No donor runtime,
+WebGL/MediaPipe loop, remote asset, font, cloud service, mock telemetry, or
+second transport/state authority was copied. The V3 visual system and before /
+after decisions are recorded in `docs/phase14/v3/V3_VISUAL_SYSTEM.md` and
+`docs/phase14/v3/V3_BEFORE_AFTER.md`.

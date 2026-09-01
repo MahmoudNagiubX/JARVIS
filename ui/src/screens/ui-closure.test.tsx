@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../app/App'
 import type { ApiClient, JarvisSession } from '../lib/api'
@@ -185,6 +185,22 @@ describe('Phase 14 final closure screens', () => {
     expect(screen.getByText('LOCAL CAPABILITY SPINE')).toBeInTheDocument()
   })
 
+  it('exposes accessible controls for collapsing both shell docks', async () => {
+    const api = apiFor(baseProjection, vi.fn(async () => ({})))
+    render(<App api={api} initialSession={session} />)
+
+    await screen.findByTestId('wallpaper-hero')
+    const navToggle = screen.getByRole('button', { name: 'Toggle navigation rail' })
+    const contextToggles = screen.getAllByRole('button', { name: 'Toggle context dock' })
+    expect(navToggle).toHaveAttribute('aria-expanded', 'true')
+    expect(contextToggles[0]).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(navToggle)
+    fireEvent.click(contextToggles[0])
+    expect(navToggle).toHaveAttribute('aria-expanded', 'false')
+    expect(contextToggles[0]).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('keeps recoverable runtime messaging calm and human-readable', async () => {
     const api = apiFor(baseProjection, vi.fn(async () => ({})))
     render(<App api={api} initialSession={session} />)
@@ -238,5 +254,22 @@ describe('Phase 14 final closure screens', () => {
 
     expect(await screen.findByTestId('tactical-radar')).toBeInTheDocument()
     expect(screen.getByText('NIGHTFURY')).toBeInTheDocument()
+  })
+
+  it('binds the tactical topology point count to real registered devices', async () => {
+    window.location.hash = '#/devices'
+    const projection = {
+      ...baseProjection,
+      devices: [
+        { device_id: 'nightfury', name: 'NIGHTFURY', status: 'available', capabilities: ['presence'] },
+        { device_id: 'atlas', name: 'ATLAS', status: 'available', capabilities: ['computer.observe'] },
+      ],
+    }
+    const api = apiFor(projection, vi.fn(async () => ({})))
+    render(<App api={api} initialSession={session} />)
+
+    const radar = await screen.findByTestId('tactical-radar')
+    expect(radar).toHaveAttribute('data-reported-points', '2')
+    expect(within(radar).getAllByTestId('radar-point')).toHaveLength(2)
   })
 })

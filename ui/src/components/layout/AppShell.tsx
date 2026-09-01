@@ -6,20 +6,21 @@ import { dateValue, list, record, statusText, stringValue, tone } from '../../li
 import { Button, StatusBadge } from '../common/Primitives'
 import { MatrixFoundation } from '../foundation/MatrixFoundation'
 import { HudBar, HudCommandPalette, type HudPaletteItem } from '../hud/DonorFusion'
+import { deriveVisualState } from '../../features/core/deriveVisualState'
 
 function streamLabel(streamState: string): string {
   return streamState === 'live' ? 'LIVE' : streamState === 'reconnecting' ? 'RECONNECTING' : streamState === 'unavailable' ? 'SNAPSHOT' : 'LOCAL'
 }
 
-function ContextRail() {
+function ContextRail({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const { projection } = useJarvis()
   const presence = record(projection?.presence)
   const system = record(projection?.system)
   const operations = record(projection?.operations)
   const deviceCount = list(projection?.devices).length
   const approvals = list(projection?.approvals).filter((item) => stringValue(item.status, 'pending') === 'pending').length
-  return <aside className="context-rail" aria-label="Current context">
-    <div className="rail-heading"><span className="eyebrow">LIVE CONTEXT</span><span className="rail-pip" /></div>
+  return <aside className="context-rail context-dock" aria-label="Current context">
+    <div className="rail-heading"><span className="eyebrow">LIVE CONTEXT</span><button className="shell-toggle" onClick={onToggle} aria-expanded={!collapsed} aria-label="Toggle context dock">{collapsed ? '‹' : '›'}</button><span className="rail-pip" /></div>
     <div className="rail-section"><span className="rail-label">Active application</span><strong>{stringValue(presence.active_application || presence.active_app, 'Not observed')}</strong></div>
     <div className="rail-section"><span className="rail-label">Focused window</span><strong>{stringValue(presence.focused_window, 'Not observed')}</strong></div>
     <div className="rail-section"><span className="rail-label">Runtime</span><strong className={tone(system.runtime_state)}>{statusText(system.runtime_state || 'created')}</strong><span className="small muted">{system.offline ? 'Local / internet unavailable' : 'Local services online'}</span></div>
@@ -59,8 +60,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { projection, error, streamState } = useJarvis()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [navCollapsed, setNavCollapsed] = useState(false)
+  const [contextDockCollapsed, setContextDockCollapsed] = useState(false)
   const system = record(projection?.system)
   const state = stringValue(system.runtime_state || projection?.state, 'connecting')
+  const visualState = deriveVisualState(projection)
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -71,21 +75,21 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  return <MatrixFoundation><div className="app-shell">
+  return <MatrixFoundation><div className={`app-shell ${navCollapsed ? 'nav-rail-collapsed' : ''} ${contextDockCollapsed ? 'context-dock-collapsed' : ''}`} data-visual-state={visualState}>
     <a className="skip-link" href="#workspace">Skip to workspace</a>
     <header className="topbar">
       <button className="mobile-menu button quiet" onClick={() => setDrawerOpen((value) => !value)} aria-label="Open navigation">☰</button>
       <button className="brand" onClick={() => navigate('/')} aria-label="JARVIS home"><span className="brand-mark" aria-hidden="true"><i /><i /><i /></span><span><strong>J.A.R.V.I.S.</strong><small>LOCAL OPERATIONS CONSOLE</small></span></button>
-      <div className="topbar-meta"><StatusBadge value={state} /><span className="connection-label"><i className={`connection-dot ${streamState}`} />{streamLabel(streamState)}</span><span className="network-label">{system.offline ? 'LOCAL' : 'LOCAL + WEB'}</span><button className="palette-trigger" onClick={() => setPaletteOpen(true)}><span>Command palette</span><kbd>Ctrl K</kbd></button></div>
+      <div className="topbar-meta"><StatusBadge value={state} /><span className="connection-label"><i className={`connection-dot ${streamState}`} />{streamLabel(streamState)}</span><span className="network-label">{system.offline ? 'LOCAL' : 'LOCAL + WEB'}</span><button className="shell-toggle" onClick={() => setNavCollapsed((value) => !value)} aria-expanded={!navCollapsed} aria-label="Toggle navigation rail">☰</button><button className="shell-toggle" onClick={() => setContextDockCollapsed((value) => !value)} aria-expanded={!contextDockCollapsed} aria-label="Toggle context dock">◫</button><button className="palette-trigger" onClick={() => setPaletteOpen(true)}><span>Command palette</span><kbd>Ctrl K</kbd></button></div>
     </header>
     <div className="topbar-trace"><HudBar label="JARVIS // COMMAND CENTER" status={statusText(state)}><span className="topbar-trace-detail">{system.offline ? 'LOCAL MODE' : 'LOCAL + WEB'}</span></HudBar></div>
     <div className="shell-body">
       <aside className={`sidebar ${drawerOpen ? 'open' : ''}`} aria-label="Primary navigation">
-        <div className="sidebar-scroll">{NAV_GROUPS.map((group) => <div className="nav-group" key={group.label}><span className="nav-label">{group.label}</span>{group.items.map((item) => <NavLink key={item.path} to={item.path} end={item.path === '/'} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} onClick={() => setDrawerOpen(false)}><span className="nav-glyph">{item.glyph}</span><span>{item.label}</span>{item.path === '/approvals' && list(projection?.approvals).filter((approval) => stringValue(approval.status, 'pending') === 'pending').length > 0 && <b className="nav-count">{list(projection?.approvals).filter((approval) => stringValue(approval.status, 'pending') === 'pending').length}</b>}</NavLink>)}</div>)}</div>
+        <div className="sidebar-scroll">{NAV_GROUPS.map((group) => <div className="nav-group" key={group.label}><span className="nav-label">{group.label}</span>{group.items.map((item) => <NavLink key={item.path} to={item.path} end={item.path === '/'} title={item.label} aria-label={item.label} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} onClick={() => setDrawerOpen(false)}><span className="nav-glyph">{item.glyph}</span><span className="nav-item-label">{item.label}</span>{item.path === '/approvals' && list(projection?.approvals).filter((approval) => stringValue(approval.status, 'pending') === 'pending').length > 0 && <b className="nav-count">{list(projection?.approvals).filter((approval) => stringValue(approval.status, 'pending') === 'pending').length}</b>}</NavLink>)}</div>)}</div>
         <div className="sidebar-footer"><span className="status-line"><i className="connection-dot live" />Owner session active</span><span className="muted small">{labelForPath(location.pathname)}</span></div>
       </aside>
       <main id="workspace" className="workspace">{error && <div className="global-error" role="alert"><span className="notice-mark">!</span><div><strong>Local session needs attention</strong><span>{humanizeRuntimeError(error)}</span></div></div>}{children}</main>
-      <ContextRail />
+      <ContextRail collapsed={contextDockCollapsed} onToggle={() => setContextDockCollapsed((value) => !value)} />
     </div>
     {paletteOpen && <CommandPalette close={() => setPaletteOpen(false)} />}
   </div></MatrixFoundation>

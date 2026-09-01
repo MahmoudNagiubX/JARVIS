@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+from typing import Any
 
 
 class SingleInstanceLock:
@@ -26,10 +28,32 @@ class SingleInstanceLock:
         os.write(self._handle, str(os.getpid()).encode("ascii"))
         return True
 
+    def publish_metadata(self, **metadata: str) -> None:
+        """Publish non-secret handoff data while retaining the PID first line."""
+
+        if self._handle is None:
+            return
+        payload = json.dumps({"pid": os.getpid(), **metadata}, separators=(",", ":"))
+        encoded = f"{os.getpid()}\n{payload}".encode("utf-8")
+        os.lseek(self._handle, 0, os.SEEK_SET)
+        os.ftruncate(self._handle, 0)
+        os.write(self._handle, encoded)
+        os.fsync(self._handle)
+
+    def metadata(self) -> dict[str, Any]:
+        """Read the current instance's non-secret handoff metadata."""
+
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+            payload = json.loads(lines[1]) if len(lines) > 1 else {}
+        except (OSError, ValueError, IndexError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
     def _stale(self) -> bool:
         try:
-            pid = int(self.path.read_text(encoding="ascii").strip())
-        except (OSError, ValueError):
+            pid = int(self.path.read_text(encoding="ascii").splitlines()[0].strip())
+        except (OSError, ValueError, IndexError):
             return True
         if pid == os.getpid():
             return False
