@@ -6,6 +6,7 @@ import json
 import re
 import unicodedata
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from .registry import ToolRegistry, ToolSpec
 
@@ -17,6 +18,13 @@ _ARABIC_NORMALIZATION = str.maketrans({
     "ى": "ي",
 })
 _LATIN_WORD = re.compile(r"(?<![A-Za-z0-9_]){term}(?![A-Za-z0-9_])")
+
+
+@dataclass(frozen=True, slots=True)
+class ToolSelection:
+    schemas: tuple[dict[str, object], ...]
+    schema_bytes: int
+    reason: str
 
 
 def normalize_intent(intent: str) -> str:
@@ -66,6 +74,9 @@ class ToolSchemaSelector:
         "شغل التستات", "رن التستات", "شغل tests", "اعمل test للمشروع", "اختبر المشروع",
         "شغل الunit tests",
     )
+    MCP_READ_MARKERS = ("workspace", "repository", "repo", "readme", "file", "directory", "document", "browser", "page", "research", "mcp")
+    MCP_WRITE_MARKERS = ("write", "edit", "create", "delete", "remove", "update", "submit", "send", "execute")
+    MAX_SCHEMA_BYTES = 32_000
 
     def __init__(self, registry: ToolRegistry, *, max_model_tools: int = MAX_MODEL_TOOLS) -> None:
         if not 1 <= max_model_tools <= self.MAX_MODEL_TOOLS:
@@ -80,6 +91,8 @@ class ToolSchemaSelector:
 
         for name in sorted(available):
             if name.casefold() in lowered:
+                names.append(name)
+            elif name.casefold().startswith("mcp.") and self._matches_mcp(name, lowered):
                 names.append(name)
         if self._matches_any(lowered, self.VISUAL_MARKERS):
             names.extend(self.ARABIC_METADATA_TOOLS if self._has_arabic_script(lowered) else self.VISUAL_TOOLS)
@@ -97,10 +110,28 @@ class ToolSchemaSelector:
             if spec is None or name in seen:
                 continue
             seen.add(name)
+            candidate = self._schema(spec)
+            if selected and self.schema_bytes(tuple(self._schema(item) for item in selected), candidate) > self.MAX_SCHEMA_BYTES:
+                continue
             selected.append(spec)
             if len(selected) >= self.max_model_tools:
                 break
         return tuple(self._schema(spec) for spec in selected)
+
+    def select_with_metadata(self, intent: str) -> ToolSelection:
+        schemas = self.select(intent)
+        names = tuple(str(item.get("function", {}).get("name", "")) for item in schemas)
+        mcp_names = tuple(name for name in names if name.startswith("mcp."))
+        reason = f"mcp intent shortlist: {', '.join(mcp_names)}" if mcp_names else "native intent shortlist"
+        return ToolSelection(schemas, self.schema_bytes(schemas), reason)
+
+    @classmethod
+    def _matches_mcp(cls, name: str, intent: str) -> bool:
+        pieces = tuple(name.casefold().split("."))
+        tail = pieces[-1]
+        if any(cls._matches(intent, marker) for marker in cls.MCP_WRITE_MARKERS):
+            return any(cls._matches(intent, marker) for marker in pieces[1:] + (tail,))
+        return any(cls._matches(intent, marker) for marker in cls.MCP_READ_MARKERS) and not tail.startswith(("write", "edit", "delete", "remove", "update", "create"))
 
     @staticmethod
     def _matches_any(intent: str, markers: Iterable[str]) -> bool:
@@ -158,5 +189,5 @@ class ToolSchemaSelector:
         }
 
     @classmethod
-    def schema_bytes(cls, schemas: Iterable[dict[str, object]]) -> int:
-        return len(json.dumps(tuple(schemas), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    def schema_bytes(cls, schemas: Iterable[dict[str, object]], *extra: dict[str, object]) -> int:
+        return len(json.dumps((*tuple(schemas), *extra), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))

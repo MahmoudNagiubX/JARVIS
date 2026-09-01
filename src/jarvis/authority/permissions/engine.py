@@ -31,6 +31,7 @@ class PolicyPermissionEngine:
             PermissionRule("tool.computer.clipboard.read", PermissionEffect.ALLOW, "computer_clipboard_boundary"),
             PermissionRule("tool.computer.clipboard.write", PermissionEffect.ALLOW, "computer_clipboard_boundary"),
             PermissionRule("tool.computer.keyboard.type", PermissionEffect.ALLOW, "computer_keyboard_boundary"),
+            PermissionRule("tool.mcp.", PermissionEffect.ALLOW, "mcp_capability_boundary"),
             PermissionRule("mission.start", PermissionEffect.ALLOW, "bounded_mission_start"),
             PermissionRule("skill.", PermissionEffect.ALLOW, "registered_skill_execution"),
             PermissionRule("computer.open_application", PermissionEffect.ALLOW, "safe_application_open"),

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
+from urllib.parse import urljoin
 from uuid import uuid4
 
 from ..authority.approvals.service import DurableApprovalEngine
@@ -54,12 +56,24 @@ class _PageParser(HTMLParser):
             self.links.append(dict(self._link))
 
 
+class _ElementParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.elements: list[tuple[str, dict[str, str]]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if len(self.elements) < 500:
+            self.elements.append((tag.casefold(), {key.casefold(): value or "" for key, value in attrs}))
+
+
 class LocalBrowserController:
     """Use urllib and HTML parsing for bounded read-only browser actions."""
 
-    def __init__(self, fetcher: Callable[[str], tuple[str, str]] | None = None) -> None:
+    def __init__(self, fetcher: Callable[[str], tuple[str, str]] | None = None, *, interaction_timeout_seconds: float = 10.0) -> None:
         self._fetcher = fetcher
         self._sessions: dict[str, BrowserSession] = {}
+        self._form_values: dict[tuple[str, str], str] = {}
+        self._interaction_timeout_seconds = max(0.05, min(interaction_timeout_seconds, 30.0))
 
     async def execute(self, action: BrowserAction, context: ToolContext) -> BrowserResult:
         if context.device is None:
@@ -86,7 +100,7 @@ class LocalBrowserController:
         if capability is BrowserCapability.FIND_ELEMENT:
             return await self._find(session, action.parameters)
         if capability in {BrowserCapability.CLICK, BrowserCapability.TYPE, BrowserCapability.SELECT}:
-            return BrowserResult("failed", error_code="dom_interaction_requires_playwright")
+            return await self._interact(session, capability, action.parameters)
         if capability in {BrowserCapability.DOWNLOAD_FILE, BrowserCapability.UPLOAD_FILE, BrowserCapability.SCREENSHOT}:
             return BrowserResult("failed", error_code="browser_action_requires_configured_adapter")
         return BrowserResult("failed", error_code="browser_action_not_configured")
@@ -155,6 +169,55 @@ class LocalBrowserController:
             return page
         links = [link for link in page.output.get("links", []) if needle.casefold() in str(link).casefold()]
         return BrowserResult("succeeded", {"matches": links[:50]}, verified=True)
+
+    async def _interact(self, session: BrowserSession, capability: BrowserCapability, parameters: Mapping[str, object]) -> BrowserResult:
+        selector = parameters.get("selector")
+        if not isinstance(selector, str) or not selector.strip() or len(selector) > 200 or "\x00" in selector:
+            return BrowserResult("denied", error_code="element_selector_required")
+        if capability is BrowserCapability.TYPE:
+            value = parameters.get("text")
+            if not isinstance(value, str) or not value or len(value) > 2_000 or "\x00" in value:
+                return BrowserResult("denied", error_code="element_text_invalid")
+        elif capability is BrowserCapability.SELECT:
+            value = parameters.get("value")
+            if not isinstance(value, str) or not value or len(value) > 200:
+                return BrowserResult("denied", error_code="select_value_invalid")
+        try:
+            html, _ = await asyncio.wait_for(asyncio.to_thread(self._fetch, session.current_url or ""), self._interaction_timeout_seconds)
+        except asyncio.TimeoutError:
+            return BrowserResult("failed", error_code="browser_interaction_timeout")
+        except (OSError, urllib.error.URLError, ValueError) as exc:
+            return BrowserResult("failed", error_code=f"page_fetch_failed:{exc.__class__.__name__}")
+        parser = _ElementParser()
+        parser.feed(html)
+        matches = [(tag, attrs) for tag, attrs in parser.elements if self._matches_selector(tag, attrs, selector)]
+        if not matches:
+            return BrowserResult("failed", error_code="element_not_found")
+        if capability is BrowserCapability.CLICK:
+            tag, attrs = matches[0]
+            href = attrs.get("href") if tag == "a" else None
+            if href:
+                url = urljoin(session.current_url or "", href)
+                updated = BrowserSession(session.session_id, session.owner_id, session.device_id, url, session.history + (url,))
+                self._sessions[session.session_id] = updated
+                return BrowserResult("succeeded", {"session_id": session.session_id, "selector": selector, "url": url, "action": "click"}, verified=True)
+            return BrowserResult("succeeded", {"session_id": session.session_id, "selector": selector, "action": "click"}, verified=True)
+        if capability is BrowserCapability.TYPE:
+            self._form_values[(session.session_id, selector)] = value
+            return BrowserResult("succeeded", {"session_id": session.session_id, "selector": selector, "value_length": len(value), "action": "type"}, verified=True)
+        return BrowserResult("succeeded", {"session_id": session.session_id, "selector": selector, "value": value, "action": "select"}, verified=True)
+
+    @staticmethod
+    def _matches_selector(tag: str, attrs: Mapping[str, str], selector: str) -> bool:
+        selector = selector.strip()
+        if selector.startswith("#"):
+            return attrs.get("id") == selector[1:]
+        if selector.startswith("."):
+            return selector[1:] in attrs.get("class", "").split()
+        name_match = re.fullmatch(r"\[name=['\"]?([^'\"]+)['\"]?\]", selector)
+        if name_match:
+            return attrs.get("name") == name_match.group(1)
+        return tag == selector.casefold()
 
     def _fetch(self, url: str) -> tuple[str, str]:
         if self._fetcher is not None:

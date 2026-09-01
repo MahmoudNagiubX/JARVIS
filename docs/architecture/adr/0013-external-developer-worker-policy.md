@@ -4,10 +4,11 @@ Status: Accepted
 
 ## Decision
 
-Detect installed Codex, Gemini, and Antigravity CLIs without installing or
-launching them. Any future executor must be explicitly injected, scoped to a
-workspace, time-bounded, and routed through existing worker/audit/event policy.
-OpenClaw remains an optional adapter seam.
+Report only the safe local Codex candidate without installing or launching it.
+Google-account-backed CLI candidates are excluded from discovery. Any future
+executor must be explicitly injected, scoped to a workspace, time-bounded, and
+routed through existing worker/audit/event policy. OpenClaw remains an optional
+adapter seam.
 
 ## Consequences
 

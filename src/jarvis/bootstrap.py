@@ -87,6 +87,11 @@ from .skills.registry import SkillRegistry, builtin_skills
 from .skills.executor import SkillExecutor
 from .skills.policy import SkillPolicy
 from .workspace.service import WorkspaceIntelligenceService
+from .mcp.models import MCPRisk
+from .mcp.policy import MCPPolicy
+from .mcp.registry import MCPRegistry
+from .mcp.workspace import LocalWorkspaceMCP
+from .mcp.repository import LocalRepositoryMCP
 from .intelligence.events.service import EventIntelligenceService
 from .briefings.service import BriefingService
 from .automation.service import AutomationService
@@ -152,6 +157,7 @@ class JarvisRuntime:
     notifications: NotificationService
     voice_routing: VoiceRoutingService
     capabilities: CapabilityRegistry
+    mcp: MCPRegistry
     experience: ExperienceGatewayService
     experience_projection: ExperienceProjection
     clients: ClientSessionService
@@ -230,6 +236,7 @@ class JarvisRuntime:
         await self.scheduler.stop()
         await self.models.shutdown()
         await self.perception.shutdown()
+        await self.mcp.close()
         self.computer_actions.close()
         self.tool_service.close()
         if getattr(self.voice.state, "value", None) != "stopped":
@@ -335,6 +342,15 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         skills.register(builtin)
     skill_executor = SkillExecutor(skills, SkillPolicy(permission, registry), event_bus, repository, tools=tool_service, approvals=approval, audit=audit)
     workspace_intelligence = WorkspaceIntelligenceService(repository, event_bus, workspace_context)
+    mcp = MCPRegistry()
+    mcp.add_provider(LocalWorkspaceMCP(workspace_intelligence))
+    mcp.add_provider(LocalRepositoryMCP(workspace_intelligence))
+    mcp.bind_tools(registry, MCPPolicy({
+        "workspace.read_file": MCPRisk.READ_ONLY,
+        "workspace.list_files": MCPRisk.READ_ONLY,
+        "workspace.write_file": MCPRisk.DANGEROUS,
+        "repository.inspect_project": MCPRisk.READ_ONLY,
+    }))
     event_intelligence = EventIntelligenceService(repository, event_bus)
     briefings = BriefingService(repository, event_bus)
     automation = AutomationService(repository, event_bus, skill_executor=skill_executor, missions=missions, briefings=briefings, offline=offline, capabilities=capabilities)
@@ -645,6 +661,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         notifications=notifications,
         voice_routing=voice_routing,
         capabilities=capabilities,
+        mcp=mcp,
         experience=ExperienceGatewayService(experience_projection),
         experience_projection=experience_projection,
         clients=clients,

@@ -145,4 +145,26 @@ describe('Phase 14 final closure screens', () => {
     expect(screen.queryByRole('link', { name: /^General/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /^Advanced diagnostics/ })).not.toBeInTheDocument()
   })
+
+  it('renders only backend-confirmed MCP health and namespaced capabilities', async () => {
+    window.location.hash = '#/settings'
+    const api = apiFor(baseProjection, vi.fn(async () => ({})), {
+      '/health': {
+        state: 'ready', database: 'connected',
+        mcp: [{
+          server_id: 'workspace', display_name: 'Workspace', state: 'ready', tool_count: 3,
+          capabilities: [{ name: 'mcp.workspace.read_file' }],
+        }],
+        venom: {}, local_model: {},
+      },
+      '/personalization/profile': {},
+    })
+    render(<App api={api} initialSession={session} />)
+    expect(await screen.findByText('MCP capabilities')).toBeInTheDocument()
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/health'))
+    expect(screen.getAllByText('Workspace').length).toBeGreaterThan(1)
+    expect(screen.getByText(/discovered tools/)).toBeInTheDocument()
+    expect(screen.getByText('mcp.workspace.read_file')).toBeInTheDocument()
+    expect(screen.queryByText('No MCP servers configured')).not.toBeInTheDocument()
+  })
 })

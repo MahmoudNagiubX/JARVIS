@@ -18,7 +18,7 @@ class DeveloperWorkerGateway:
 
     @staticmethod
     def _discover() -> tuple[DeveloperWorkerProvider, ...]:
-        candidates = (("codex", "codex"), ("gemini", "gemini"), ("antigravity", "antigravity"))
+        candidates = (("codex", "codex"),)
         return tuple(DeveloperWorkerProvider(name, executable, bool(shutil.which(executable)), "installed" if shutil.which(executable) else "not_installed") for name, executable in candidates)
 
     def providers(self) -> tuple[DeveloperWorkerProvider, ...]:

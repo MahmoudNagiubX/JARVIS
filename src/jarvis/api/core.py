@@ -243,6 +243,7 @@ class CoreApplication:
                 "voice_output_adapter": self.runtime.config.voice_output_adapter,
             },
             "node_transport": self.runtime.satellite_transport.public_health(),
+            "mcp": self.runtime.mcp.health_snapshot(),
         }
 
     async def satellite_connect(self, principal: DemoPrincipal, values: dict[str, object]) -> dict[str, Any]:

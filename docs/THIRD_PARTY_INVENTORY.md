@@ -62,3 +62,14 @@ runtime dependency, downloads no models, and modifies no donor or BMO
 repository. Phase 14's donor decisions and exact adapted paths are recorded in
 `docs/phase14/DONOR_UI_AND_PRODUCT_SALVAGE.md` and
 `docs/phase14/UI_DONOR_SALVAGE_MAP.md`.
+
+## Phase 15 audit update — 2026-09-01
+
+The Phase 15 read-only donor scan found no additional source that is cleared
+for copying. Jupyter MCP Server, Playwright MCP, OpenJarvis, Hermes Agent,
+OpenClaw, Microsoft UFO, and KiCad MCP remain reference/adaptor evidence only.
+Phase 15 will use product-owned stdio and capability normalization boundaries,
+preserve the existing JARVIS authority spine, and add no runtime dependency
+unless a later focused test and license review require one. Exact decisions are
+recorded in `docs/phase15/DONOR_CAPABILITY_SCAN.md` and
+`docs/phase15/DONOR_SALVAGE_MAP.md`.
