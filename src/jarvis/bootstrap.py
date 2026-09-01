@@ -395,7 +395,16 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
             for item in await goals.list(owner_id)
         )
         notifications_view = tuple(
-            NotificationProjection(item.notification_id, item.title, item.message, item.severity, item.dismissed_at is not None)
+            NotificationProjection(
+                item.notification_id,
+                item.title,
+                item.message,
+                item.severity,
+                item.dismissed_at is not None,
+                item.source,
+                item.created_at,
+                item.severity.casefold() in {"important", "urgent", "critical"},
+            )
             for item in await notifications.list(owner_id)
         )
         approvals_view = tuple(_approval_projection(row) for row in repository.pending_approvals(owner_id))

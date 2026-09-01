@@ -92,6 +92,9 @@ class NotificationProjection:
     message: str
     severity: str = "info"
     dismissed: bool = False
+    source: str = "runtime"
+    created_at: datetime | None = None
+    important: bool = False
 
 
 @dataclass(frozen=True, slots=True)

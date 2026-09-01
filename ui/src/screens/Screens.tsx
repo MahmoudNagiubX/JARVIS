@@ -26,7 +26,7 @@ export type NotificationFilter = 'all' | 'unread' | 'important' | 'proactive' | 
 export function filterNotifications(notifications: JsonRecord[], filter: NotificationFilter): JsonRecord[] {
   if (filter === 'all') return notifications
   if (filter === 'unread') return notifications.filter((item) => !Boolean(item.dismissed || item.dismissed_at))
-  if (filter === 'important') return notifications.filter((item) => ['important', 'urgent', 'critical'].includes(stringValue(item.severity).toLowerCase()) || Boolean(record(item.metadata).important))
+  if (filter === 'important') return notifications.filter((item) => Boolean(item.important) || ['important', 'urgent', 'critical'].includes(stringValue(item.severity).toLowerCase()))
   if (filter === 'proactive') return notifications.filter((item) => stringValue(item.source).toLowerCase().startsWith('proactive'))
   return notifications.filter((item) => stringValue(item.source).toLowerCase().startsWith('system'))
 }
@@ -42,17 +42,23 @@ export function isApprovalActionable(approval: JsonRecord): boolean {
   return stringValue(approval.status, 'pending') === 'pending' && Boolean(stringValue(approval.run_id || approval.pending_run_id, ''))
 }
 
-function ApprovalCard({ approval, onDecision, interactive }: { approval: JsonRecord; onDecision: (approval: JsonRecord, approved: boolean) => void; interactive?: boolean }) {
+type ActiveRun = { runId: string; conversationId: string; state: string }
+
+function ApprovalCard({ approval, onDecision, interactive }: { approval: JsonRecord; onDecision: (approval: JsonRecord, approved: boolean) => Promise<void>; interactive?: boolean }) {
   const location = useLocation()
   const [deciding, setDeciding] = useState(false)
   const actionsEnabled = interactive ?? location.pathname === '/approvals'
   const id = stringValue(approval.approval_id || approval.id, 'unknown approval')
   const runId = stringValue(approval.run_id || approval.pending_run_id, '')
   const status = stringValue(approval.status, 'pending')
+  async function decide(approved: boolean) {
+    setDeciding(true)
+    try { await onDecision(approval, approved) } finally { setDeciding(false) }
+  }
   return <ListCard title={stringValue(approval.action, 'Consequential action')} status={status} meta={`Approval ${id}`}>
     <p className="card-copy">{stringValue(approval.reason, 'The action requires owner confirmation.')}</p>
     {Boolean(approval.preview) && <div className="safe-preview"><span className="eyebrow">SANITIZED PREVIEW</span><p>{stringValue(approval.preview)}</p></div>}
-    {status === 'pending' && actionsEnabled && <div className="card-actions inline"><Button variant="primary" disabled={!isApprovalActionable(approval) || deciding} onClick={() => { setDeciding(true); onDecision(approval, true) }} title={!runId ? 'Waiting for the server run correlation' : undefined}>{deciding ? 'Saving…' : 'Approve'}</Button><Button variant="danger" disabled={!isApprovalActionable(approval) || deciding} onClick={() => { setDeciding(true); onDecision(approval, false) }}>Deny</Button>{!runId && <span className="small muted">Awaiting run correlation</span>}</div>}
+    {status === 'pending' && actionsEnabled && <div className="card-actions inline"><Button variant="primary" disabled={!isApprovalActionable(approval) || deciding} onClick={() => void decide(true)} title={!runId ? 'Waiting for the server run correlation' : undefined}>{deciding ? 'Saving…' : 'Approve'}</Button><Button variant="danger" disabled={!isApprovalActionable(approval) || deciding} onClick={() => void decide(false)}>Deny</Button>{!runId && <span className="small muted">Awaiting run correlation</span>}</div>}
   </ListCard>
 }
 
@@ -69,7 +75,7 @@ export function HomeScreen() {
   const ready = stringValue(system.runtime_state, '') === 'ready'
   return <div className="screen"><SectionHeading eyebrow="COMMAND CENTER" title="Good to see you." description="One coherent view of your local JARVIS runtime, current work, and attention queue." action={<Link className="button primary" to="/chat">New chat <span>↗</span></Link>} />
     <div className="hero-layout"><JHudFrame label="JARVIS · CORE STATUS" live={ready}><div className="core-visual"><JArcReactor level={ready ? 100 : 0} color={ready ? 'cyan' : 'amber'} label={statusText(system.runtime_state || 'starting')} animated={ready} /><div><span className="eyebrow">LOCAL BRAIN</span><h2>{stringValue(system.model_alias, system.model_available ? 'Model ready' : 'Model unavailable')}</h2><p className="lede">{system.offline ? 'Internet is unavailable. Local capabilities remain available.' : 'Runtime connected to the local application boundary.'}</p><JWaveform active={stringValue(voice.state, '') === 'listening' || stringValue(voice.state, '') === 'speaking'} /></div></div></JHudFrame><FramePanel title="Runtime status" eyebrow="AUTHORITATIVE HEALTH" status={system.offline ? 'local' : 'online'}><div className="metric-grid"><Metric label="Local brain" value={system.model_available ? 'READY' : 'UNAVAILABLE'} status={system.model_available ? 'ready' : 'unavailable'} /><Metric label="Voice" value={statusText(voice.state || 'sleeping')} status={voice.state} /><Metric label="Devices" value={projectionList(state, 'devices').length} /><Metric label="Approvals" value={approvals.length} status={approvals.length ? 'pending' : 'ready'} /></div><DetailList values={{ Runtime: statusText(system.runtime_state), Provider: stringValue(system.model_provider, 'Not reported'), Network: system.offline ? 'Offline · local features remain available' : 'Online', Generated: dateValue(projection?.generated_at) }} /></FramePanel></div>
-    <div className="screen-grid three"><FramePanel title="What needs attention" eyebrow="OWNER QUEUE" status={approvals.length ? 'pending' : 'clear'}>{approvals.length ? <div className="stack">{approvals.slice(0, 2).map((approval) => <ApprovalCard key={stringValue(approval.approval_id || approval.id)} approval={approval} onDecision={() => undefined} />)}<Link className="text-link" to="/approvals">Open approval center →</Link></div> : <EmptyState title="No pending approvals" detail="Consequential actions will appear here with a sanitized preview." />}</FramePanel><FramePanel title="Current context" eyebrow="FRESH PROJECTION"><DetailList values={{ 'Active app': stringValue(presence.active_application || presence.active_app, 'Not observed'), 'Focused window': stringValue(presence.focused_window, 'Not observed'), Workspace: stringValue(presence.current_workspace, 'Not observed'), Home: home.available ? 'Connected' : 'No live controller' }} /><Link className="text-link" to="/context">Inspect current context →</Link></FramePanel><FramePanel title="Active work" eyebrow="MISSION SERVICE" status={missions.length ? 'active' : 'idle'}>{missions.length ? <div className="compact-list">{missions.slice(0, 4).map((mission) => <div className="compact-row" key={stringValue(mission.mission_id || mission.id)}><div><strong>{stringValue(mission.title || mission.request, 'Untitled mission')}</strong><span>{stringValue(mission.current_step, 'No active step')}</span></div><StatusBadge value={mission.status} /></div>)}</div> : <EmptyState title="No active missions" detail="Create bounded work through the canonical mission service." />}<Link className="text-link" to="/missions">Open missions →</Link></FramePanel></div>
+    <div className="screen-grid three"><FramePanel title="What needs attention" eyebrow="OWNER QUEUE" status={approvals.length ? 'pending' : 'clear'}>{approvals.length ? <div className="stack">{approvals.slice(0, 2).map((approval) => <ApprovalCard key={stringValue(approval.approval_id || approval.id)} approval={approval} onDecision={async () => undefined} />)}<Link className="text-link" to="/approvals">Open approval center →</Link></div> : <EmptyState title="No pending approvals" detail="Consequential actions will appear here with a sanitized preview." />}</FramePanel><FramePanel title="Current context" eyebrow="FRESH PROJECTION"><DetailList values={{ 'Active app': stringValue(presence.active_application || presence.active_app, 'Not observed'), 'Focused window': stringValue(presence.focused_window, 'Not observed'), Workspace: stringValue(presence.current_workspace, 'Not observed'), Home: home.available ? 'Connected' : 'No live controller' }} /><Link className="text-link" to="/context">Inspect current context →</Link></FramePanel><FramePanel title="Active work" eyebrow="MISSION SERVICE" status={missions.length ? 'active' : 'idle'}>{missions.length ? <div className="compact-list">{missions.slice(0, 4).map((mission) => <div className="compact-row" key={stringValue(mission.mission_id || mission.id)}><div><strong>{stringValue(mission.title || mission.request, 'Untitled mission')}</strong><span>{stringValue(mission.current_step, 'No active step')}</span></div><StatusBadge value={mission.status} /></div>)}</div> : <EmptyState title="No active missions" detail="Create bounded work through the canonical mission service." />}<Link className="text-link" to="/missions">Open missions →</Link></FramePanel></div>
     <div className="screen-grid two"><FramePanel title="Recent activity" eyebrow="EVENT PROJECTION"><ActivityList events={timeline} /><Link className="text-link" to="/activity">View complete timeline →</Link></FramePanel><FramePanel title="Quick health" eyebrow="LOCAL-FIRST"><DetailList values={{ Goals: projectionList(state, 'goals').length, Memory: 'Inspectable', Research: projectionList(state, 'research').length, 'Voice acceptance': 'Deferred by design' }} /><button className="text-link button-link" onClick={() => void refreshProjection()}>Refresh projection ↻</button></FramePanel></div>
   </div>
 }
@@ -84,7 +90,7 @@ export function ChatScreen() {
   const [selected, setSelected] = useState('')
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
-  const [lastRun, setLastRun] = useState('')
+  const [activeRun, setActiveRun] = useState<ActiveRun | null>(null)
   const [messageError, setMessageError] = useState('')
   const [activities, setActivities] = useState<Record<string, JsonRecord[]>>({})
   const conversation = screenData.conversations.find((item) => item.id === selected)
@@ -111,18 +117,33 @@ export function ChatScreen() {
     await refreshProjection()
   }
 
-  async function waitForRun(runId: string, conversationId: string) {
-    for (let attempt = 0; attempt < 150; attempt += 1) {
-      const status = await api.get<JsonRecord>(`/runs/${encodeURIComponent(runId)}`)
-      if (['succeeded', 'paused', 'failed', 'cancelled'].includes(stringValue(status.state))) {
-        await refreshConversation(conversationId)
-        setSending(false)
-        return
+  useEffect(() => {
+    if (!activeRun) return
+    let disposed = false
+    let timer: number | undefined
+    const terminalStates = new Set(['succeeded', 'failed', 'cancelled'])
+    const reconcile = async () => {
+      try {
+        const status = await api.get<JsonRecord>(`/runs/${encodeURIComponent(activeRun.runId)}`)
+        if (disposed) return
+        const state = stringValue(status.state, 'running')
+        setActiveRun((current) => current?.runId === activeRun.runId ? { ...current, state } : current)
+        if (terminalStates.has(state)) {
+          await refreshConversation(activeRun.conversationId)
+          if (disposed) return
+          setActiveRun((current) => current?.runId === activeRun.runId ? null : current)
+          setSending(false)
+          return
+        }
+        if (state === 'paused') setSending(false)
+        timer = window.setTimeout(() => void reconcile(), 200)
+      } catch {
+        if (!disposed) timer = window.setTimeout(() => void reconcile(), 500)
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 200))
     }
-    throw new Error('The local run did not reach a terminal state.')
-  }
+    void reconcile()
+    return () => { disposed = true; if (timer) window.clearTimeout(timer) }
+  }, [activeRun?.runId, api])
 
   async function send(event: React.FormEvent) {
     event.preventDefault(); const text = draft.trim(); if (!text || sending) return
@@ -130,19 +151,21 @@ export function ChatScreen() {
     try {
       const result = await api.post<JsonRecord>('/messages/start', { text, conversation_id: selected || undefined, client_message_id: `ui-${globalThis.crypto?.randomUUID?.() || Date.now()}` })
       const conversationId = stringValue(result.conversation_id, selected)
-      setSelected(conversationId); setLastRun(stringValue(result.run_id, ''))
+      const runId = stringValue(result.run_id, '')
+      setSelected(conversationId)
+      if (runId) setActiveRun({ runId, conversationId, state: stringValue(result.state, 'queued') })
       setDraft('')
       await refreshConversation(conversationId)
-      if (result.run_id) await waitForRun(stringValue(result.run_id), conversationId)
+      if (!runId) setSending(false)
     } catch (error) { setSending(false); setMessageError(error instanceof Error ? error.message : 'Message failed.') }
   }
 
   async function cancel() {
-    if (!lastRun) return
-    try { await api.post(`/runs/${encodeURIComponent(lastRun)}/cancel`); await waitForRun(lastRun, selected) } catch (error) { setError(error instanceof Error ? error.message : 'Run cancellation failed.') }
+    if (!activeRun?.runId) return
+    try { await api.post(`/runs/${encodeURIComponent(activeRun.runId)}/cancel`) } catch (error) { setError(error instanceof Error ? error.message : 'Run cancellation failed.') }
   }
 
-  return <div className="screen"><SectionHeading eyebrow="CONVERSATION" title="Chat with JARVIS" description="The text path reaches the same local AgentRuntime, context, tools, permissions, and approvals." /><div className="chat-layout"><Panel className="conversation-panel"><div className="panel-head"><div><span className="eyebrow">HISTORY</span><h2>Conversations</h2></div><Button variant="quiet" onClick={() => { setSelected(''); setScreenData({ messages: [] }) }}>New</Button></div>{screenLoading ? <LoadingState label="Loading conversations…" /> : screenData.conversations.length ? <div className="conversation-list">{screenData.conversations.map((item) => <button className={`conversation-row ${selected === item.id ? 'active' : ''}`} key={stringValue(item.id)} onClick={() => setSelected(stringValue(item.id))}><strong>{stringValue(item.title, 'Untitled conversation')}</strong><span>{shortDate(item.updated_at || item.last_message_at)}</span></button>)}</div> : <EmptyState title="No saved conversations" detail="Your first message creates one." />}</Panel><Panel className="chat-panel"><div className="panel-head"><div><span className="eyebrow">LOCAL AGENT RUNTIME</span><h2>{conversation ? stringValue(conversation.title, 'Conversation') : 'New conversation'}</h2></div><StatusBadge value={sending ? 'processing' : 'ready'} /></div>{messageError && <div className="inline-error" role="alert">{messageError}</div>}<div className="message-list" aria-live="polite">{screenData.messages.length ? screenData.messages.map((message, index) => <article className={`message ${message.role === 'user' ? 'user' : 'assistant'}`} key={stringValue(message.message_id || message.id, `${message.created_at}-${index}`)}><span className="message-role">{message.role === 'user' ? 'YOU' : 'JARVIS'}</span><p>{stringValue(message.content, '')}</p><time>{dateValue(message.created_at)}</time>{list(activities[stringValue(message.run_id, '')]).map((tool, toolIndex) => <div className="tool-inline" key={`${toolIndex}-${stringValue(tool.name)}`}><span className="tool-dot" />{stringValue(tool.name || tool.tool, 'Tool activity')} <StatusBadge value={tool.status} /></div>)}</article>) : <EmptyState title="Start a conversation" detail="Ask a normal question and the local model will answer through the canonical runtime." />}{sending && <div className="message assistant pending-message"><span className="message-role">JARVIS</span><p>Working from the local runtime…</p><JWaveform active /></div>}</div><form className="composer" onSubmit={send}><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask JARVIS anything local…" aria-label="Message JARVIS" rows={3} required /><div className="composer-footer"><span className="muted small">Enter a message · no cloud provider</span><div>{sending && lastRun && <Button variant="quiet" onClick={() => void cancel()}>Cancel run</Button>}<Button variant="primary" type="submit" disabled={sending || !draft.trim()}>{sending ? 'Processing…' : 'Send message ↗'}</Button></div></div></form></Panel></div></div>
+  return <div className="screen"><SectionHeading eyebrow="CONVERSATION" title="Chat with JARVIS" description="The text path reaches the same local AgentRuntime, context, tools, permissions, and approvals." /><div className="chat-layout"><Panel className="conversation-panel"><div className="panel-head"><div><span className="eyebrow">HISTORY</span><h2>Conversations</h2></div><Button variant="quiet" onClick={() => { setSelected(''); setScreenData({ messages: [] }) }}>New</Button></div>{screenLoading ? <LoadingState label="Loading conversations…" /> : screenData.conversations.length ? <div className="conversation-list">{screenData.conversations.map((item) => <button className={`conversation-row ${selected === item.id ? 'active' : ''}`} key={stringValue(item.id)} onClick={() => setSelected(stringValue(item.id))}><strong>{stringValue(item.title, 'Untitled conversation')}</strong><span>{shortDate(item.updated_at || item.last_message_at)}</span></button>)}</div> : <EmptyState title="No saved conversations" detail="Your first message creates one." />}</Panel><Panel className="chat-panel"><div className="panel-head"><div><span className="eyebrow">LOCAL AGENT RUNTIME</span><h2>{conversation ? stringValue(conversation.title, 'Conversation') : 'New conversation'}</h2></div><StatusBadge value={activeRun?.state === 'paused' ? 'approval' : sending ? 'processing' : 'ready'} /></div>{messageError && <div className="inline-error" role="alert">{messageError}</div>}{activeRun?.state === 'paused' && <div className="notice" role="status">Run paused pending approval.</div>}<div className="message-list" aria-live="polite">{screenData.messages.length ? screenData.messages.map((message, index) => <article className={`message ${message.role === 'user' ? 'user' : 'assistant'}`} key={stringValue(message.message_id || message.id, `${message.created_at}-${index}`)}><span className="message-role">{message.role === 'user' ? 'YOU' : 'JARVIS'}</span><p>{stringValue(message.content, '')}</p><time>{dateValue(message.created_at)}</time>{list(activities[stringValue(message.run_id, '')]).map((tool, toolIndex) => <div className="tool-inline" key={`${toolIndex}-${stringValue(tool.name)}`}><span className="tool-dot" />{stringValue(tool.name || tool.tool, 'Tool activity')} <StatusBadge value={tool.status} /></div>)}</article>) : <EmptyState title="Start a conversation" detail="Ask a normal question and the local model will answer through the canonical runtime." />}{sending && <div className="message assistant pending-message"><span className="message-role">JARVIS</span><p>Working from the local runtime…</p><JWaveform active /></div>}</div><form className="composer" onSubmit={send}><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask JARVIS anything local…" aria-label="Message JARVIS" rows={3} required /><div className="composer-footer"><span className="muted small">Enter a message · no cloud provider</span><div>{activeRun && activeRun.state !== 'paused' && <Button variant="quiet" onClick={() => void cancel()}>Cancel run</Button>}<Button variant="primary" type="submit" disabled={sending || !draft.trim()}>{sending ? 'Processing…' : 'Send message ↗'}</Button></div></div></form></Panel></div></div>
 }
 
 export function MissionsScreen() {
@@ -192,7 +215,7 @@ export function NotificationsScreen() {
   return <div className="screen"><SectionHeading eyebrow="OWNER ATTENTION" title="Notifications" description="Unread, proactive, and system notices from the existing notification service." /><div className="filter-tabs large">{filters.map(([value, label]) => <button className={filter === value ? 'selected' : ''} key={value} onClick={() => setFilter(value)}>{label}{value === 'all' && <span> {notifications.length}</span>}</button>)}</div><Panel>{visible.length ? <div className="notification-list">{visible.map((item) => <div className="notification-row" key={stringValue(item.notification_id || item.id)}><span className={`notification-marker ${tone(item.severity)}`} /><div><div className="card-heading"><strong>{stringValue(item.title, 'Notification')}</strong><StatusBadge value={item.severity || 'info'} /></div><p>{stringValue(item.message, '')}</p><span className="muted small">{dateValue(item.created_at)}</span></div>{!item.dismissed && <Button variant="quiet" onClick={() => void dismiss(item)}>Dismiss</Button>}</div>)}</div> : <EmptyState title="No notifications in this view" detail="JARVIS will surface important changes without turning local operation into noise." />}</Panel></div>
 }
 
-export function ApprovalsScreen() { const { api, projection, refreshProjection, setError } = useJarvis(); const approvals = projectionList(record(projection), 'approvals'); async function decision(item: JsonRecord, approved: boolean) { const runId = stringValue(item.run_id || item.pending_run_id, ''); if (!runId) return; try { await api.post(`/approvals/${encodeURIComponent(stringValue(item.approval_id || item.id))}`, { run_id: runId, approved }); await refreshProjection() } catch (error) { setError(error instanceof Error ? error.message : 'Approval decision failed.') } } return <div className="screen"><SectionHeading eyebrow="OWNER CONTROL" title="Approval center" description="Consequential actions remain backend-authoritative. Each decision is owner-scoped, CSRF-protected, and audited." /><div className="screen-grid two">{approvals.length ? approvals.map((item) => <ApprovalCard key={stringValue(item.approval_id || item.id)} approval={item} onDecision={(approval, approved) => void decision(approval, approved)} />) : <Panel><EmptyState title="No pending approvals" detail="JARVIS will show the exact action, target, reason, risk, and sanitized preview here." /></Panel>}</div></div> }
+export function ApprovalsScreen() { const { api, projection, refreshProjection, setError } = useJarvis(); const approvals = projectionList(record(projection), 'approvals'); async function decision(item: JsonRecord, approved: boolean) { const runId = stringValue(item.run_id || item.pending_run_id, ''); if (!runId) return; try { await api.post(`/approvals/${encodeURIComponent(stringValue(item.approval_id || item.id))}`, { run_id: runId, approved }); await refreshProjection() } catch (error) { setError(error instanceof Error ? error.message : 'Approval decision failed.') } } return <div className="screen"><SectionHeading eyebrow="OWNER CONTROL" title="Approval center" description="Consequential actions remain backend-authoritative. Each decision is owner-scoped, CSRF-protected, and audited." /><div className="screen-grid two">{approvals.length ? approvals.map((item) => <ApprovalCard key={stringValue(item.approval_id || item.id)} approval={item} onDecision={decision} />) : <Panel><EmptyState title="No pending approvals" detail="JARVIS will show the exact action, target, reason, risk, and sanitized preview here." /></Panel>}</div></div> }
 
 export function ActivityScreen() { const { projection } = useJarvis(); const timeline = projectionList(record(projection), 'timeline'); return <div className="screen"><SectionHeading eyebrow="AUDIT PROJECTION" title="Activity" description="A readable owner-facing timeline. Sensitive payloads are redacted before reaching this projection." /><FramePanel title="Runtime timeline" eyebrow={`${timeline.length} RECORDED EVENTS`}><ActivityList events={timeline} limit={100} /></FramePanel></div> }
 
