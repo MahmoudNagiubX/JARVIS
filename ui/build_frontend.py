@@ -27,7 +27,9 @@ def main() -> None:
         raise SystemExit(result.returncode)
     TARGET.mkdir(parents=True, exist_ok=True)
     for path in TARGET.iterdir():
-        if path.is_file():
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
             path.unlink()
     for name in ASSETS:
         source = SOURCE / name
@@ -37,6 +39,9 @@ def main() -> None:
         if "http://" in content or "https://" in content:
             raise SystemExit(f"remote asset reference in {source}")
         shutil.copyfile(source, TARGET / name)
+    source_assets = SOURCE / "assets"
+    if source_assets.is_dir():
+        shutil.copytree(source_assets, TARGET / "assets")
     print(f"built {len(ASSETS)} local JARVIS assets")
 
 

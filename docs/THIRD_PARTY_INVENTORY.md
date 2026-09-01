@@ -73,3 +73,20 @@ preserve the existing JARVIS authority spine, and add no runtime dependency
 unless a later focused test and license review require one. Exact decisions are
 recorded in `docs/phase15/DONOR_CAPABILITY_SCAN.md` and
 `docs/phase15/DONOR_SALVAGE_MAP.md`.
+
+## Phase 14 V2 donor fusion update - 2026-09-01
+
+The nine local UI donor repositories under `C:\Jarivs\14_ui_candidates` were
+re-inspected for the V2 refactor. The exact 28-unit reuse decisions, source
+paths, destinations, license notes, and reference-only exclusions are recorded
+in `docs/phase14/ui-refactor/DONOR_EXTRACTION_MANIFEST.md`. Only presentational
+patterns were adapted into product-owned TypeScript components. No donor
+runtime, backend, mock data, remote asset, font, icon CDN, WebSocket transport,
+identity/profile storage, WebXR loop, or cloud service was copied.
+
+The owner-supplied wallpaper is tracked at
+`ui/src/assets/hero/ironman-owner-wallpaper.jpg`; it is used on Home only.
+The V2 palette and accessibility rules are recorded in
+`docs/phase14/ui-refactor/VISUAL_SYSTEM_V2.md`. Donor 07 and donor 08 had no
+license evidence in the inspected roots and donor 02/09 contained runtime or
+identity boundaries, so their visual contributions remain reference-only.

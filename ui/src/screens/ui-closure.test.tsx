@@ -167,4 +167,76 @@ describe('Phase 14 final closure screens', () => {
     expect(screen.getByText('mcp.workspace.read_file')).toBeInTheDocument()
     expect(screen.queryByText('No MCP servers configured')).not.toBeInTheDocument()
   })
+
+  it('renders the wallpaper-led donor-fusion command center surfaces', async () => {
+    const api = apiFor({
+      ...baseProjection,
+      presence: { active_application: 'JARVIS', focused_window: 'Command Center' },
+      missions: [{ mission_id: 'mission-1', title: 'Review owner queue', status: 'active', current_step: 'Inspecting' }],
+      timeline: [{ event_id: 'event-1', category: 'runtime', state: 'ready', timestamp: '2026-09-01T08:00:00Z' }],
+    }, vi.fn(async () => ({})))
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('wallpaper-hero')).toBeInTheDocument()
+    expect(screen.getByTestId('hero-art')).toBeInTheDocument()
+    expect(screen.getByTestId('matrix-foundation')).toBeInTheDocument()
+    expect(screen.getByTestId('hud-bar')).toBeInTheDocument()
+    expect(screen.getByText('Review owner queue')).toBeInTheDocument()
+    expect(screen.getByText('LOCAL CAPABILITY SPINE')).toBeInTheDocument()
+  })
+
+  it('keeps recoverable runtime messaging calm and human-readable', async () => {
+    const api = apiFor(baseProjection, vi.fn(async () => ({})))
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByText('Internet is unavailable. Local capabilities remain available.')).toBeInTheDocument()
+    expect(screen.queryByText('principal_not_found')).not.toBeInTheDocument()
+    expect(screen.queryByText('RUNTIME NOTICE')).not.toBeInTheDocument()
+  })
+
+  it('exposes the rich donor-derived chat surfaces over the existing transport', async () => {
+    window.location.hash = '#/chat'
+    const api = apiFor(baseProjection, vi.fn(async () => ({})), { '/conversations': { conversations: [] } })
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('conversation-rail')).toBeInTheDocument()
+    expect(screen.getByText('BACKGROUND INBOX')).toBeInTheDocument()
+  })
+
+  it('exposes mission pipeline and plan presentation from real mission data', async () => {
+    window.location.hash = '#/missions'
+    const projection = { ...baseProjection, missions: [{ mission_id: 'mission-1', title: 'Prepare briefing', status: 'active', current_step: 'Collecting context' }] }
+    const api = apiFor(projection, vi.fn(async () => ({})))
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('mission-pipeline')).toBeInTheDocument()
+    expect(screen.getByText('EXECUTION PLAN')).toBeInTheDocument()
+  })
+
+  it('keeps every canonical mission status visible in the pipeline', async () => {
+    window.location.hash = '#/missions'
+    const projection = {
+      ...baseProjection,
+      missions: [
+        { mission_id: 'mission-running', title: 'Running mission', status: 'running', current_step: 'Executing' },
+        { mission_id: 'mission-failed', title: 'Failed mission', status: 'failed', current_step: 'Stopped' },
+      ],
+    }
+    const api = apiFor(projection, vi.fn(async () => ({})))
+    render(<App api={api} initialSession={session} />)
+
+    const pipeline = await screen.findByTestId('mission-pipeline')
+    expect(pipeline).toHaveTextContent('Running mission')
+    expect(pipeline).toHaveTextContent('Failed mission')
+  })
+
+  it('uses tactical presentation for the device surface without inventing health', async () => {
+    window.location.hash = '#/devices'
+    const projection = { ...baseProjection, devices: [{ device_id: 'nightfury', name: 'NIGHTFURY', status: 'available', capabilities: ['presence'] }] }
+    const api = apiFor(projection, vi.fn(async () => ({})))
+    render(<App api={api} initialSession={session} />)
+
+    expect(await screen.findByTestId('tactical-radar')).toBeInTheDocument()
+    expect(screen.getByText('NIGHTFURY')).toBeInTheDocument()
+  })
 })

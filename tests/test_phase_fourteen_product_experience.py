@@ -110,6 +110,10 @@ class TestPhaseFourteenProductExperience:
         assert "localStorage" not in app_source
         assert "http://" not in app_source and "https://" not in app_source
 
+        wallpaper_response, wallpaper = _raw_request(self.base, "/v1/app/assets/ironman-owner-wallpaper.jpg")
+        assert wallpaper_response.headers["Content-Type"] == "image/jpeg"
+        assert wallpaper.startswith(b"\xff\xd8\xff")
+
     def test_desktop_bootstrap_is_one_use_and_never_becomes_a_browser_credential(self) -> None:
         token = self.server.issue_desktop_bootstrap(self.credential, self.device_id, self.identity.identity_id)
         response, session = _request(
@@ -278,10 +282,14 @@ class TestPhaseFourteenProductExperience:
         assert (output / "index.html").is_file()
         assert (output / "styles.css").is_file()
         assert (output / "app.js").is_file()
-        for path in output.iterdir():
+        wallpaper = output / "assets" / "ironman-owner-wallpaper.jpg"
+        assert wallpaper.is_file()
+        assert wallpaper.read_bytes().startswith(b"\xff\xd8\xff")
+        text_files = [path for path in output.iterdir() if path.is_file()]
+        for path in text_files:
             text = path.read_text(encoding="utf-8")
             assert "http://" not in text and "https://" not in text
-        first = {path.name: path.read_bytes() for path in output.iterdir()}
+        first = {path.relative_to(output).as_posix(): path.read_bytes() for path in output.rglob("*") if path.is_file()}
         second = subprocess.run(
             [sys.executable, "ui/build_frontend.py"],
             cwd=REPO_ROOT,
@@ -290,7 +298,7 @@ class TestPhaseFourteenProductExperience:
             check=False,
         )
         assert second.returncode == 0, second.stderr
-        assert first == {path.name: path.read_bytes() for path in output.iterdir()}
+        assert first == {path.relative_to(output).as_posix(): path.read_bytes() for path in output.rglob("*") if path.is_file()}
 async def create_runtime_async():
     runtime = create_runtime(JarvisConfig(environment="test", database_path=":memory:"))
     await runtime.start()

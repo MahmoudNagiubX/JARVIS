@@ -839,6 +839,10 @@ class CoreHttpServer:
                     ".css": "text/css; charset=utf-8",
                     ".html": "text/html; charset=utf-8",
                     ".js": "text/javascript; charset=utf-8",
+                    ".jpeg": "image/jpeg",
+                    ".jpg": "image/jpeg",
+                    ".png": "image/png",
+                    ".webp": "image/webp",
                 }
                 payload = candidate.read_bytes()
                 self.send_response(HTTPStatus.OK)

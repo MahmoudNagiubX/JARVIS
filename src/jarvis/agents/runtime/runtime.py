@@ -205,7 +205,14 @@ class AgentRuntime:
             task_loop = task.get_loop()
             if task_loop.is_running():
                 task_loop.call_soon_threadsafe(task.cancel)
-        self.repository.update_run(run_id, status="cancel_requested", cancel_requested_at=datetime.now(UTC))
+        now = datetime.now(UTC)
+        self.repository.update_run(
+            run_id,
+            status="cancelled",
+            cancel_requested_at=now,
+            completed_at=now,
+            failure_code="cancelled",
+        )
         return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.CANCELLED)
 
     async def _execute(
@@ -259,6 +266,8 @@ class AgentRuntime:
                 try:
                     route = ModelRoute.TOOL_ORCHESTRATION if any(message.role is LLMRole.TOOL for message in messages) else self.router.classify(messages[-1].content).model_route
                     response = await self.models.generate(request, route)
+                    if run_id in self._cancelled:
+                        raise asyncio.CancelledError
                 except Exception as exc:
                     self.repository.update_run(run_id, status="failed", completed_at=datetime.now(UTC), failure_code=exc.__class__.__name__)
                     await self._emit("model.failed", EventCategory.MODEL, run, {"request_id": request_id, "error": exc.__class__.__name__}, state=EventState.FAILED)

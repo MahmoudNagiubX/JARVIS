@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { NAV_GROUPS, labelForPath, routeForLabel } from '../../app/routes'
+import { NAV_GROUPS, labelForPath } from '../../app/routes'
 import { useJarvis } from '../../app/context'
 import { dateValue, list, record, statusText, stringValue, tone } from '../../lib/format'
 import { Button, StatusBadge } from '../common/Primitives'
+import { MatrixFoundation } from '../foundation/MatrixFoundation'
+import { HudBar, HudCommandPalette, type HudPaletteItem } from '../hud/DonorFusion'
 
 function streamLabel(streamState: string): string {
   return streamState === 'live' ? 'LIVE' : streamState === 'reconnecting' ? 'RECONNECTING' : streamState === 'unavailable' ? 'SNAPSHOT' : 'LOCAL'
@@ -27,24 +29,28 @@ function ContextRail() {
   </aside>
 }
 
+function paletteItems(projection: Record<string, unknown> | null, conversations: JsonRecord[], memories: JsonRecord[]): HudPaletteItem[] {
+  return [
+    ...NAV_GROUPS.flatMap((group) => group.items.map((item) => ({ kind: group.label, label: item.label, path: item.path }))),
+    ...list(projection?.missions).slice(0, 10).map((item) => ({ kind: 'Mission', label: stringValue(item.title || item.request, 'Mission'), path: '/missions' })),
+    ...conversations.slice(0, 10).map((item) => ({ kind: 'Conversation', label: stringValue(item.title, 'Conversation'), path: '/chat' })),
+    ...memories.slice(0, 10).map((item) => ({ kind: 'Memory', label: stringValue(item.content, 'Memory'), path: '/memory' })),
+  ]
+}
+
+type JsonRecord = Record<string, unknown>
+
+function humanizeRuntimeError(message: string): string {
+  if (message.includes('principal_not_found')) return 'JARVIS could not restore the owner session.'
+  if (message.toLowerCase().includes('provider unavailable')) return 'The local brain is unavailable right now.'
+  if (message.toLowerCase().includes('offline')) return 'Web research is unavailable while offline; local capabilities remain available.'
+  return message
+}
+
 function CommandPalette({ close }: { close: () => void }) {
   const navigate = useNavigate()
-  const [query, setQuery] = useState('')
   const { projection, screenData } = useJarvis()
-  const entities = useMemo(() => [
-    ...NAV_GROUPS.flatMap((group) => group.items.map((item) => ({ kind: 'Screen', label: item.label, path: item.path }))),
-    ...list(projection?.missions).slice(0, 10).map((item) => ({ kind: 'Mission', label: stringValue(item.title || item.request, 'Mission'), path: '/missions' })),
-    ...screenData.conversations.slice(0, 10).map((item) => ({ kind: 'Conversation', label: stringValue(item.title, 'Conversation'), path: '/chat' })),
-    ...screenData.memories.slice(0, 10).map((item) => ({ kind: 'Memory', label: stringValue(item.content, 'Memory'), path: '/memory' })),
-  ], [projection?.missions, screenData.conversations, screenData.memories])
-  const results = entities.filter((item) => item.label.toLowerCase().includes(query.toLowerCase())).slice(0, 12)
-  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && close()}>
-    <section className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette">
-      <div className="palette-top"><span className="eyebrow">JARVIS COMMAND</span><kbd>ESC</kbd></div>
-      <input autoFocus className="palette-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Navigate or find local context…" aria-label="Search command palette" />
-      <div className="palette-results">{results.length ? results.map((item) => <button className="palette-row" key={`${item.kind}-${item.label}`} onClick={() => { close(); navigate(item.path) }}><span className="palette-kind">{item.kind}</span><strong>{item.label}</strong><span className="palette-arrow">↗</span></button>) : <div className="empty-state compact"><strong>No local matches</strong><p>Search finds screens and loaded records; it never executes a tool.</p></div>}</div>
-    </section>
-  </div>
+  return <HudCommandPalette items={paletteItems(projection, screenData.conversations, screenData.memories)} close={close} onSelect={(item) => { close(); navigate(item.path) }} />
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -65,21 +71,22 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  return <div className="app-shell">
+  return <MatrixFoundation><div className="app-shell">
     <a className="skip-link" href="#workspace">Skip to workspace</a>
     <header className="topbar">
       <button className="mobile-menu button quiet" onClick={() => setDrawerOpen((value) => !value)} aria-label="Open navigation">☰</button>
       <button className="brand" onClick={() => navigate('/')} aria-label="JARVIS home"><span className="brand-mark" aria-hidden="true"><i /><i /><i /></span><span><strong>J.A.R.V.I.S.</strong><small>LOCAL OPERATIONS CONSOLE</small></span></button>
       <div className="topbar-meta"><StatusBadge value={state} /><span className="connection-label"><i className={`connection-dot ${streamState}`} />{streamLabel(streamState)}</span><span className="network-label">{system.offline ? 'LOCAL' : 'LOCAL + WEB'}</span><button className="palette-trigger" onClick={() => setPaletteOpen(true)}><span>Command palette</span><kbd>Ctrl K</kbd></button></div>
     </header>
+    <div className="topbar-trace"><HudBar label="JARVIS // COMMAND CENTER" status={statusText(state)}><span className="topbar-trace-detail">{system.offline ? 'LOCAL MODE' : 'LOCAL + WEB'}</span></HudBar></div>
     <div className="shell-body">
       <aside className={`sidebar ${drawerOpen ? 'open' : ''}`} aria-label="Primary navigation">
         <div className="sidebar-scroll">{NAV_GROUPS.map((group) => <div className="nav-group" key={group.label}><span className="nav-label">{group.label}</span>{group.items.map((item) => <NavLink key={item.path} to={item.path} end={item.path === '/'} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} onClick={() => setDrawerOpen(false)}><span className="nav-glyph">{item.glyph}</span><span>{item.label}</span>{item.path === '/approvals' && list(projection?.approvals).filter((approval) => stringValue(approval.status, 'pending') === 'pending').length > 0 && <b className="nav-count">{list(projection?.approvals).filter((approval) => stringValue(approval.status, 'pending') === 'pending').length}</b>}</NavLink>)}</div>)}</div>
         <div className="sidebar-footer"><span className="status-line"><i className="connection-dot live" />Owner session active</span><span className="muted small">{labelForPath(location.pathname)}</span></div>
       </aside>
-      <main id="workspace" className="workspace">{error && <div className="global-error" role="alert"><strong>Runtime notice</strong><span>{error}</span></div>}{children}</main>
+      <main id="workspace" className="workspace">{error && <div className="global-error" role="alert"><span className="notice-mark">!</span><div><strong>Local session needs attention</strong><span>{humanizeRuntimeError(error)}</span></div></div>}{children}</main>
       <ContextRail />
     </div>
     {paletteOpen && <CommandPalette close={() => setPaletteOpen(false)} />}
-  </div>
+  </div></MatrixFoundation>
 }
