@@ -1086,6 +1086,27 @@ class CoreApplication:
     def venom_plan(self) -> dict[str, Any]:
         return asdict(self.runtime.venom.plan())
 
+    async def _require_canonical_venom(self, principal: DemoPrincipal) -> DeviceRecord:
+        """Accept heartbeats only from the enrolled server binding for this Core."""
+
+        owner = self.runtime.repository.first_owner()
+        configured_owner = owner.get("id") if owner else None
+        configured_device_id = getattr(getattr(self.runtime, "config", None), "venom_device_id", None)
+        device = await self.runtime.device_fabric.get(principal.identity.owner_id, principal.device.device_id)
+        if (
+            configured_owner is None
+            or principal.identity.owner_id != configured_owner
+            or device is None
+            or device.device_id != principal.device.device_id
+            or device.owner_id != principal.identity.owner_id
+            or device.status == DeviceStatus.REVOKED.value
+            or device.role != DeviceRole.SERVER.value
+            or "node.health" not in device.capabilities
+            or (configured_device_id is not None and device.device_id != configured_device_id)
+        ):
+            raise PermissionError("venom_device_binding_required")
+        return device
+
     async def list_rooms(self, owner_id: str) -> list[dict[str, Any]]:
         if self.runtime.rooms is None:
             return []
@@ -1160,6 +1181,7 @@ class CoreApplication:
         return asdict(res)
 
     async def venom_heartbeat(self, principal: DemoPrincipal, values: dict[str, object]) -> dict[str, Any]:
+        await self._require_canonical_venom(principal)
         status = bool(values.get("healthy", True))
         details = str(values.get("details", "heartbeat"))
         if status:

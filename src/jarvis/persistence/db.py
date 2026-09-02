@@ -686,6 +686,15 @@ class SQLiteDatabase:
             else:
                 self.connection.commit()
 
+    @contextmanager
+    def read_lock(self) -> Iterator[sqlite3.Connection]:
+        """Serialize connection reads with writes on the shared connection."""
+
+        if self._closed:
+            raise RuntimeError("database is closed")
+        with self._lock:
+            yield self.connection
+
     def close(self) -> None:
         if not self._closed:
             with self._lock:

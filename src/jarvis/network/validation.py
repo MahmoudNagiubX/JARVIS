@@ -23,9 +23,92 @@ _ALLOWED_IPV6_PRIVATE_NETWORKS = (
     ipaddress.ip_network("fe80::/10"),
 )
 
+MAX_TRUSTED_LAN_CIDRS = 8
+MAX_TRUSTED_LAN_CIDR_LENGTH = 64
+PRIVATE = "PRIVATE"
+EXPLICIT_LOCAL_TRUST_OVERRIDE = "EXPLICIT_LOCAL_TRUST_OVERRIDE"
+LOOPBACK = "LOOPBACK"
+BLOCKED = "BLOCKED"
+_NETWORK_MODES = frozenset({"live-distributed", "local", "test"})
+
 
 class NetworkValidationError(ValueError):
     """Raised when a Core or node network URL fails private LAN validation."""
+
+
+def validate_trusted_lan_cidrs(trusted_lan_cidrs: Sequence[str] | None = ()) -> tuple[str, ...]:
+    """Validate bounded, explicit local-network overrides and normalize them."""
+
+    if trusted_lan_cidrs is None:
+        return ()
+    if isinstance(trusted_lan_cidrs, (str, bytes)):
+        raise NetworkValidationError("trusted_lan_cidrs_must_be_a_sequence")
+    values = tuple(trusted_lan_cidrs)
+    if len(values) > MAX_TRUSTED_LAN_CIDRS:
+        raise NetworkValidationError("too_many_trusted_lan_cidrs")
+    normalized: list[str] = []
+    networks: set[ipaddress.IPv4Network | ipaddress.IPv6Network] = set()
+    for raw in values:
+        if not isinstance(raw, str) or not raw.strip() or len(raw.strip()) > MAX_TRUSTED_LAN_CIDR_LENGTH:
+            raise NetworkValidationError("invalid_trusted_lan_cidr")
+        try:
+            network = ipaddress.ip_network(raw.strip(), strict=False)
+        except ValueError as exc:
+            raise NetworkValidationError("invalid_trusted_lan_cidr") from exc
+        if network.prefixlen == 0 or network.is_unspecified or network.is_multicast:
+            raise NetworkValidationError("dangerous_trusted_lan_cidr")
+        loopback_network = ipaddress.ip_network("127.0.0.0/8" if network.version == 4 else "::1/128")
+        if network.overlaps(loopback_network):
+            raise NetworkValidationError("loopback_trusted_lan_cidr_forbidden")
+        if network in networks:
+            continue
+        networks.add(network)
+        normalized.append(str(network))
+    return tuple(normalized)
+
+
+def classify_ip(ip_str: str, trusted_lan_cidrs: Sequence[str] | None = ()) -> str:
+    """Classify an address under the default policy plus explicit local overrides."""
+
+    networks = tuple(ipaddress.ip_network(cidr) for cidr in validate_trusted_lan_cidrs(trusted_lan_cidrs))
+    try:
+        address = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return BLOCKED
+    if address.is_loopback:
+        return LOOPBACK
+    if address.version == 4 and any(address in network for network in _ALLOWED_IPV4_PRIVATE_NETWORKS):
+        return PRIVATE
+    if address.version == 6 and any(address in network for network in _ALLOWED_IPV6_PRIVATE_NETWORKS):
+        return PRIVATE
+    if any(address in network for network in networks):
+        return EXPLICIT_LOCAL_TRUST_OVERRIDE
+    return BLOCKED
+
+
+def trusted_network_mode(trusted_lan_cidrs: Sequence[str] | None = ()) -> str:
+    """Return a safe diagnostic label without exposing the configured addresses."""
+
+    return EXPLICIT_LOCAL_TRUST_OVERRIDE if validate_trusted_lan_cidrs(trusted_lan_cidrs) else "DEFAULT_PRIVATE_LAN"
+
+
+def validate_bind_host(
+    host: str,
+    trusted_lan_cidrs: Sequence[str] | None = (),
+    *,
+    allow_wildcard: bool = False,
+) -> None:
+    """Validate a node listener host under the shared trust policy."""
+
+    if host in {"0.0.0.0", "::", ""}:
+        if not allow_wildcard:
+            raise NetworkValidationError("wildcard_bind_requires_explicit_opt_in")
+        return
+    if host in {"localhost", "localhost.localdomain"} or classify_ip(host, trusted_lan_cidrs) == LOOPBACK:
+        return
+    if classify_ip(host, trusted_lan_cidrs) in {PRIVATE, EXPLICIT_LOCAL_TRUST_OVERRIDE}:
+        return
+    raise NetworkValidationError(f"public_or_invalid_bind_host:{host}")
 
 
 def _default_resolve(hostname: str) -> list[str]:
@@ -40,6 +123,7 @@ def validate_private_core_url(
     url: str,
     mode: str = "live-distributed",
     resolver: Callable[[str], Sequence[str]] | None = None,
+    trusted_lan_cidrs: Sequence[str] | None = (),
 ) -> str:
     """Validate that a Core URL points to an authorized private LAN origin.
 
@@ -55,6 +139,9 @@ def validate_private_core_url(
     - Permits loopback addresses (127.0.0.1, ::1, localhost).
     - Still rejects public IPs and URL credentials.
     """
+    if mode not in _NETWORK_MODES:
+        raise NetworkValidationError("unsupported_network_mode")
+    trusted_networks = validate_trusted_lan_cidrs(trusted_lan_cidrs)
     if not isinstance(url, str) or not url.strip():
         raise NetworkValidationError("core_url_empty")
 
@@ -100,11 +187,10 @@ def validate_private_core_url(
             if mode == "live-distributed":
                 raise NetworkValidationError("loopback_address_forbidden_in_live_distributed_mode")
             # Allowed in local/test mode
-        elif ip_obj.version == 4:
-            if not any(ip_obj in net for net in _ALLOWED_IPV4_PRIVATE_NETWORKS):
+        elif classify_ip(hostname, trusted_networks) == BLOCKED:
+            if ip_obj.version == 4:
                 raise NetworkValidationError("public_or_unauthorized_ipv4_forbidden")
-        elif ip_obj.version == 6:
-            if not any(ip_obj in net for net in _ALLOWED_IPV6_PRIVATE_NETWORKS):
+            if ip_obj.version == 6:
                 raise NetworkValidationError("public_or_unauthorized_ipv6_forbidden")
     else:
         # Hostname check
@@ -136,26 +222,18 @@ def validate_private_core_url(
                 if res_ip.is_loopback:
                     if mode == "live-distributed":
                         raise NetworkValidationError("hostname_resolves_to_loopback_in_live_distributed_mode")
-                elif res_ip.version == 4:
-                    if not any(res_ip in net for net in _ALLOWED_IPV4_PRIVATE_NETWORKS):
-                        raise NetworkValidationError(f"hostname_resolves_to_public_ip:{ip_str}")
-                elif res_ip.version == 6:
-                    if not any(res_ip in net for net in _ALLOWED_IPV6_PRIVATE_NETWORKS):
-                        raise NetworkValidationError(f"hostname_resolves_to_public_ip:{ip_str}")
+                elif classify_ip(ip_str, trusted_networks) == BLOCKED:
+                    raise NetworkValidationError(f"hostname_resolves_to_public_ip:{ip_str}")
 
     port_str = f":{port}" if port is not None else ""
     return f"{parsed.scheme}://{hostname}{port_str}"
 
 
-def is_private_ip(ip_str: str) -> bool:
+def is_private_ip(ip_str: str, trusted_lan_cidrs: Sequence[str] | None = ()) -> bool:
     """Check if an IP string is an RFC1918, link-local, or private IPv6 address."""
     try:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
         return False
 
-    if ip.is_loopback:
-        return True
-    if ip.version == 4:
-        return any(ip in net for net in _ALLOWED_IPV4_PRIVATE_NETWORKS)
-    return any(ip in net for net in _ALLOWED_IPV6_PRIVATE_NETWORKS)
+    return classify_ip(str(ip), trusted_lan_cidrs) != BLOCKED

@@ -3,7 +3,7 @@
 ## Overview
 
 - **Phase target**: JARVIS MEGA PHASE 17 - Venom, Home, Multi-Device & Room Fabric.
-- **Authoritative base**: `c3dc5abe20adc3d23605326ff35c9e2843477cde`.
+- **Authoritative base**: `db3f61a2a9442cb4c99c52b8b06702a2147d5254`.
 - **Architecture model**: Option A. NIGHTFURY remains the authoritative SQLite single writer, local model host, VoiceCore, AgentRuntime, and central authority host. Venom remains a lightweight Linux infrastructure node.
 - **Date**: 2026-09-02.
 
@@ -16,7 +16,7 @@
 - Device enrollment remains transactional and fail-closed for owner/device collisions, with per-device credential hashing, capability/scopes persistence, and revocation.
 - Revocation is canonical and idempotent: credential/device state is revoked once; dependent satellite, presence, voice endpoint, and world-state cleanup is performed by one subscriber without recursive re-revocation.
 - The separate authenticated node HTTP adapter shares the existing `CoreApplication` and exposes only bounded enrollment, satellite, Venom, and room-voice routes. The existing UI/Core HTTP server remains loopback-only.
-- Live-distributed Core URLs accept only validated private-LAN origins. Public IPs, loopback, userinfo, unexpected paths, queries/fragments, and unsafe DNS resolution are rejected.
+- Live-distributed Core URLs accept only validated safe private-LAN origins or bounded explicit owner-local CIDRs. Public IPs, loopback, userinfo, unexpected paths, queries/fragments, and unsafe DNS resolution are rejected. Empty trusted configuration is reported as `DEFAULT_PRIVATE_LAN`; a valid non-RFC1918 override is reported as `EXPLICIT_LOCAL_TRUST_OVERRIDE` and is never source-code defaulted.
 - Home consequential actions use the existing `DurableApprovalEngine`, return a durable approval ID with a sanitized preview, keep raw arguments ephemeral, deny without transport execution, and approve exactly once.
 - MQTT delivery is truthful: an absent publisher is `NOT_CONFIGURED` and cannot produce verified success; a configured publisher's result is propagated.
 - Venom has authenticated private-LAN heartbeat, truthful service/storage/capability telemetry, and bounded reconnect/backoff/recovery. Backup receive, event relay, and HA bridge remain `not_configured` because they are not implemented/configured.
@@ -43,19 +43,27 @@
 | `test_phase_seventeen_security_injection.py` | 2 | 2 | 0 |
 | `test_phase_seventeen_final_closure.py` | 5 | 5 | 0 |
 | `test_phase_seventeen_network_closure.py` | 19 | 19 | 0 |
-| **Phase 17 total** | **66** | **66** | **0** |
+| `test_phase_seventeen_network_readiness_closure.py` | 13 | 13 | 0 |
+| **Phase 17 total** | **79** | **79** | **0** |
 
-The focused command `python -m pytest tests -k phase_seventeen -q` completed with **66 passed, 436 deselected**.
+The focused command `python -m pytest tests -k phase_seventeen -q` completed with **79 passed, 436 deselected**.
 
 ### Regression and build verification
 
 - **Phases 13-16 regression**: 218 passed, 11 subtests passed, 0 failed.
-- **Full repository Python suite**: 502 passed, 36 subtests passed, 0 failed.
+- **Full repository Python suite**: 514 passed, 1 justified skip (`no active Windows window`), 36 subtests passed, 0 failed.
 - **Frontend Vitest**: 75 passed in 14 files, 0 failed.
 - **Frontend TypeScript/Vite build**: clean; 68 modules transformed, completed in 849 ms.
 - **Dependency audit**: `npm audit --audit-level=high` found 0 vulnerabilities.
 - **Python compilation**: `python -m compileall src tests` exited 0.
 - **Whitespace**: `git diff --check` exited 0.
+
+### Last real-network readiness closure
+
+- `CoreNodeHttpServer`, `WindowsSatelliteAgent`, `VenomDaemon`, and desktop startup share the canonical bounded trust policy. `192.162.1.0/24` is accepted only when explicitly configured; it is labeled `EXPLICIT_LOCAL_TRUST_OVERRIDE`, while defaults remain `DEFAULT_PRIVATE_LAN`.
+- `JarvisDesktopLifecycle` starts one bounded node server on the existing runtime/CoreApplication when enabled, and closes it on stop. A second desktop instance cannot acquire the product lock or start another server.
+- Venom provisioning creates a real venv, installs the local package without Internet/PYTHONPATH, runs the two-module import smoke, and returns non-zero/truthful failure status for failed provisioning steps.
+- Detailed node health is authenticated; Venom heartbeats require the enrolled owner-bound server device, `node.health`, and non-revoked canonical binding. Concurrent Home approval decisions claim durable state once before any external action.
 
 ## 3. Final closure matrix
 

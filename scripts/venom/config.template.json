@@ -5,6 +5,7 @@
   "mqtt_enabled": true,
   "mqtt_broker_host": "127.0.0.1",
   "mqtt_broker_port": 1883,
+  "trusted_lan_cidrs": [],
   "backup_receive_dir": "/var/lib/jarvis/backups",
   "log_dir": "/var/log/jarvis",
   "ha_bridge_enabled": false

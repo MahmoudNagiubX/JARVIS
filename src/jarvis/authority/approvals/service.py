@@ -17,16 +17,24 @@ class DurableApprovalEngine:
         return ApprovalDecision(request.approval_id, ApprovalStatus.PENDING, None, None)
 
     async def decide(self, approval_id: str, approved: bool, decided_by: str) -> ApprovalDecision:
+        decision, _ = await self.decide_with_claim(approval_id, approved, decided_by)
+        return decision
+
+    async def decide_with_claim(
+        self, approval_id: str, approved: bool, decided_by: str
+    ) -> tuple[ApprovalDecision, bool]:
+        """Atomically decide an approval and report whether this caller won."""
+
         row = self.repository.approval(approval_id)
         if row is None:
             raise KeyError(approval_id)
         now = datetime.now(UTC)
         if row["status"] != ApprovalStatus.PENDING.value:
-            return self._decision(row)
+            return self._decision(row), False
         if datetime.fromisoformat(row["expires_at"]) <= now:
-            self.repository.update_approval(approval_id, ApprovalStatus.EXPIRED.value, decided_by, now, "approval_expired")
+            claimed = self.repository.update_approval(approval_id, ApprovalStatus.EXPIRED.value, decided_by, now, "approval_expired")
         else:
-            self.repository.update_approval(
+            claimed = self.repository.update_approval(
                 approval_id,
                 ApprovalStatus.APPROVED.value if approved else ApprovalStatus.REJECTED.value,
                 decided_by,
@@ -34,7 +42,7 @@ class DurableApprovalEngine:
                 None,
             )
         row = self.repository.approval(approval_id)
-        return self._decision(row)
+        return self._decision(row), claimed
 
     async def get(self, approval_id: str) -> ApprovalDecision | None:
         row = self.repository.approval(approval_id)

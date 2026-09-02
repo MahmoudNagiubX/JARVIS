@@ -386,6 +386,7 @@ class PhaseTenActivePerceptionTests(unittest.IsolatedAsyncioTestCase):
         agent = WindowsSatelliteAgent(
             SatelliteAgentConfig("http://127.0.0.1:8000", self.identity.owner_id, self.identity.identity_id, self.device.device_id, frozenset({"perception.screen"}), protocol_version="2"),
             "credential",
+            network_mode="test",
             perception_provider=_MetadataProvider(),
         )
         raw = await agent.execute_command(SatelliteCommand("perception-raw", "perception", "perception.screen", {"operation": "observe_screen", "screenshot": "bytes"}, True, "2"))
@@ -586,6 +587,7 @@ class PhaseTenActivePerceptionTests(unittest.IsolatedAsyncioTestCase):
                 protocol_version="2",
             ),
             "credential",
+            network_mode="test",
             perception_provider=provider,
         )
         context = await agent.execute_command(

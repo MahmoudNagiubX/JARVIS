@@ -16,7 +16,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from ..network.validation import NetworkValidationError, validate_private_core_url
+from ..network.validation import NetworkValidationError, validate_private_core_url, validate_trusted_lan_cidrs
 from .venom import VenomNode
 
 logger = logging.getLogger(__name__)
@@ -75,7 +75,11 @@ class VenomDaemon:
         if not raw:
             return None
         try:
-            return validate_private_core_url(str(raw), mode=self.mode)
+            configured_cidrs = self._config.get("trusted_lan_cidrs", ())
+            trusted_cidrs = validate_trusted_lan_cidrs(
+                configured_cidrs if isinstance(configured_cidrs, (list, tuple)) else ()
+            )
+            return validate_private_core_url(str(raw), mode=self.mode, trusted_lan_cidrs=trusted_cidrs)
         except NetworkValidationError:
             return None
 

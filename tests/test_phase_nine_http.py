@@ -132,6 +132,7 @@ class PhaseNineHttpTests(unittest.IsolatedAsyncioTestCase):
                 frozenset({"computer.observe"}),
             ),
             self.principal.credential or "",
+            network_mode="test",
             controller=_AgentController(),
         )
         await agent.connect()

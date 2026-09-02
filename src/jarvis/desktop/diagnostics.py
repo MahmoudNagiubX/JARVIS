@@ -34,6 +34,7 @@ class DesktopDiagnostics:
         runtime = self.lifecycle.runtime
         if runtime is None:
             results.extend(self._offline_checks(settings))
+            results.extend(self._node_checks(settings))
             return tuple(results)
         results.append(DiagnosticResult("core_db", "PASS" if not runtime.database.closed else "FAIL"))
         owner = runtime.repository.first_owner()
@@ -50,6 +51,7 @@ class DesktopDiagnostics:
             results.extend(DiagnosticResult(item.name, "PASS" if item.ready else "FAIL", item.reason) for item in assets.statuses())
         results.append(DiagnosticResult("microphone", "PASS" if settings and settings.input_device else "FAIL", "selector_missing" if not settings or not settings.input_device else ""))
         results.append(DiagnosticResult("speaker", "PASS" if settings and settings.output_device else "FAIL", "selector_missing" if not settings or not settings.output_device else ""))
+        results.extend(self._node_checks(settings))
         return tuple(results)
 
     def _offline_checks(self, settings: DesktopProductConfig | None) -> list[DiagnosticResult]:
@@ -63,4 +65,16 @@ class DesktopDiagnostics:
             *(DiagnosticResult(item.name, "PASS" if item.ready else "FAIL", item.reason) for item in assets.statuses()),
             DiagnosticResult("microphone", "PASS" if settings.input_device else "FAIL", "selector_missing" if not settings.input_device else ""),
             DiagnosticResult("speaker", "PASS" if settings.output_device else "FAIL", "selector_missing" if not settings.output_device else ""),
+        ]
+
+    def _node_checks(self, settings: DesktopProductConfig | None) -> list[DiagnosticResult]:
+        status = self.lifecycle.status
+        enabled = bool(settings and settings.distributed_fabric_enabled)
+        state = status.node_transport_state if enabled else "disabled"
+        return [
+            DiagnosticResult("node_transport_state", "PASS" if state in {"online", "disabled"} else "FAIL", state),
+            DiagnosticResult("node_bind_host", "PASS" if not enabled or settings is not None else "FAIL", settings.node_bind_host if enabled and settings else ""),
+            DiagnosticResult("node_port", "PASS" if not enabled or settings is not None else "FAIL", str(settings.node_port) if enabled and settings else ""),
+            DiagnosticResult("trusted_network_mode", "PASS", status.trusted_network_mode),
+            DiagnosticResult("connected_node_count", "PASS", str(status.connected_node_count)),
         ]

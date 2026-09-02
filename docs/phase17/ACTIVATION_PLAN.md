@@ -17,6 +17,10 @@
    - Initial ESP32 device manifests and state observations are registered.
 5. **Multi-Room Voice Fabric Arming**:
    - `RoomVoiceFabric` verifies connectivity to `VoiceCore` and registers active room endpoints.
+6. **Zero-Touch Distributed Node Startup**:
+   - Enable `distributed_fabric_enabled` only in the safe desktop settings, with bounded `node_bind_host`, `node_port`, and optional explicit `trusted_lan_cidrs`.
+   - `JarvisDesktopLifecycle` starts one authenticated `CoreNodeHttpServer` over the existing runtime/CoreApplication and closes it during normal stop or startup degradation. The Command Center remains loopback-only.
+   - Confirm diagnostics report `DEFAULT_PRIVATE_LAN` or `EXPLICIT_LOCAL_TRUST_OVERRIDE` without exposing credentials or hardcoding the owner LAN.
 
 ## Automated Rollback Procedure
 If any critical subsystem fails during deployment or activation:
@@ -30,3 +34,5 @@ If any critical subsystem fails during deployment or activation:
    - Immediately revokes all active bearer tokens, closes long-poll sessions, and removes the device from the presence fusion table.
 3. **Voice Core Fail-Safe**:
    - In case of multi-room voice transport failure, `RoomVoiceFabric` falls back directly to the local primary desktop microphone/speaker on NIGHTFURY.
+
+No physical deployment is implied by this activation plan. Physical Venom/SSH, Home Assistant, ESP32, and room-acoustic gates remain separate evidence-gated operations; Phase 18 and Phase 19 are not started by this closure.

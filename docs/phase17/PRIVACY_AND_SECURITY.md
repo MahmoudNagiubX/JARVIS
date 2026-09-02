@@ -33,3 +33,7 @@ Untrusted strings received from external physical sources (device names, MQTT te
 1. **Zero Durable Audio**: Raw microphone audio and synthesized speech buffers are never written to disk or database.
 2. **Credential Redaction**: `diagnostics()` and audit logs redact all secrets and hashes.
 3. **No Hardcoded Network Secrets**: IP addresses, SSH keys, and broker passwords reside only in local private environment configuration.
+
+## Distributed Network Boundary
+
+The shared network policy defaults to `DEFAULT_PRIVATE_LAN` and permits only bounded private/local ranges. A non-RFC1918 owner subnet such as `192.162.1.0/24` is accepted only from explicit local configuration and is labeled `EXPLICIT_LOCAL_TRUST_OVERRIDE`; it is not classified as generally private. Wildcard (`0.0.0.0/0`, `::/0`), multicast, unspecified, invalid, and public origins are rejected. The same policy gates Core URLs, node bind/client addresses, satellite clients, and Venom URLs. Detailed node health is authenticated, and Venom heartbeat authorization is owner/device/role/capability bound.

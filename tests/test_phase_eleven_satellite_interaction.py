@@ -49,7 +49,7 @@ class PhaseElevenSatelliteInteractionTests(unittest.IsolatedAsyncioTestCase):
             "http://127.0.0.1:8787", "owner-phase11", "identity-phase11", "device-phase11",
             frozenset({"computer.input", "computer.observe"}),
         )
-        agent = WindowsSatelliteAgent(config, "credential", controller=fake)
+        agent = WindowsSatelliteAgent(config, "credential", network_mode="test", controller=fake)
         accepted = await agent.execute_command(SatelliteCommand(
             "command-keyboard", "input", "computer.input",
             {"operation": "keyboard_action", "window_ref": "window-good", "text": "safe"}, False,

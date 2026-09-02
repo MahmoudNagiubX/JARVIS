@@ -404,7 +404,7 @@ class TestPhaseSeventeenNetworkClosure(unittest.IsolatedAsyncioTestCase):
             device_id=self.device.device_id,
             capabilities=frozenset({"computer.observe"}),
         )
-        agent = WindowsSatelliteAgent(config, "dummy_cred")
+        agent = WindowsSatelliteAgent(config, "dummy_cred", network_mode="test")
 
         # Expired command must be rejected immediately without side effects
         past_deadline = datetime.now(UTC) - timedelta(seconds=10)
@@ -433,12 +433,11 @@ class TestPhaseSeventeenNetworkClosure(unittest.IsolatedAsyncioTestCase):
             urlopen(req_browser)
         self.assertEqual(ctx.exception.code, 404)
 
-        # 2. Node health check works
+        # 2. Detailed node health requires authentication.
         req_health = Request(f"{self.base_url}/venom/health")
-        with urlopen(req_health) as resp:
-            self.assertEqual(resp.status, 200)
-            data = json.loads(resp.read().decode("utf-8"))
-            self.assertEqual(data["node_id"], "venom")
+        with self.assertRaises(HTTPError) as ctx:
+            urlopen(req_health)
+        self.assertEqual(ctx.exception.code, 401)
 
         # 3. Enrollment redemption route works
         ticket_res = asyncio.run(self.fabric.issue_enrollment_ticket(
@@ -599,6 +598,7 @@ class TestPhaseSeventeenNetworkClosure(unittest.IsolatedAsyncioTestCase):
             owner_id=self.owner_id,
             name="Venom Server",
             role=DeviceRole.SERVER.value,
+            capabilities=("node.health",),
         ))
         enroll_res = asyncio.run(self.fabric.enroll_device(DeviceEnrollmentRequest(
             code=ticket_res.code,

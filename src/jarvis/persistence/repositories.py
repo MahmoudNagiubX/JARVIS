@@ -490,7 +490,8 @@ class RuntimeRepository:
             )
 
     def approval(self, approval_id: str) -> dict[str, Any] | None:
-        row = self.database.connection.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+        with self.database.read_lock() as db:
+            row = db.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
         return dict(row) if row else None
 
     def pending_approvals(self, owner_id: str | None = None) -> list[dict[str, Any]]:
@@ -505,12 +506,13 @@ class RuntimeRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def update_approval(self, approval_id: str, status: str, decided_by: str, decided_at: datetime, reason: str | None) -> None:
+    def update_approval(self, approval_id: str, status: str, decided_by: str, decided_at: datetime, reason: str | None) -> bool:
         with self.database.transaction() as db:
-            db.execute(
+            cursor = db.execute(
                 "UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?, decision_reason = ? WHERE id = ? AND status = 'pending'",
                 (status, decided_by, iso(decided_at), reason, approval_id),
             )
+        return cursor.rowcount == 1
 
     def insert_audit(self, record: Any) -> None:
         with self.database.transaction() as db:

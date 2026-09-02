@@ -18,6 +18,7 @@ from ..config import JarvisConfig
 from ..contracts import Identity, VoiceSessionContext
 from ..models.llama_runtime import LlamaRuntimeStatus
 from ..models.routing import ModelRoute
+from ..network.validation import trusted_network_mode
 from ..voice.adapters import SoundDeviceInput, SoundDevicePlayback
 from ..voice.config import VoiceDeviceSelector
 from ..voice.runtime import LocalVoiceRuntime, VoiceRunnerState, build_local_voice_runtime
@@ -64,6 +65,11 @@ class DesktopStatus:
     model: Any | None = None
     hud_url: str | None = None
     app_url: str | None = None
+    node_transport_state: str = "disabled"
+    node_bind_host: str | None = None
+    node_port: int | None = None
+    trusted_network_mode: str = "DEFAULT_PRIVATE_LAN"
+    connected_node_count: int = 0
 
 
 RuntimeFactory = Callable[[JarvisConfig], JarvisRuntime]
@@ -107,6 +113,8 @@ class JarvisDesktopLifecycle:
         self.device: Any | None = None
         self._hud_server: Any | None = None
         self._hud_thread: threading.Thread | None = None
+        self._node_server: Any | None = None
+        self._core_application: Any | None = None
         self._app_bootstrap_url: str | None = None
         self._status = DesktopStatus(DesktopPhase.CREATED, "not_started")
 
@@ -221,6 +229,7 @@ class JarvisDesktopLifecycle:
             self.identity, self.device = identity, device
             await runtime.start()
             self._start_hud(credential)
+            self._start_node_server(settings)
             model_status, brain_ready = await self._model_status(runtime)
             settings = self._reconcile_audio_and_assets(settings)
             settings.save(self.config_path)
@@ -245,7 +254,18 @@ class JarvisDesktopLifecycle:
             if not brain_ready:
                 reason = "local_brain_unavailable"
             phase = DesktopPhase.READY if brain_ready and voice_state in {"running", "paused"} else DesktopPhase.DEGRADED
-            self._status = DesktopStatus(phase, reason, identity.identity_id, device.device_id, brain_ready, voice_state, model_status, self._hud_url(), self._app_url())
+            self._status = DesktopStatus(
+                phase,
+                reason,
+                identity.identity_id,
+                device.device_id,
+                brain_ready,
+                voice_state,
+                model_status,
+                self._hud_url(),
+                self._app_url(),
+                **self._node_status_fields(settings),
+            )
             self._log(f"desktop_start_{phase.value}")
             return self._status
         except Exception as exc:
@@ -260,9 +280,13 @@ class JarvisDesktopLifecycle:
             if self.runner is not None:
                 await self.runner.stop()
                 self.runner = None
+            if self._node_server is not None:
+                self._node_server.stop()
+                self._node_server = None
             if self._hud_server is not None:
                 self._hud_server.shutdown()
                 self._hud_server = None
+            self._core_application = None
             self._app_bootstrap_url = None
             if self.runtime is not None:
                 if getattr(self.runtime, "state", None) is not None and getattr(self.runtime.state, "value", None) == "ready":
@@ -616,9 +640,16 @@ class JarvisDesktopLifecycle:
             await runtime.shutdown()
         else:
             self._close_unstarted_runtime(runtime)
+        self._close_servers()
         self.runtime = None
         self.instance_lock.release()
-        self._status = replace(self._status, phase=DesktopPhase.DEGRADED, reason=reason, voice_state="unavailable")
+        self._status = replace(
+            self._status,
+            phase=DesktopPhase.DEGRADED,
+            reason=reason,
+            voice_state="unavailable",
+            **self._node_status_fields(self.settings),
+        )
 
     def _start_hud(self, credential: str | None = None) -> None:
         if self._hud_server is not None or self.runtime is None:
@@ -626,7 +657,8 @@ class JarvisDesktopLifecycle:
         from ..api.core import CoreApplication
         from ..api.http import CoreHttpServer
 
-        self._hud_server = CoreHttpServer(CoreApplication(self.runtime), host="127.0.0.1", port=0)
+        self._core_application = self._core_application or CoreApplication(self.runtime)
+        self._hud_server = CoreHttpServer(self._core_application, host="127.0.0.1", port=0)
         app_url = self._app_base_url()
         if app_url:
             self.instance_lock.publish_metadata(app_url=app_url)
@@ -635,6 +667,53 @@ class JarvisDesktopLifecycle:
             self._app_bootstrap_url = f"{self._app_base_url()}#bootstrap={token}"
         self._hud_thread = threading.Thread(target=self._hud_server.serve_forever, name="jarvis-hud", daemon=True)
         self._hud_thread.start()
+
+    def _start_node_server(self, settings: DesktopProductConfig) -> None:
+        if not settings.distributed_fabric_enabled or self._node_server is not None:
+            return
+        if self.runtime is None:
+            raise RuntimeError("runtime_unavailable_for_node_transport")
+        from ..api.core import CoreApplication
+        from ..api.node_http import CoreNodeHttpServer
+
+        self._core_application = self._core_application or CoreApplication(self.runtime)
+        server = CoreNodeHttpServer(
+            self._core_application,
+            host=settings.node_bind_host,
+            port=settings.node_port,
+            trusted_lan_cidrs=settings.trusted_lan_cidrs,
+        )
+        try:
+            server.start()
+            if not server.wait_ready():
+                raise RuntimeError("node_transport_not_ready")
+        except Exception:
+            server.stop()
+            raise
+        self._node_server = server
+
+    def _close_servers(self) -> None:
+        if self._node_server is not None:
+            self._node_server.stop()
+            self._node_server = None
+        if self._hud_server is not None:
+            self._hud_server.shutdown()
+            self._hud_server = None
+        self._hud_thread = None
+        self._core_application = None
+
+    def _node_status_fields(self, settings: DesktopProductConfig | None = None) -> dict[str, object]:
+        current = settings or self.settings
+        enabled = bool(current and current.distributed_fabric_enabled)
+        server = self._node_server
+        state = "online" if server is not None else "degraded" if enabled else "disabled"
+        return {
+            "node_transport_state": state,
+            "node_bind_host": server.host if server is not None else (current.node_bind_host if enabled else None),
+            "node_port": server.port if server is not None else (current.node_port if enabled else None),
+            "trusted_network_mode": trusted_network_mode(current.trusted_lan_cidrs if current else ()),
+            "connected_node_count": 0,
+        }
 
     def _hud_url(self) -> str | None:
         if self._hud_server is None:
@@ -655,7 +734,14 @@ class JarvisDesktopLifecycle:
             phase = DesktopPhase.PAUSED
         else:
             phase = self._status.phase
-        return replace(self._status, phase=phase, voice_state=runner_state, hud_url=self._hud_url(), app_url=self._app_url())
+        return replace(
+            self._status,
+            phase=phase,
+            voice_state=runner_state,
+            hud_url=self._hud_url(),
+            app_url=self._app_url(),
+            **self._node_status_fields(),
+        )
 
     def _secret_store(self) -> LocalSecretStore:
         if self.secret_store is None:

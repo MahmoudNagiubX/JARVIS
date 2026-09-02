@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..config import JarvisConfig, validate_loopback_http_origin
+from ..network.validation import NetworkValidationError, validate_bind_host, validate_trusted_lan_cidrs
 from ..voice.config import VoiceDeviceSelector, VoiceRuntimeConfig
 
 
@@ -91,6 +92,10 @@ class DesktopProductConfig:
     autostart: bool = True
     ui_preference: str = "hud"
     last_validation: dict[str, str] = field(default_factory=dict)
+    distributed_fabric_enabled: bool = False
+    node_bind_host: str = "127.0.0.1"
+    node_port: int = 8788
+    trusted_lan_cidrs: tuple[str, ...] = ()
 
     def validated(self) -> "DesktopProductConfig":
         if self.config_version != 1:
@@ -128,6 +133,17 @@ class DesktopProductConfig:
             raise ProductConfigError("model GPU layers are outside supported bounds")
         if self.ui_preference not in {"hud", "native"}:
             raise ProductConfigError("unsupported UI preference")
+        if not isinstance(self.distributed_fabric_enabled, bool):
+            raise ProductConfigError("distributed_fabric_enabled must be boolean")
+        if not isinstance(self.node_bind_host, str) or not self.node_bind_host.strip() or len(self.node_bind_host) > 255:
+            raise ProductConfigError("node bind host is invalid")
+        if not isinstance(self.node_port, int) or not 0 <= self.node_port <= 65535:
+            raise ProductConfigError("node port is outside supported bounds")
+        try:
+            validate_trusted_lan_cidrs(self.trusted_lan_cidrs)
+            validate_bind_host(self.node_bind_host.strip(), self.trusted_lan_cidrs, allow_wildcard=False)
+        except NetworkValidationError as exc:
+            raise ProductConfigError(str(exc)) from exc
         if not isinstance(self.last_validation, dict) or any(not isinstance(key, str) or not isinstance(value, str) for key, value in self.last_validation.items()):
             raise ProductConfigError("last_validation must be an object")
         return self
@@ -166,6 +182,10 @@ class DesktopProductConfig:
             "autostart": self.autostart,
             "ui_preference": self.ui_preference,
             "last_validation": dict(self.last_validation),
+            "distributed_fabric_enabled": self.distributed_fabric_enabled,
+            "node_bind_host": self.node_bind_host,
+            "node_port": self.node_port,
+            "trusted_lan_cidrs": list(self.trusted_lan_cidrs),
         }
         _assert_safe_settings(values)
         return values
@@ -208,6 +228,10 @@ class DesktopProductConfig:
             autostart=_bool_value(values.get("autostart", True), "autostart"),
             ui_preference=str(values.get("ui_preference", "hud")).strip().lower(),
             last_validation=_validation_values(values.get("last_validation", {})),
+            distributed_fabric_enabled=_bool_value(values.get("distributed_fabric_enabled", False), "distributed_fabric_enabled"),
+            node_bind_host=str(values.get("node_bind_host", "127.0.0.1")).strip(),
+            node_port=int(values.get("node_port", 8788)),
+            trusted_lan_cidrs=_cidr_values(values.get("trusted_lan_cidrs", ())),
         )
         return result.validated()
 
@@ -314,6 +338,16 @@ def _validation_values(value: Any) -> dict[str, str]:
     if any(not isinstance(key, str) or not isinstance(child, str) for key, child in value.items()):
         raise ProductConfigError("last_validation values must be text")
     return dict(value)
+
+
+def _cidr_values(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+        raise ProductConfigError("trusted_lan_cidrs must be an array")
+    if any(not isinstance(item, str) for item in value):
+        raise ProductConfigError("trusted_lan_cidrs values must be text")
+    return tuple(item.strip() for item in value)
 
 
 def _assert_safe_settings(value: Any) -> None:

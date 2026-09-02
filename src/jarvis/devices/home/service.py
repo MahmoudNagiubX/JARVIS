@@ -497,7 +497,21 @@ class HomeActionService:
         if not valid_decider:
             return HomeResult("denied", error_code="approval_owner_mismatch")
 
-        decision = await self.approval.decide(approval_id, approved, decided_by)
+        decide_with_claim = getattr(self.approval, "decide_with_claim", None)
+        if callable(decide_with_claim):
+            decision, claimed = await decide_with_claim(approval_id, approved, decided_by)
+        else:
+            decision = await self.approval.decide(approval_id, approved, decided_by)
+            claimed = decision.status == ApprovalStatus.APPROVED and app_row.get("status") == ApprovalStatus.PENDING.value
+        if not claimed:
+            self._pending_approvals.pop(approval_id, None)
+            return HomeResult(
+                "failed",
+                {"approval_id": approval_id},
+                error_code="approval_already_decided",
+                verified=False,
+                approval_id=approval_id,
+            )
         self._pending_approvals.pop(approval_id, None)
 
         if not approved or decision.status != ApprovalStatus.APPROVED:

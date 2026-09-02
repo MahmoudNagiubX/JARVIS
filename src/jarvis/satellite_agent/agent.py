@@ -12,13 +12,14 @@ from datetime import UTC, datetime
 from http.client import HTTPException
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from ..computer.service import WindowsNativeComputerController
 from ..contracts import ComputerAction, DeviceIdentity, Identity, ToolContext
 from ..devices.satellite.contracts import CommandObservation, SatelliteCommand, validate_command
 from ..perception.windows import WindowsDesktopProvider
+from ..network.validation import validate_private_core_url, validate_trusted_lan_cidrs
 
 
 class SatelliteAgentTransportError(RuntimeError):
@@ -36,6 +37,7 @@ class SatelliteAgentConfig:
     poll_interval_seconds: float = 15.0
     heartbeat_interval_seconds: float = 15.0
     protocol_version: str = "1"
+    trusted_lan_cidrs: tuple[str, ...] = ()
 
 
 class WindowsSatelliteAgent:
@@ -64,11 +66,16 @@ class WindowsSatelliteAgent:
         config: SatelliteAgentConfig,
         credential: str,
         *,
+        network_mode: str = "live-distributed",
         controller: WindowsNativeComputerController | None = None,
         perception_provider: WindowsDesktopProvider | None = None,
         opener: Callable[..., Any] = urlopen,
     ) -> None:
-        _validate_core_url(config.core_url)
+        validate_private_core_url(
+            config.core_url,
+            mode=network_mode,
+            trusted_lan_cidrs=validate_trusted_lan_cidrs(config.trusted_lan_cidrs),
+        )
         if not credential.strip():
             raise ValueError("satellite credential is required")
         if not config.owner_id.strip() or not config.identity_id.strip() or not config.device_id.strip():
@@ -299,15 +306,6 @@ class WindowsSatelliteAgent:
         if self._session_id is None:
             raise SatelliteAgentTransportError("satellite_not_connected")
         return self._session_id
-
-
-def _validate_core_url(value: str) -> None:
-    parsed = urlsplit(value)
-    if parsed.scheme != "http" or parsed.username or parsed.password or parsed.path not in ("", "/"):
-        raise ValueError("satellite core URL must be a loopback HTTP origin")
-    if parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or parsed.port is None:
-        raise ValueError("satellite core URL must use an explicit loopback host and port")
-
 
 def _json_safe(value: object) -> object:
     if isinstance(value, dict):

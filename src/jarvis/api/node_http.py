@@ -12,7 +12,12 @@ from threading import Event, Thread
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from ..network.validation import is_private_ip
+from ..network.validation import (
+    NetworkValidationError,
+    is_private_ip,
+    validate_bind_host,
+    validate_trusted_lan_cidrs,
+)
 from .core import CoreApplication
 
 logger = logging.getLogger(__name__)
@@ -38,29 +43,30 @@ class CoreNodeHttpServer:
         port: int = 8788,
         *,
         allow_wildcard_bind: bool = False,
+        trusted_lan_cidrs: Sequence[str] | None = (),
         max_request_bytes: int = 1_000_000,
     ) -> None:
         self.application = application
         self.host = host
         self.port = port
         self.allow_wildcard_bind = allow_wildcard_bind
+        self.trusted_lan_cidrs = validate_trusted_lan_cidrs(trusted_lan_cidrs)
         self.max_request_bytes = max_request_bytes
-        self._validate_bind_host(host, allow_wildcard_bind)
+        self._validate_bind_host(host, allow_wildcard_bind, self.trusted_lan_cidrs)
         self._server: ThreadingHTTPServer | None = None
         self._thread: Thread | None = None
         self._ready = Event()
 
     @staticmethod
-    def _validate_bind_host(host: str, allow_wildcard: bool) -> None:
-        if host in {"0.0.0.0", "::", ""}:
-            if not allow_wildcard:
-                raise ValueError("wildcard_bind_requires_explicit_opt_in")
-            return
-        if host in {"127.0.0.1", "::1", "localhost"}:
-            return
-        if is_private_ip(host):
-            return
-        raise ValueError(f"public_or_invalid_bind_host:{host}")
+    def _validate_bind_host(
+        host: str,
+        allow_wildcard: bool,
+        trusted_lan_cidrs: Sequence[str] | None = (),
+    ) -> None:
+        try:
+            validate_bind_host(host, trusted_lan_cidrs, allow_wildcard=allow_wildcard)
+        except NetworkValidationError as exc:
+            raise ValueError(str(exc)) from exc
 
     def start(self) -> None:
         if self._server is not None:
@@ -68,6 +74,7 @@ class CoreNodeHttpServer:
 
         app = self.application
         max_bytes = self.max_request_bytes
+        trusted_lan_cidrs = self.trusted_lan_cidrs
 
         class _NodeHandler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
@@ -122,7 +129,7 @@ class CoreNodeHttpServer:
 
             def _check_client_ip(self) -> bool:
                 client_ip = self.client_address[0]
-                if not is_private_ip(client_ip):
+                if not is_private_ip(client_ip, trusted_lan_cidrs):
                     self._respond(HTTPStatus.FORBIDDEN, {"error": "non_private_client_rejected"})
                     return False
                 return True
@@ -148,8 +155,10 @@ class CoreNodeHttpServer:
                         res = asyncio.run(app.satellite_poll(principal, session_id, wait_seconds))
                         self._respond(HTTPStatus.OK, res)
                     elif route in {"/venom/health", "/nodes/venom/health"}:
+                        self._authenticated({})
                         self._respond(HTTPStatus.OK, app.venom_detailed_health())
                     elif route in {"/health", "/nodes/health"}:
+                        self._authenticated({})
                         self._respond(HTTPStatus.OK, asyncio.run(app.health()))
                     else:
                         self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})

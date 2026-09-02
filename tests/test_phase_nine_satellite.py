@@ -38,7 +38,7 @@ class PhaseNineSatelliteAgentTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_agent_executes_only_declared_typed_operations(self) -> None:
-        agent = WindowsSatelliteAgent(self._config(), "secret", controller=_FakeController())
+        agent = WindowsSatelliteAgent(self._config(), "secret", network_mode="test", controller=_FakeController())
         result = await agent.execute_command(
             SatelliteCommand("command-1", "observe", "computer.observe", {"operation": "list_processes"})
         )
@@ -68,7 +68,7 @@ class PhaseNineSatelliteAgentTests(unittest.IsolatedAsyncioTestCase):
             requests.append(request)
             return _Response(responses.pop(0))
 
-        agent = WindowsSatelliteAgent(self._config(), "credential-not-in-body", controller=_FakeController(), opener=opener)
+        agent = WindowsSatelliteAgent(self._config(), "credential-not-in-body", network_mode="test", controller=_FakeController(), opener=opener)
         await agent.connect()
         with self.assertRaisesRegex(SatelliteAgentTransportError, "satellite_session_invalid"):
             await agent.poll_once(wait_seconds=0)
@@ -78,7 +78,7 @@ class PhaseNineSatelliteAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("credential-not-in-body", requests[0].full_url)
 
     def test_agent_rejects_non_loopback_core(self) -> None:
-        with self.assertRaisesRegex(ValueError, "loopback"):
+        with self.assertRaisesRegex(ValueError, "public_or_unauthorized"):
             WindowsSatelliteAgent(
                 SatelliteAgentConfig("http://203.0.113.5:8787", "o", "i", "d", frozenset()),
                 "secret",
