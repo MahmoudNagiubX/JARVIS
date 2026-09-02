@@ -302,6 +302,18 @@ class CoreHttpServer:
                         parts = route.strip("/").split("/")
                         result = asyncio.run(application.conversation_messages(self._owner(query), parts[1]))
                         self._respond(HTTPStatus.OK if result is not None else HTTPStatus.NOT_FOUND, {"messages": result or []} if result is not None else {"error": "not_found"})
+                    elif route == "/nodes/venom/health":
+                        self._respond(HTTPStatus.OK, application.venom_detailed_health())
+                    elif route == "/nodes/venom/plan":
+                        self._respond(HTTPStatus.OK, application.venom_plan())
+                    elif route == "/rooms":
+                        self._respond(HTTPStatus.OK, {"rooms": asyncio.run(application.list_rooms(self._owner(query)))})
+                    elif route.startswith("/rooms/"):
+                        room_id = route.rsplit("/", 1)[-1]
+                        result = asyncio.run(application.get_room(self._owner(query), room_id))
+                        self._respond(HTTPStatus.OK if result else HTTPStatus.NOT_FOUND, result or {"error": "not_found"})
+                    elif route == "/fabric/diagnostics":
+                        self._respond(HTTPStatus.OK, asyncio.run(application.fabric_diagnostics(self._owner(query))))
                     else:
                         self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})
                 except PermissionError:
@@ -727,6 +739,38 @@ class CoreHttpServer:
                         principal = self._authenticated(body)
                         finding_id = route.split("/")[-2]
                         result = asyncio.run(application.acknowledge_finding(principal.identity.owner_id, finding_id))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/devices/enroll/ticket":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.issue_device_enrollment_ticket(principal.identity.owner_id, body))
+                        self._respond(HTTPStatus.CREATED, result)
+                        return
+                    if route == "/devices/enroll":
+                        result = asyncio.run(application.enroll_device(body))
+                        self._respond(HTTPStatus.OK if result.get("accepted") else HTTPStatus.BAD_REQUEST, result)
+                        return
+                    if route.startswith("/devices/") and route.endswith("/revoke"):
+                        principal = self._authenticated(body)
+                        device_id = route.strip("/").split("/")[1]
+                        result = asyncio.run(application.revoke_device(principal.identity.owner_id, device_id))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route.startswith("/devices/") and route.endswith("/degraded"):
+                        principal = self._authenticated(body)
+                        device_id = route.strip("/").split("/")[1]
+                        reason = str(body.get("reason", "degraded"))
+                        result = asyncio.run(application.mark_device_degraded(principal.identity.owner_id, device_id, reason=reason))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/voice/room/utterance":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.handle_room_voice_utterance(body, owner_id=principal.identity.owner_id))
+                        self._respond(HTTPStatus.OK, result)
+                        return
+                    if route == "/voice/room/barge_in":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.room_voice_barge_in(body, owner_id=principal.identity.owner_id))
                         self._respond(HTTPStatus.OK, result)
                         return
                     self._respond(HTTPStatus.NOT_FOUND, {"error": "not_found"})

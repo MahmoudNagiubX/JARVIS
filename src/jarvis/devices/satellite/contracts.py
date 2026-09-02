@@ -55,17 +55,25 @@ class CommandObservation:
     error_code: str | None = None
 
 
+ALLOWED_CAPABILITY_ACTIONS: Mapping[str, frozenset[str]] = {
+    "computer.observe": frozenset({"observe"}),
+    "computer.input": frozenset({"input"}),
+    "perception.screen": frozenset({"perception"}),
+    "node.health": frozenset({"health"}),
+    "node.service": frozenset({"service"}),
+    "voice.output": frozenset({"voice_playback", "voice_mute"}),
+    "home.control": frozenset({"home_action"}),
+    "esp32.command": frozenset({"esp32_action"}),
+}
+
+
 def validate_command(command: SatelliteCommand) -> None:
     if not command.command_id.strip() or not command.action.strip():
         raise ValueError("typed satellite command requires id and action")
-    if command.capability not in {"computer.observe", "computer.input", "perception.screen"}:
+    if command.capability not in ALLOWED_CAPABILITY_ACTIONS:
         raise ValueError("unsupported satellite capability")
-    if command.action not in {"observe", "input", "perception"}:
-        raise ValueError("unsupported satellite action")
-    if command.action == "observe" and command.capability != "computer.observe":
-        raise ValueError("observe capability mismatch")
-    if command.action == "input" and command.capability != "computer.input":
-        raise ValueError("input capability mismatch")
+    if command.action not in ALLOWED_CAPABILITY_ACTIONS[command.capability]:
+        raise ValueError(f"{command.action} capability mismatch")
     if command.action == "perception" and (command.capability != "perception.screen" or command.protocol_version != PERCEPTION_PROTOCOL_VERSION):
         raise ValueError("perception protocol v2 required")
     if command.protocol_version not in SUPPORTED_PROTOCOL_VERSIONS:

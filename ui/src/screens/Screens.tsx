@@ -981,6 +981,8 @@ export function DevicesScreen() {
   const { projection } = useJarvis()
   const devices = projectionList(record(projection), 'devices')
   const home = projectionRecord(record(projection), 'home')
+  const venom = projectionRecord(record(projection), 'venom')
+  const rooms = projectionList(record(projection), 'rooms')
 
   return (
     <div className="screen devices-screen" data-testid="devices-screen">
@@ -1022,6 +1024,53 @@ export function DevicesScreen() {
             </Panel>
           )}
         </div>
+      </div>
+      <div className="screen-grid two">
+        <Panel>
+          <SectionHeading eyebrow="INFRASTRUCTURE" title="Venom Node" />
+          {venom.node_id ? (
+            <DetailList
+              values={{
+                Node: stringValue(venom.node_id, 'venom'),
+                Status: stringValue(venom.status, 'not_configured'),
+                Version: stringValue(venom.version, 'phase17'),
+                Storage: record(venom.storage).status ? `${stringValue(record(venom.storage).status)} (${record(venom.storage).usage_percent || 0}%)` : 'Unconfigured',
+                Services: list(venom.services).length ? `${list(venom.services).length} monitored` : 'No services active',
+              }}
+            />
+          ) : (
+            <EmptyState
+              title="Venom node not configured"
+              detail="Linux infrastructure services will display once enrolled."
+            />
+          )}
+        </Panel>
+        <Panel>
+          <SectionHeading eyebrow="ROOM FABRIC" title="Rooms & Presence" />
+          {rooms.length ? (
+            <div className="detail-list">
+              {rooms.map((r) => (
+                <ListCard
+                  key={stringValue(r.room_id)}
+                  title={stringValue(r.name, 'Room')}
+                  meta={`${r.device_count || 0} devices, ${r.entity_count || 0} entities`}
+                >
+                  <DetailList
+                    values={{
+                      'Active endpoint': stringValue(r.active_endpoint_id, 'None'),
+                      Presence: r.presence_confidence ? `${Math.round(Number(r.presence_confidence) * 100)}% (${stringValue(r.presence_source, 'none')})` : 'Inactive',
+                    }}
+                  />
+                </ListCard>
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              title="No rooms configured"
+              detail="Room context will appear when room mappings are added."
+            />
+          )}
+        </Panel>
       </div>
       <Panel>
         {home.available ? (

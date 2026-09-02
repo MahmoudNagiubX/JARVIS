@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from uuid import uuid4
+
 from ..authority.identity.service import EnrollmentGrant
 from ..bootstrap import JarvisRuntime
 from ..contracts import (
@@ -13,6 +15,7 @@ from ..contracts import (
     ClientSession,
     ComputerAction,
     ComputerResult,
+    DeviceEnrollmentRequest,
     DeviceIdentity,
     DeviceRecord,
     Goal,
@@ -22,6 +25,8 @@ from ..contracts import (
     EngineeringAction,
     EngineeringWorkspace,
     ResearchRequest,
+    RoomUtteranceEnvelope,
+    RoomVoiceBargeIn,
     VisualRegion,
     MemoryCandidate,
     MemoryQuery,
@@ -1029,3 +1034,100 @@ class CoreApplication:
             "decided_at": decision.decided_at.isoformat() if decision.decided_at else None,
             "reason": decision.reason,
         }
+
+    async def issue_device_enrollment_ticket(self, owner_id: str, values: dict[str, object]) -> dict[str, Any]:
+        ticket = await self.runtime.device_fabric.issue_enrollment_ticket(
+            owner_id=owner_id,
+            name=str(values.get("name", "satellite")),
+            role=str(values.get("role", DeviceRole.ROOM_SATELLITE.value)),
+            platform=str(values.get("platform", "windows")),
+            capabilities=tuple(str(c) for c in values.get("capabilities", ())),
+            scopes=tuple(str(s) for s in values.get("scopes", ("tool.request",))),
+            ttl_minutes=int(values.get("ttl_minutes", 10)),
+            metadata=values.get("metadata") if isinstance(values.get("metadata"), dict) else None,
+        )
+        return {
+            "ticket_id": ticket.ticket_id,
+            "code": ticket.code,
+            "owner_id": ticket.owner_id,
+            "role": ticket.role,
+            "name": ticket.name,
+            "platform": ticket.platform,
+            "capabilities": sorted(ticket.capabilities),
+            "scopes": sorted(ticket.scopes),
+            "expires_at": ticket.expires_at.isoformat(),
+        }
+
+    async def enroll_device(self, values: dict[str, object]) -> dict[str, Any]:
+        caps = values.get("capabilities", ())
+        req = DeviceEnrollmentRequest(
+            code=str(values.get("code", "")),
+            device_id=str(values.get("device_id", "")),
+            name=str(values.get("name", "")),
+            platform=str(values.get("platform", "windows")),
+            software_version=str(values.get("software_version", "phase17")),
+            capabilities=frozenset(str(c) for c in caps if isinstance(c, str)),
+            metadata=values.get("metadata") if isinstance(values.get("metadata"), dict) else {},
+        )
+        res = await self.runtime.device_fabric.enroll_device(req)
+        return asdict(res)
+
+    async def revoke_device(self, owner_id: str, device_id: str) -> dict[str, Any]:
+        rec = await self.runtime.device_fabric.revoke(owner_id, device_id)
+        return self._device_dict(rec)
+
+    async def mark_device_degraded(self, owner_id: str, device_id: str, reason: str = "degraded") -> dict[str, Any]:
+        rec = await self.runtime.device_fabric.mark_degraded(owner_id, device_id, reason=reason)
+        return self._device_dict(rec)
+
+    def venom_detailed_health(self) -> dict[str, Any]:
+        return asdict(self.runtime.venom.detailed_health())
+
+    def venom_plan(self) -> dict[str, Any]:
+        return asdict(self.runtime.venom.plan())
+
+    async def list_rooms(self, owner_id: str) -> list[dict[str, Any]]:
+        if self.runtime.rooms is None:
+            return []
+        presence = await self.runtime.presence.snapshot(owner_id)
+        snaps = await self.runtime.rooms.list_snapshots(owner_id, presence=presence)
+        return [asdict(s) for s in snaps]
+
+    async def get_room(self, owner_id: str, room_id: str) -> dict[str, Any] | None:
+        if self.runtime.rooms is None:
+            return None
+        presence = await self.runtime.presence.snapshot(owner_id)
+        snap = await self.runtime.rooms.snapshot(owner_id, room_id, presence=presence)
+        return asdict(snap) if snap else None
+
+    async def fabric_diagnostics(self, owner_id: str) -> dict[str, Any]:
+        return await self.runtime.device_fabric.diagnostics(owner_id)
+
+    async def handle_room_voice_utterance(self, values: dict[str, object], owner_id: str | None = None) -> dict[str, Any]:
+        if self.runtime.room_voice is None:
+            raise RuntimeError("room_voice_fabric_not_configured")
+        envelope = RoomUtteranceEnvelope(
+            session_id=str(values.get("session_id", f"voice-{uuid4()}")),
+            endpoint_id=str(values["endpoint_id"]),
+            room_id=str(values.get("room_id", "")) or None,
+            text=str(values.get("text", "")),
+            audio=None,
+            confidence=float(values.get("confidence", 1.0)),
+            is_final=bool(values.get("is_final", True)),
+            owner_id=owner_id,
+        )
+        res = await self.runtime.room_voice.handle_room_utterance(envelope, owner_id=owner_id)
+        return asdict(res)
+
+    async def room_voice_barge_in(self, values: dict[str, object], owner_id: str = "owner") -> dict[str, Any]:
+        if self.runtime.room_voice is None:
+            raise RuntimeError("room_voice_fabric_not_configured")
+        barge = RoomVoiceBargeIn(
+            session_id=str(values.get("session_id", "")),
+            endpoint_id=str(values.get("endpoint_id", "")),
+            room_id=str(values.get("room_id", "")) or None,
+            timestamp=datetime.now(UTC),
+            reason=str(values.get("reason", "barge_in")),
+        )
+        success = await self.runtime.room_voice.barge_in(barge, owner_id=owner_id)
+        return {"barge_in": success}

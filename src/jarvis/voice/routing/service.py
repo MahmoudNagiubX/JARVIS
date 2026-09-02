@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -18,12 +19,57 @@ class VoiceRoutingService:
         self.repository = repository
         self.event_bus = event_bus
         self._endpoints: dict[str, VoiceEndpoint] = {}
+        self._loaded_owners: set[str] = set()
+
+    def _ensure_loaded(self, owner_id: str) -> None:
+        if owner_id in self._loaded_owners:
+            return
+        self._loaded_owners.add(owner_id)
+        for row in self.repository.personalization(owner_id):
+            key = str(row.get("key", ""))
+            if key.startswith("voice_endpoint:"):
+                val = row.get("value_json")
+                if isinstance(val, str):
+                    try:
+                        val = json.loads(val)
+                    except Exception:
+                        continue
+                if isinstance(val, dict):
+                    ep_id = val.get("endpoint_id") or key.split("voice_endpoint:", 1)[1]
+                    last_seen = datetime.fromisoformat(val["last_seen"]) if val.get("last_seen") else None
+                    self._endpoints[ep_id] = VoiceEndpoint(
+                        endpoint_id=ep_id,
+                        device_id=val.get("device_id", ""),
+                        room_id=val.get("room_id", ""),
+                        input_enabled=bool(val.get("input_enabled", True)),
+                        output_enabled=bool(val.get("output_enabled", True)),
+                        online=bool(val.get("online", False)),
+                        last_seen=last_seen,
+                        owner_id=val.get("owner_id", owner_id),
+                    )
+
+    def _save_endpoint(self, endpoint: VoiceEndpoint) -> None:
+        if not endpoint.owner_id:
+            return
+        data = {
+            "endpoint_id": endpoint.endpoint_id,
+            "device_id": endpoint.device_id,
+            "room_id": endpoint.room_id,
+            "input_enabled": endpoint.input_enabled,
+            "output_enabled": endpoint.output_enabled,
+            "online": endpoint.online,
+            "last_seen": endpoint.last_seen.isoformat() if endpoint.last_seen else None,
+            "owner_id": endpoint.owner_id,
+        }
+        self.repository.set_personalization(endpoint.owner_id, f"voice_endpoint:{endpoint.endpoint_id}", data, "voice_routing")
 
     async def register(self, owner_id: str, endpoint: VoiceEndpoint) -> VoiceEndpoint:
+        self._ensure_loaded(owner_id)
         if endpoint.owner_id and endpoint.owner_id != owner_id:
             raise ValueError("voice endpoint owner mismatch")
         normalized = VoiceEndpoint(endpoint.endpoint_id, endpoint.device_id, endpoint.room_id, endpoint.input_enabled, endpoint.output_enabled, True, datetime.now(UTC), owner_id)
         self._endpoints[endpoint.endpoint_id] = normalized
+        self._save_endpoint(normalized)
         await self._emit("voice.endpoint_online", owner_id, {"endpoint_id": endpoint.endpoint_id, "device_id": endpoint.device_id}, EventState.COMPLETED)
         return normalized
 
@@ -31,6 +77,7 @@ class VoiceRoutingService:
         endpoint = self._required(owner_id, endpoint_id)
         updated = VoiceEndpoint(endpoint.endpoint_id, endpoint.device_id, endpoint.room_id, endpoint.input_enabled, endpoint.output_enabled, online, datetime.now(UTC) if online else endpoint.last_seen, endpoint.owner_id)
         self._endpoints[endpoint_id] = updated
+        self._save_endpoint(updated)
         await self._emit("voice.endpoint_online" if online else "voice.endpoint_offline", owner_id, {"endpoint_id": endpoint_id}, EventState.COMPLETED)
         return updated
 
@@ -38,7 +85,25 @@ class VoiceRoutingService:
         endpoint = self._required(owner_id, endpoint_id)
         updated = VoiceEndpoint(endpoint.endpoint_id, endpoint.device_id, endpoint.room_id, endpoint.input_enabled if input_enabled is None else input_enabled, endpoint.output_enabled if output_enabled is None else output_enabled, endpoint.online, endpoint.last_seen, endpoint.owner_id)
         self._endpoints[endpoint_id] = updated
+        self._save_endpoint(updated)
         return updated
+
+    async def revoke_endpoint(self, owner_id: str, endpoint_id: str) -> VoiceEndpoint:
+        endpoint = self._required(owner_id, endpoint_id)
+        updated = VoiceEndpoint(endpoint.endpoint_id, endpoint.device_id, endpoint.room_id, False, False, False, endpoint.last_seen, endpoint.owner_id)
+        self._endpoints[endpoint_id] = updated
+        self._save_endpoint(updated)
+        await self._emit("voice.endpoint_revoked", owner_id, {"endpoint_id": endpoint_id, "device_id": endpoint.device_id}, EventState.COMPLETED)
+        return updated
+
+    async def revoke_device_endpoints(self, owner_id: str, device_id: str) -> tuple[VoiceEndpoint, ...]:
+        self._ensure_loaded(owner_id)
+        revoked: list[VoiceEndpoint] = []
+        for ep in list(self._endpoints.values()):
+            if ep.owner_id == owner_id and ep.device_id == device_id:
+                updated = await self.revoke_endpoint(owner_id, ep.endpoint_id)
+                revoked.append(updated)
+        return tuple(revoked)
 
     async def select(
         self,
@@ -69,13 +134,16 @@ class VoiceRoutingService:
         return route
 
     async def get(self, owner_id: str, endpoint_id: str) -> VoiceEndpoint | None:
+        self._ensure_loaded(owner_id)
         endpoint = self._endpoints.get(endpoint_id)
         return endpoint if endpoint and endpoint.owner_id == owner_id else None
 
     async def list(self, owner_id: str) -> tuple[VoiceEndpoint, ...]:
+        self._ensure_loaded(owner_id)
         return tuple(endpoint for endpoint in self._endpoints.values() if endpoint.owner_id == owner_id)
 
     def _required(self, owner_id: str, endpoint_id: str) -> VoiceEndpoint:
+        self._ensure_loaded(owner_id)
         endpoint = self._endpoints.get(endpoint_id)
         if endpoint is None or endpoint.owner_id != owner_id:
             raise KeyError(endpoint_id)

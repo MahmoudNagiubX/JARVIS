@@ -21,12 +21,13 @@ class PresenceService:
     """Owns only a transient view; facts are written to World State with TTL."""
 
     _priority = {
+        PresenceSource.ACTIVE_DESKTOP.value: 6,
         PresenceSource.ORIGINATING_DEVICE.value: 5,
         PresenceSource.CLIENT_SESSION.value: 4,
+        PresenceSource.EXPLICIT_ROOM.value: 4,
         PresenceSource.DEVICE_HEARTBEAT.value: 3,
-        # An online microphone is availability evidence, not proof of room presence.
         PresenceSource.VOICE_ENDPOINT.value: 2,
-        PresenceSource.EXPLICIT_ROOM.value: 1,
+        PresenceSource.HOME_SENSOR.value: 2,
     }
 
     def __init__(
@@ -148,6 +149,14 @@ class PresenceService:
             del items[key]
             await self._emit("presence.expired", owner_id, {"observation_id": key}, EventState.COMPLETED)
         return len(expired)
+
+    async def clear_device(self, owner_id: str, device_id: str) -> int:
+        items = self._observations.get(owner_id, {})
+        removed = [key for key, item in items.items() if item.device_id == device_id]
+        for key in removed:
+            del items[key]
+            await self._emit("presence.expired", owner_id, {"observation_id": key, "reason": "device_cleared"}, EventState.COMPLETED)
+        return len(removed)
 
     async def current(self, owner_id: str, *, now: datetime | None = None) -> PresenceSnapshot:
         return await self.snapshot(owner_id, now=now)

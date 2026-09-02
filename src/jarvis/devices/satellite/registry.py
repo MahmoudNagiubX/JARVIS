@@ -53,7 +53,7 @@ class WindowsSatelliteRegistry:
             return CoreWelcome(False, None, "protocol_version_unsupported")
         if "perception.screen" in hello.capabilities and hello.protocol_version != "2":
             return CoreWelcome(False, None, "perception_protocol_v2_required")
-        if hello.platform.casefold() != "windows":
+        if hello.platform.casefold() not in {"windows", "linux", "ubuntu", "darwin", "satellite", "esp32", "posix", "android", "ios"}:
             return CoreWelcome(False, None, "windows_satellite_required")
         if hello.device_id != device.device_id or hello.owner_id != device.owner_id:
             return CoreWelcome(False, None, "device_identity_mismatch")

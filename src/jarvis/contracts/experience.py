@@ -154,6 +154,9 @@ class HudState:
     focus: dict[str, object] | None = None
     follow_ups: tuple[dict[str, object], ...] = ()
     home: dict[str, object] = field(default_factory=dict)
+    venom: dict[str, object] = field(default_factory=dict)
+    rooms: tuple[dict[str, object], ...] = ()
+    fabric_diagnostics: dict[str, object] = field(default_factory=dict)
     timeline: tuple[dict[str, object], ...] = ()
 
 

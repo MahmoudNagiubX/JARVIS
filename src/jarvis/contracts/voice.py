@@ -81,6 +81,39 @@ class VoiceTurnResult:
     interrupted: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class RoomUtteranceEnvelope:
+    session_id: str
+    endpoint_id: str
+    room_id: str | None
+    text: str = ""
+    audio: bytes | None = None
+    timestamp: datetime | None = None
+    confidence: float = 1.0
+    is_final: bool = True
+    owner_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RoomPlaybackEnvelope:
+    session_id: str
+    endpoint_id: str
+    room_id: str | None
+    text: str
+    audio: bytes | None = None
+    sample_rate: int = 24000
+    interrupted: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RoomVoiceBargeIn:
+    session_id: str
+    endpoint_id: str
+    room_id: str | None
+    timestamp: datetime
+    reason: str = "barge_in"
+
+
 class VoiceActivityDetector(Protocol):
     def is_speech(self, audio: bytes) -> bool: ...
 

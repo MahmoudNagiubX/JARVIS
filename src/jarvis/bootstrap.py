@@ -63,7 +63,9 @@ from .scheduler.service import BackgroundScheduler
 from .tools.registry import ToolRegistry, default_registry, register_browser_tools, register_computer_tools, register_perception_tools
 from .tools.service import ToolExecutionService
 from .voice.core import VoiceCore
+from .voice.fabric import RoomVoiceFabric
 from .voice.routing.service import VoiceRoutingService
+from .devices.room.service import RoomService
 from .browser.service import BrowserActionService, LocalBrowserController
 from .world_state.service import DurableWorldStateService
 from .world_state.workspace import WorkspaceContextService
@@ -188,6 +190,8 @@ class JarvisRuntime:
     backup: SQLiteBackupService
     runtime_id: str
     satellite_transport: SatelliteTransportService
+    rooms: RoomService | None = None
+    room_voice: RoomVoiceFabric | None = None
     state: RuntimeState = RuntimeState.CREATED
 
     async def start(self) -> None:
@@ -378,10 +382,13 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     improvement_policy = ControlledImprovementPolicy()
     clients = ClientSessionService(repository, event_bus)
     presence = PresenceService(world_state, voice_routing, clients, device_fabric, repository, event_bus)
+    rooms = RoomService(repository, event_bus)
     attention = AttentionPolicy()
     operations = PersonalOperationsService(repository, event_bus, world_state, personalization, goals=goals, missions=missions, briefings=briefings, notifications=notifications, automation=automation, offline=offline)
     voice = VoiceCore(agent, event_bus, stt, tts)
+    room_voice = RoomVoiceFabric(voice, voice_routing, repository, event_bus, presence=presence, rooms=rooms)
     notification_delivery = NotificationDeliveryCoordinator(notifications, attention, presence, voice_routing, repository, event_bus, personalization=personalization, operations=operations, voice_core=voice)
+    venom_node = VenomNode()
     async def _attention_queue_trigger(event: Event) -> None:
         owner_id = event.payload.get("owner_id")
         if isinstance(owner_id, str): await notification_delivery.reevaluate_queued(owner_id)
@@ -402,6 +409,8 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
             await device_fabric.revoke(owner_id, device_id)
         except KeyError:
             pass
+        await presence.clear_device(owner_id, device_id)
+        await voice_routing.revoke_device_endpoints(owner_id, device_id)
         await world_state.set_fact(
             owner_id,
             f"device.{device_id}.online",
@@ -471,6 +480,9 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
                 },
             },
             "devices": devices,
+            "venom": asdict(venom_node.detailed_health()),
+            "rooms": tuple(asdict(item) for item in await rooms.list_snapshots(owner_id, presence=await presence.snapshot(owner_id))),
+            "fabric_diagnostics": await device_fabric.diagnostics(owner_id),
             "goals": goals_view,
             "notifications": notifications_view,
             "approvals": approvals_view,
@@ -660,7 +672,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         offline=offline,
         workspace=workspace_context,
         scheduler=scheduler,
-        venom=VenomNode(),
+        venom=venom_node,
         computer=satellite_computer_controller,
         browser=browser_controller,
         voice=voice,
@@ -706,6 +718,8 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         backup=backup_service,
         runtime_id=f"runtime-{uuid4()}",
         satellite_transport=satellite_transport,
+        rooms=rooms,
+        room_voice=room_voice,
     )
     runtime_ref["runtime"] = runtime
     return runtime

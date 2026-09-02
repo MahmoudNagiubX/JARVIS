@@ -8,11 +8,13 @@ from enum import StrEnum
 
 
 class PresenceSource(StrEnum):
-    VOICE_ENDPOINT = "voice_endpoint"
-    CLIENT_SESSION = "client_session"
-    DEVICE_HEARTBEAT = "device_heartbeat"
+    ACTIVE_DESKTOP = "active_desktop"
     ORIGINATING_DEVICE = "originating_device"
+    CLIENT_SESSION = "client_session"
     EXPLICIT_ROOM = "explicit_room"
+    VOICE_ENDPOINT = "voice_endpoint"
+    DEVICE_HEARTBEAT = "device_heartbeat"
+    HOME_SENSOR = "home_sensor"
 
 
 @dataclass(frozen=True, slots=True)

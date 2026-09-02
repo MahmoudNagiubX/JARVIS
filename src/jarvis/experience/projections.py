@@ -297,6 +297,9 @@ class ExperienceProjection:
             focus=loaded.get("focus", state["focus"]),
             follow_ups=tuple(loaded.get("follow_ups", state["follow_ups"].values())),
             home=dict(loaded.get("home", state["home"])),
+            venom=dict(loaded.get("venom", {})),
+            rooms=tuple(loaded.get("rooms", ())),
+            fabric_diagnostics=dict(loaded.get("fabric_diagnostics", {})),
             timeline=timeline,
         )
 

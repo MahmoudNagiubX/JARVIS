@@ -19,7 +19,15 @@ from .autonomy import AutonomyDecision, AutonomyLevel, AutonomyRule
 from .computer import ComputerAction, ComputerCapability, ComputerController, ComputerResult
 from .developer import DeveloperWorkerAdapter, DeveloperWorkerProvider
 from .context import AgentContextSnapshot
-from .devices import DeviceHeartbeat, DeviceRecord, DeviceRole, DeviceStatus
+from .devices import (
+    DeviceEnrollmentRequest,
+    DeviceEnrollmentResult,
+    DeviceEnrollmentTicket,
+    DeviceHeartbeat,
+    DeviceRecord,
+    DeviceRole,
+    DeviceStatus,
+)
 from .engineering import (
     EngineeringAction,
     EngineeringArtifact,
@@ -43,7 +51,19 @@ from .experience import (
     SystemStatusProjection,
     VoiceProjection,
 )
-from .home import HomeAction, HomeController, HomeEntity, HomeResult, HomeTransport, MQTTTransport
+from .home import (
+    ESP32Ack,
+    ESP32CommandEnvelope,
+    ESP32DeviceManifest,
+    ESP32StateEnvelope,
+    HomeAction,
+    HomeController,
+    HomeEntity,
+    HomeEntityMapping,
+    HomeResult,
+    HomeTransport,
+    MQTTTransport,
+)
 from .goals import Goal, GoalCheckpoint, GoalEngine, GoalStatus
 from .identity import DeviceIdentity, Identity, IdentityService
 from .memory import (
@@ -59,7 +79,17 @@ from .memory import (
 )
 from .missions import Mission, MissionBudget, MissionCheckpoint, MissionDependency, MissionEvidence, MissionPlan, MissionResult, MissionStatus, MissionStep
 from .model import LLMMessage, LLMProvider, LLMRequest, LLMResponse, LLMRole, LLMRouter
-from .nodes import NodeDescriptor, NodeHealth, NodeRole, VenomNodePlan
+from .nodes import (
+    NodeDescriptor,
+    NodeHealth,
+    NodeRole,
+    NodeStatus,
+    VenomDetailedHealth,
+    VenomNodePlan,
+    VenomServiceHealth,
+    VenomStorageHealth,
+)
+from .room import RoomRecord, RoomSnapshot
 from .notifications import Notification
 from .offline import ConnectivityState, OfflineCapabilityDecision
 from .personalization import PersonalizationProfile, PersonalizationUpdate
@@ -92,6 +122,9 @@ from .tools import Tool, ToolContext, ToolRegistry, ToolResult, ToolResultRetent
 from .voice import (
     AudioPlayback,
     RealtimeVoiceSession,
+    RoomPlaybackEnvelope,
+    RoomUtteranceEnvelope,
+    RoomVoiceBargeIn,
     SpeechToText,
     TextToSpeech,
     VoiceActivityDetector,
@@ -146,11 +179,18 @@ __all__ = [
     "ComputerResult",
     "DeveloperWorkerAdapter",
     "DeveloperWorkerProvider",
+    "DeviceEnrollmentRequest",
+    "DeviceEnrollmentResult",
+    "DeviceEnrollmentTicket",
     "DeviceHeartbeat",
     "DeviceIdentity",
     "DeviceRecord",
     "DeviceRole",
     "DeviceStatus",
+    "ESP32Ack",
+    "ESP32CommandEnvelope",
+    "ESP32DeviceManifest",
+    "ESP32StateEnvelope",
     "EngineeringAction",
     "EngineeringArtifact",
     "EngineeringProvider",
@@ -177,6 +217,7 @@ __all__ = [
     "HomeAction",
     "HomeController",
     "HomeEntity",
+    "HomeEntityMapping",
     "HomeResult",
     "HomeTransport",
     "Identity",
@@ -197,9 +238,11 @@ __all__ = [
     "MemoryService",
     "MemorySource",
     "MemoryStore",
+    "MQTTTransport",
     "NodeDescriptor",
     "NodeHealth",
     "NodeRole",
+    "NodeStatus",
     "Notification",
     "Observation",
     "OfflineCapabilityDecision",
@@ -235,6 +278,11 @@ __all__ = [
     "PermissionEffect",
     "PermissionEngine",
     "RealtimeVoiceSession",
+    "RoomPlaybackEnvelope",
+    "RoomRecord",
+    "RoomSnapshot",
+    "RoomUtteranceEnvelope",
+    "RoomVoiceBargeIn",
     "SpeechToText",
     "TextToSpeech",
     "VoiceActivityDetector",
@@ -247,6 +295,10 @@ __all__ = [
     "ToolResult",
     "ToolResultStatus",
     "ToolResultRetention",
+    "VenomDetailedHealth",
+    "VenomNodePlan",
+    "VenomServiceHealth",
+    "VenomStorageHealth",
     "VoiceSessionState",
     "VoiceTranscript",
     "VoiceTurnResult",
@@ -257,5 +309,4 @@ __all__ = [
     "WorldStateQuery",
     "WorldStateService",
     "WorldStateSnapshot",
-    "VenomNodePlan",
 ]

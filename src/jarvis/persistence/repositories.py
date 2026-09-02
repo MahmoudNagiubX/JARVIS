@@ -140,13 +140,14 @@ class RuntimeRepository:
         platform: str,
         capabilities: Sequence[str],
         scopes: Sequence[str],
+        device_id: str | None = None,
     ) -> str:
-        device_id = new_id("device")
+        dev_id = device_id or new_id("device")
         with self.database.transaction() as db:
             db.execute(
                 "INSERT INTO devices VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 'enrolled', NULL, NULL)",
                 (
-                    device_id,
+                    dev_id,
                     owner_id,
                     display_name,
                     device_kind,
@@ -155,7 +156,7 @@ class RuntimeRepository:
                     json_text(sorted(set(scopes))),
                 ),
             )
-        return device_id
+        return dev_id
 
     def device(self, device_id: str) -> dict[str, Any] | None:
         row = self.database.connection.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
@@ -221,6 +222,19 @@ class RuntimeRepository:
         with self.database.transaction() as db:
             db.execute(
                 "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                (record.id, record.owner_id, record.device_id, record.status, iso(now), iso(now)),
+            )
+        return record
+
+    def ensure_session(self, session_id: str, owner_id: str, device_id: str) -> SessionRecord:
+        existing = self.session(session_id)
+        if existing is not None:
+            return existing
+        now = utc_now()
+        record = SessionRecord(session_id, owner_id, device_id, "active", now, now, None)
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, NULL) ON CONFLICT(id) DO NOTHING",
                 (record.id, record.owner_id, record.device_id, record.status, iso(now), iso(now)),
             )
         return record
@@ -1234,15 +1248,66 @@ class RuntimeRepository:
         with self.database.transaction() as db:
             db.execute("DELETE FROM personalization WHERE owner_id = ? AND key = ?", (owner_id, key))
 
+    def find_device_owner(self, device_id: str) -> str | None:
+        row = self.database.connection.execute("SELECT owner_id FROM devices WHERE id = ?", (device_id,)).fetchone()
+        if row:
+            return str(row["owner_id"])
+        row = self.database.connection.execute("SELECT owner_id FROM device_fabric WHERE id = ?", (device_id,)).fetchone()
+        if row:
+            return str(row["owner_id"])
+        return None
+
+    def enroll_device_atomic(
+        self,
+        owner_id: str,
+        device: Any,
+        public_id: str,
+        secret_hash: str,
+    ) -> None:
+        with self.database.transaction() as db:
+            db.execute(
+                "INSERT INTO devices VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 'enrolled', NULL, NULL)",
+                (
+                    device.device_id,
+                    owner_id,
+                    device.name,
+                    device.role,
+                    device.platform,
+                    json_text(sorted(device.capabilities)),
+                    json_text(sorted(device.scopes)),
+                ),
+            )
+            credential_id = new_id("credential")
+            db.execute(
+                "INSERT INTO credentials VALUES (?, ?, ?, ?, ?, NULL, NULL)",
+                (credential_id, device.device_id, public_id, secret_hash, iso(utc_now())),
+            )
+            meta = dict(device.metadata)
+            meta["scopes"] = sorted(device.scopes)
+            meta["platform"] = device.platform
+            db.execute(
+                "INSERT INTO device_fabric VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, role=excluded.role, transport=excluded.transport, status=excluded.status, capabilities_json=excluded.capabilities_json, trust_level=excluded.trust_level, last_seen=excluded.last_seen, room_id=excluded.room_id, metadata_json=excluded.metadata_json",
+                (
+                    device.device_id, device.owner_id, device.name, device.role, device.transport, device.status,
+                    json_text(sorted(device.capabilities)), device.trust_level, iso(device.last_seen), device.room_id,
+                    json_text(meta),
+                ),
+            )
+
     # Phase 04 device fabric --------------------------------------------
     def upsert_device_fabric(self, device: Any) -> None:
+        meta = dict(device.metadata)
+        if hasattr(device, "scopes") and device.scopes:
+            meta["scopes"] = sorted(device.scopes)
+        if hasattr(device, "platform") and device.platform:
+            meta["platform"] = device.platform
         with self.database.transaction() as db:
             db.execute(
                 "INSERT INTO device_fabric VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, role=excluded.role, transport=excluded.transport, status=excluded.status, capabilities_json=excluded.capabilities_json, trust_level=excluded.trust_level, last_seen=excluded.last_seen, room_id=excluded.room_id, metadata_json=excluded.metadata_json",
                 (
                     device.device_id, device.owner_id, device.name, device.role, device.transport, device.status,
                     json_text(sorted(device.capabilities)), device.trust_level, iso(device.last_seen), device.room_id,
-                    json_text(dict(device.metadata)),
+                    json_text(meta),
                 ),
             )
 
