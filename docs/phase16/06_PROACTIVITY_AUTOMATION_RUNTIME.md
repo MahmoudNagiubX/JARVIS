@@ -16,11 +16,12 @@ Proactivity in JARVIS is strictly deterministic and evidence-based. An LLM is ne
 | `approval_waiting` | Pending approval older than 10 minutes | Info | 1800s | Review approval queue |
 | `communication_followup_due`| Followup timestamp <= now | Info | 1800s | Reply to communication thread |
 
-## 2. Fingerprint Deduplication & Cooldown Suppression
-
-To prevent alert storms:
-1. Every candidate generates an SHA256 fingerprint from `(finding_type, sorted_evidence_json)`.
-2. If a finding with an identical fingerprint was detected within its configured `cooldown_seconds`, the event bus emits `proactive.suppressed` and no duplicate finding is recorded or alerted.
+## 2. Canonical NotificationService Bridge & Deduplication
+1. **Canonical Notification Bridge**: Newly detected proactive findings automatically create a canonical `Notification` in `NotificationService` with `source="proactive"`, truthful severity, stable dedup key (`proactive:{finding_type}:{fingerprint}`), and metadata (`finding_id`, `finding_type`).
+2. **HUD & ExperienceProjection Visibility**: The proactive alerts are projected to the client Command Center HUD through `ExperienceProjection.state()`.
+3. **Storm Suppression**: If a condition triggers 100 times within its configured cooldown, exactly 1 finding and 1 canonical notification exist.
+4. **Independent Lifecycle**: Dismissing/acknowledging a notification clears the HUD alert without falsely marking the underlying durable `ProactiveFinding` as resolved.
+5. **Restart Rehydration**: Active durable findings (`status == 'detected'`) are rehydrated into the in-memory `NotificationService` across process restarts without duplicate alerts.
 
 ## 3. Safe Automation Runtime (`AutomationService`)
 

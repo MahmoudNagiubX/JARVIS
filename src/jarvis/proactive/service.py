@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+from typing import TYPE_CHECKING
+
 from ..authority.audit.service import DurableAuditService
 from ..autonomy.policy import AutonomyPolicy
 from ..bus import InMemoryEventBus
@@ -15,6 +17,7 @@ from ..contracts import (
     DeviceIdentity,
     FindingStatus,
     Identity,
+    Notification,
     ProactiveFinding,
     ProactiveFindingType,
     ToolContext,
@@ -25,6 +28,9 @@ from ..goals.engine import DurableGoalEngine
 from ..persistence.repositories import RuntimeRepository
 from ..tools.service import ToolExecutionService, ToolExecutionStatus
 from ..world_state.service import DurableWorldStateService
+
+if TYPE_CHECKING:
+    from ..notifications.service import NotificationService
 
 
 class DurableProactiveService:
@@ -39,6 +45,7 @@ class DurableProactiveService:
         tools: ToolExecutionService,
         audit: DurableAuditService | None = None,
         autonomy: AutonomyPolicy | None = None,
+        notifications: NotificationService | None = None,
     ) -> None:
         self.repository = repository
         self.event_bus = event_bus
@@ -47,6 +54,7 @@ class DurableProactiveService:
         self.tools = tools
         self.audit = audit
         self.autonomy = autonomy or AutonomyPolicy()
+        self.notifications = notifications
 
     async def detect(self, owner_id: str, now: datetime | None = None) -> tuple[ProactiveFinding, ...]:
         observed_at = now or datetime.now(UTC)
@@ -151,7 +159,73 @@ class DurableProactiveService:
         finding = ProactiveFinding(f"finding-{uuid4()}", owner_id, finding_type, severity, evidence, source_events, now, action, allowed, cooldown)
         self.repository.insert_finding(finding)
         await self._emit("proactive.detected", owner_id, {"finding_id": finding.finding_id, "type": finding_type, "severity": severity, "evidence": evidence})
+        await self._bridge_notification(finding)
         return finding
+
+    def _format_notification(self, finding: ProactiveFinding) -> tuple[str, str]:
+        ft = finding.finding_type
+        evidence = finding.evidence
+        if ft == ProactiveFindingType.GOAL_BLOCKED.value:
+            goal_title = str(evidence.get("title") or evidence.get("goal_id") or "Goal")
+            return f"Goal Blocked: {goal_title}", f"Goal '{goal_title}' is blocked."
+        elif ft == ProactiveFindingType.DEADLINE_APPROACHING.value:
+            goal_id = str(evidence.get("goal_id") or "Goal")
+            target_date = str(evidence.get("target_date") or "")
+            return f"Deadline Approaching: {goal_id}", f"Deadline approaching for goal {goal_id} ({target_date})."
+        elif ft == ProactiveFindingType.DISK_SPACE_CRITICAL.value:
+            free_gb = evidence.get("free_gb", "unknown")
+            return "Disk Space Critical", f"Available disk space is critical: {free_gb} GB remaining."
+        elif ft == ProactiveFindingType.BUILD_FAILED.value:
+            return "Build Failed", f"Build failure detected with status: {evidence.get('status', 'failed')}."
+        elif ft == ProactiveFindingType.TESTS_REPEATEDLY_FAILING.value:
+            return "Tests Failing Repeatedly", f"Repeated test failures detected ({evidence.get('count', 'multiple')} failures in recent window)."
+        elif ft == ProactiveFindingType.DEV_SERVER_STOPPED.value:
+            return "Development Server Stopped", f"Development server is {evidence.get('status', 'stopped')}."
+        elif ft == ProactiveFindingType.APPROVAL_WAITING.value:
+            return "Approval Waiting", f"Approval request {evidence.get('approval_id', '')} has been waiting."
+        elif ft == ProactiveFindingType.DEVICE_DISCONNECTED.value:
+            return "Device Disconnected", "Device disconnection detected."
+        elif ft == ProactiveFindingType.OPERATION_COMPLETED.value:
+            return "Operation Completed", "Background operation completed."
+        elif ft == ProactiveFindingType.COMMUNICATION_FOLLOWUP_DUE.value:
+            return "Communication Follow-up Due", f"Follow-up is due for thread {evidence.get('thread_id', '')}."
+        else:
+            title = ft.replace("_", " ").title()
+            return title, f"Proactive finding detected: {title}."
+
+    async def _bridge_notification(self, finding: ProactiveFinding) -> None:
+        if self.notifications is None:
+            return
+        title, message = self._format_notification(finding)
+        fingerprint = hashlib.sha256(json.dumps(dict(finding.evidence), sort_keys=True, default=str).encode()).hexdigest()
+        dedup_key = f"proactive:{finding.finding_type}:{fingerprint}"
+        metadata = {
+            "finding_id": finding.finding_id,
+            "finding_type": finding.finding_type,
+        }
+        await self.notifications.create(
+            finding.owner_id,
+            title,
+            message,
+            severity=finding.severity,
+            source="proactive",
+            dedup_key=dedup_key,
+            metadata=metadata,
+        )
+
+    async def rehydrate_active_notifications(self, owner_id: str) -> None:
+        if self.notifications is None:
+            return
+        active_findings = await self.list(owner_id, active_only=True)
+        for finding in active_findings:
+            fingerprint = hashlib.sha256(json.dumps(dict(finding.evidence), sort_keys=True, default=str).encode()).hexdigest()
+            dedup_key = f"proactive:{finding.finding_type}:{fingerprint}"
+            existing = any(
+                n.owner_id == owner_id and n.dedup_key == dedup_key
+                for n in self.notifications._items.values()
+            )
+            if not existing:
+                await self._bridge_notification(finding)
 
     @staticmethod
     def _status_fact(facts: Mapping[str, object], keys: tuple[str, ...]) -> str | None:

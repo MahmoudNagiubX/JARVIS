@@ -91,7 +91,13 @@ class DurableWorldStateService:
             await self.set_fact(owner_id, f"device.{event.event_type}", payload, source="satellite", source_reference=event.event_id, freshness_seconds=300)
 
     async def facts(self, query: WorldStateQuery) -> tuple[WorldStateFact, ...]:
-        rows = self.repository.world_facts(query.owner_id, query.key_prefix, query.include_expired)
+        rows = self.repository.world_facts(
+            query.owner_id,
+            query.key_prefix,
+            query.include_expired,
+            scope=query.scope,
+            scopes=query.scopes,
+        )
         now = datetime.now(UTC)
         grouped: dict[str, WorldStateFact] = {}
         for row in rows:

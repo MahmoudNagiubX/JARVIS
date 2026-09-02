@@ -131,15 +131,42 @@ class MissionService:
             return await self.complete(owner_id, mission_id, "All planned steps already have results.")
         self._check_budget(current)
         step = current.plan.steps[current.current_step]
-        if step.approval_required:
+        if step.approval_required and step.status not in {"approved", "in_progress"}:
             if self.approvals is None:
                 return await self.fail(owner_id, mission_id, "approval_engine_unavailable")
             approval_id = f"approval-{uuid4()}"
-            await self.approvals.request(ApprovalRequest(approval_id, f"mission.{mission_id}.{step.step_id}", owner_id, None, step.title, datetime.now(UTC), datetime.now(UTC) + timedelta(minutes=10), {"mission_id": mission_id, "step_id": step.step_id, "step_index": current.current_step}))
-            updated = replace(current, status=MissionStatus.WAITING_APPROVAL, approval_id=approval_id, blocked_reason="step_approval_required", updated_at=datetime.now(UTC))
+            await self.approvals.request(
+                ApprovalRequest(
+                    approval_id,
+                    f"mission.{mission_id}.{step.step_id}",
+                    owner_id,
+                    None,
+                    step.title,
+                    datetime.now(UTC),
+                    datetime.now(UTC) + timedelta(minutes=10),
+                    {"mission_id": mission_id, "step_id": step.step_id, "step_index": current.current_step},
+                )
+            )
+            steps = list(current.plan.steps)
+            steps[current.current_step] = replace(step, status="waiting_approval")
+            updated_plan = replace(current.plan, steps=tuple(steps))
+            updated = replace(
+                current,
+                plan=updated_plan,
+                status=MissionStatus.WAITING_APPROVAL,
+                approval_id=approval_id,
+                blocked_reason="step_approval_required",
+                updated_at=datetime.now(UTC),
+            )
             self._save(updated)
             await self._emit("mission.waiting_approval", updated, EventState.ACCEPTED)
             return updated
+        if step.status != "in_progress":
+            steps = list(current.plan.steps)
+            steps[current.current_step] = replace(step, status="in_progress")
+            updated_plan = replace(current.plan, steps=tuple(steps))
+            current = replace(current, plan=updated_plan, updated_at=datetime.now(UTC))
+            self._save(current)
         await self._emit("mission.step_started", current, EventState.ACCEPTED, {"step_id": step.step_id, "step_index": current.current_step})
         return current
 
@@ -185,7 +212,25 @@ class MissionService:
                 return current
             if decision.status.value != "approved":
                 return await self.fail(owner_id, mission_id, "mission_approval_not_granted")
-        return await self._transition(owner_id, mission_id, MissionStatus.RUNNING, {MissionStatus.PAUSED, MissionStatus.WAITING, MissionStatus.WAITING_APPROVAL})
+            expected_approval_id = current.approval_id
+            plan_json = None
+            if current.plan and current.current_step < len(current.plan.steps):
+                steps = list(current.plan.steps)
+                steps[current.current_step] = replace(steps[current.current_step], status="in_progress")
+                updated_plan = replace(current.plan, steps=tuple(steps))
+                plan_json = json.dumps({
+                    "steps": [{"step_id": item.step_id, "title": item.title, "status": item.status, "dependencies": list(item.dependencies), "required_capability": item.required_capability, "risk_level": item.risk_level, "approval_required": item.approval_required, "expected_evidence": list(item.expected_evidence), "detail": item.detail} for item in updated_plan.steps],
+                    "dependencies": [{"mission_id": item.mission_id, "required_status": item.required_status} for item in updated_plan.dependencies],
+                    "risk_level": updated_plan.risk_level, "expected_evidence": list(updated_plan.expected_evidence), "completion_criteria": list(updated_plan.completion_criteria),
+                }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            claimed = self.repository.claim_waiting_approval_mission(mission_id, owner_id, expected_approval_id, plan_json=plan_json)
+            if claimed is None:
+                raise ValueError("mission is not waiting for approval with the expected approval ID")
+            updated = self._hydrate(claimed)
+            self._missions[mission_id] = updated
+            await self._emit("mission.running", updated, EventState.ACCEPTED)
+            return updated
+        return await self._transition(owner_id, mission_id, MissionStatus.RUNNING, {MissionStatus.PAUSED, MissionStatus.WAITING})
 
     async def cancel(self, owner_id: str, mission_id: str) -> Mission:
         return await self._transition(owner_id, mission_id, MissionStatus.CANCELLED, {MissionStatus.DRAFT, MissionStatus.PLANNED, MissionStatus.READY, MissionStatus.RUNNING, MissionStatus.WAITING, MissionStatus.WAITING_APPROVAL, MissionStatus.BLOCKED, MissionStatus.PAUSED})

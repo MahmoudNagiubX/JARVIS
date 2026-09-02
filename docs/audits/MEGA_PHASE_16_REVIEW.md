@@ -4,9 +4,9 @@
 
 This audit records the implementation and independent verification of **JARVIS Mega Phase 16 — Persistent Personal Intelligence, Memory, Goals, Missions & Proactivity** in `C:\Jarivs\00_final\jarvis`.
 
-- **Base commit:** `752bb542c76b16198c8d8d5ab31dfe0fab004ec1`
+- **Base commit:** `ca5f171504444c68e0c10590421b1d02ce8cc0a5`
 - **Implementation delegation:** AntiGravity via `agy-delegate`; AntiGravity did not commit or push.
-- **Integration authority:** Codex reviewed the delegated diff, added and verified the future-validity regression, updated this audit, and owns the integration decision.
+- **Integration authority:** Orchestrator / Codex reviewed the delegated diff, verified all 4 semantic closure gaps, updated this audit, and owns the integration decision.
 - **Scope boundary:** Existing canonical MemoryService, World State, Goal/Mission, Automation, Proactive, ContextAssembler, EventBus, Scheduler, approval, audit, and UI authorities were extended. No second scheduler, EventBus, runtime, VoiceCore, or Phase 17 surface was introduced.
 - **Protected evidence:** `docs/phase_reports/evidence/PHASE_10_JARVIS_VOICE_CORE.json` was not modified or staged.
 
@@ -15,7 +15,7 @@ This audit records the implementation and independent verification of **JARVIS M
 ### Durable memory and policy
 
 - Candidate extraction remains deterministic and local, with English, Standard Arabic, and Egyptian Arabic patterns.
-- Credential, token, private-key, raw-media, and untrusted web/browser/research prompt-injection inputs are rejected by the memory policy.
+- Credential, token, private-key, raw-media, and untrusted web/browser/research prompt-injection inputs are rejected by the memory policy. Direct persistence from untrusted sources unconditionally fails closed.
 - Memory records remain owner-scoped and carry provenance, confidence, sensitivity, scope, validity, retention, and status metadata.
 - Corrections create a new active version and mark the previous record `superseded`; deletion remains an owner-scoped tombstone operation.
 - Retrieval filters owner, status, archive state, category, source, tags, scope, `valid_from`, and `valid_until`, and enforces item, total-byte, and result-count bounds.
@@ -24,13 +24,13 @@ This audit records the implementation and independent verification of **JARVIS M
 
 - World observations and facts remain in the authoritative World State store and are never promoted automatically into durable memory.
 - Freshness and explicit expiration are enforced on reads and maintenance.
-- Context assembly applies project/scope selection and reports selected memory IDs, counts, byte estimates, world-fact counts, goal IDs, and finding IDs.
+- Context assembly applies symmetric project scoping for both memory and world state facts, and reports selected memory IDs, counts, byte estimates, world-fact counts, goal IDs, and finding IDs.
 
 ### Goals, missions, automation, and proactivity
 
 - Goal lifecycle and checkpoints remain durable and auditable.
-- Mission plans are budgeted, approval-gated for consequential steps, and reconciled safely after process restart to prevent blind re-execution.
-- Proactive findings use deterministic detectors with persisted deduplication/cooldown behavior.
+- Mission plans are budgeted, approval-gated for consequential steps, and consume approvals atomically via CAS on resume with clear `approval_id` and step `in_progress` transition. Reconciled safely after process restart to prevent blind re-execution.
+- Proactive findings use deterministic detectors with persisted deduplication/cooldown behavior and bridge directly to canonical `NotificationService` alerts projected to the HUD.
 - Automation remains rule-based and capability-bound; no raw shell execution or continuous LLM monitoring was added.
 
 ### UI and offline behavior
@@ -42,12 +42,12 @@ This audit records the implementation and independent verification of **JARVIS M
 
 | Gate | Command / scope | Result |
 |---|---|---|
-| Phase 16 focused matrix | `python -m pytest -q -k "phase_sixteen"` | **41 passed, 0 failed**; 389 deselected |
+| Phase 16 focused matrix | `python -m pytest -q -k "phase_sixteen"` | **47 passed, 0 failed**; 389 deselected |
 | Phase 16 validity regression | `test_05b_memory_future_validity_is_excluded` | **1 passed, 0 failed** |
 | Phase 15 regression | Four Phase 15 test modules | **45 passed, 11 subtests, 0 failed** |
 | Phase 14 regression | Four Phase 14 test modules | **19 passed, 0 failed** |
 | Phase 13 regression | Five Phase 13 test modules | **107 passed, 0 failed** |
-| Full Python repository suite | `python -m pytest -q` | **429 passed, 36 subtests, 0 failed** |
+| Full Python repository suite | `python -m pytest -q` | **436 passed, 36 subtests passed, 0 failed** in 149.66s |
 | Frontend Vitest suite | `npm.cmd test -- --run` | **75 passed across 14 files, 0 failed** |
 | Frontend production build | `python ui/build_frontend.py` | **PASS**; Vite transformed 68 modules and generated 3 local JARVIS assets |
 | Dependency audit | `npm.cmd audit --audit-level=high` | **PASS**; 0 vulnerabilities |

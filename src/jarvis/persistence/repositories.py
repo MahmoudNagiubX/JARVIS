@@ -720,7 +720,14 @@ class RuntimeRepository:
         ).fetchone()
         return dict(row) if row else None
 
-    def world_facts(self, owner_id: str, key_prefix: str | None = None, include_expired: bool = False) -> list[dict[str, Any]]:
+    def world_facts(
+        self,
+        owner_id: str,
+        key_prefix: str | None = None,
+        include_expired: bool = False,
+        scope: str | None = None,
+        scopes: Sequence[str] = (),
+    ) -> list[dict[str, Any]]:
         conditions = ["owner_id = ?"]
         values: list[object] = [owner_id]
         if key_prefix:
@@ -729,6 +736,13 @@ class RuntimeRepository:
         if not include_expired:
             conditions.append("(expires_at IS NULL OR expires_at > ?)")
             values.append(iso(utc_now()))
+        if scope:
+            conditions.append("scope = ?")
+            values.append(scope)
+        elif scopes:
+            scope_placeholders = ",".join("?" for _ in scopes)
+            conditions.append(f"scope IN ({scope_placeholders})")
+            values.extend(scopes)
         rows = self.database.connection.execute(
             f"SELECT * FROM world_facts WHERE {' AND '.join(conditions)} ORDER BY key", values
         ).fetchall()
@@ -934,6 +948,29 @@ class RuntimeRepository:
     def mission_evidence(self, mission_id: str) -> list[dict[str, Any]]:
         rows = self.database.connection.execute("SELECT * FROM mission_evidence WHERE mission_id = ? ORDER BY created_at, id", (mission_id,)).fetchall()
         return [dict(row) for row in rows]
+
+    def claim_waiting_approval_mission(
+        self,
+        mission_id: str,
+        owner_id: str,
+        expected_approval_id: str,
+        plan_json: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Atomically claim a mission waiting for approval and optionally update plan."""
+        with self.database.transaction() as db:
+            if plan_json is not None:
+                cursor = db.execute(
+                    "UPDATE missions SET status = 'running', approval_id = NULL, blocked_reason = NULL, plan_json = ?, updated_at = ? WHERE id = ? AND owner_id = ? AND status = 'waiting_approval' AND approval_id = ?",
+                    (plan_json, iso(utc_now()), mission_id, owner_id, expected_approval_id),
+                )
+            else:
+                cursor = db.execute(
+                    "UPDATE missions SET status = 'running', approval_id = NULL, blocked_reason = NULL, updated_at = ? WHERE id = ? AND owner_id = ? AND status = 'waiting_approval' AND approval_id = ?",
+                    (iso(utc_now()), mission_id, owner_id, expected_approval_id),
+                )
+            if cursor.rowcount != 1:
+                return None
+        return self.mission(owner_id, mission_id)
 
     def reconcile_missions(self) -> int:
         with self.database.transaction() as db:

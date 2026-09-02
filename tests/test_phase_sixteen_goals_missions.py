@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 from datetime import UTC, datetime
 
@@ -138,6 +139,7 @@ class PhaseSixteenGoalsMissionsTests(unittest.IsolatedAsyncioTestCase):
         adv2 = await self.missions.advance(owner_id, "mission-appr-1")
         self.assertEqual(adv2.status, MissionStatus.WAITING_APPROVAL)
         self.assertIsNotNone(adv2.approval_id)
+        self.assertEqual(adv2.plan.steps[1].status, "waiting_approval")
 
         # Resuming while approval is pending remains in WAITING_APPROVAL
         pending_resume = await self.missions.resume(owner_id, "mission-appr-1")
@@ -146,9 +148,94 @@ class PhaseSixteenGoalsMissionsTests(unittest.IsolatedAsyncioTestCase):
         # Grant approval via approvals service
         await self.runtime.approval.decide(adv2.approval_id, True, owner_id)
 
-        # Resuming with granted approval transitions to RUNNING
+        # Resuming with granted approval transitions to RUNNING, clears approval_id, and marks step in_progress
         resumed = await self.missions.resume(owner_id, "mission-appr-1")
         self.assertEqual(resumed.status, MissionStatus.RUNNING)
+        self.assertIsNone(resumed.approval_id)
+        self.assertEqual(resumed.plan.steps[1].status, "in_progress")
+
+        # Advance after approved resume must NOT create a second approval request
+        advanced_again = await self.missions.advance(owner_id, "mission-appr-1")
+        self.assertEqual(advanced_again.status, MissionStatus.RUNNING)
+        self.assertIsNone(advanced_again.approval_id)
+        pending_apprs = self.runtime.repository.pending_approvals(owner_id)
+        self.assertEqual(len(pending_apprs), 0)
+
+        # Resuming again when already running raises ValueError
+        with self.assertRaises(ValueError):
+            await self.missions.resume(owner_id, "mission-appr-1")
+
+    async def test_mission_approval_denial_fails_safely_and_no_step_start(self) -> None:
+        """Denying approval fails the mission safely without starting the consequential step."""
+        owner_id = self.identity.owner_id
+
+        plan = MissionPlan(
+            steps=(
+                MissionStep("step-1", "Consequential change", "planned", (), "workspace.delete", "dangerous", True),
+            ),
+        )
+        mission = await self.missions.create(
+            Mission(
+                mission_id="mission-deny-test",
+                owner_id=owner_id,
+                request="Delete sensitive file",
+                title="Dangerous Mission",
+                plan=plan,
+            )
+        )
+        await self.missions.plan(owner_id, "mission-deny-test")
+        await self.missions.start(owner_id, "mission-deny-test", self.identity, self.device)
+
+        # Advance triggers WAITING_APPROVAL
+        waiting = await self.missions.advance(owner_id, "mission-deny-test")
+        self.assertEqual(waiting.status, MissionStatus.WAITING_APPROVAL)
+        self.assertIsNotNone(waiting.approval_id)
+
+        # Deny approval
+        await self.runtime.approval.decide(waiting.approval_id, False, owner_id)
+
+        # Resume after denial transitions to FAILED safely
+        failed = await self.missions.resume(owner_id, "mission-deny-test")
+        self.assertEqual(failed.status, MissionStatus.FAILED)
+        self.assertEqual(failed.result.error_code, "mission_approval_not_granted")
+        self.assertNotEqual(failed.plan.steps[0].status, "completed")
+
+    async def test_concurrent_mission_approval_resume_exactly_once(self) -> None:
+        """Concurrent resume calls on WAITING_APPROVAL mission claim CAS exactly once."""
+        owner_id = self.identity.owner_id
+
+        plan = MissionPlan(
+            steps=(
+                MissionStep("step-1", "Apply schema update", "planned", (), "workspace.migrate", "consequential", True),
+            ),
+        )
+        mission = await self.missions.create(
+            Mission(
+                mission_id="mission-cas-test",
+                owner_id=owner_id,
+                request="Apply schema",
+                title="CAS Test",
+                plan=plan,
+            )
+        )
+        await self.missions.plan(owner_id, "mission-cas-test")
+        await self.missions.start(owner_id, "mission-cas-test", self.identity, self.device)
+
+        waiting = await self.missions.advance(owner_id, "mission-cas-test")
+        await self.runtime.approval.decide(waiting.approval_id, True, owner_id)
+
+        # Concurrent resume calls race the same durable CAS; exactly one claim succeeds.
+        results = await asyncio.gather(
+            self.missions.resume(owner_id, "mission-cas-test"),
+            self.missions.resume(owner_id, "mission-cas-test"),
+            return_exceptions=True,
+        )
+        successes = [item for item in results if isinstance(item, Mission)]
+        failures = [item for item in results if isinstance(item, ValueError)]
+        self.assertEqual(len(successes), 1)
+        self.assertEqual(successes[0].status, MissionStatus.RUNNING)
+        self.assertIsNone(successes[0].approval_id)
+        self.assertEqual(len(failures), 1)
 
     async def test_startup_reconciliation_of_interrupted_missions(self) -> None:
         owner_id = self.identity.owner_id

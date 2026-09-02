@@ -15,10 +15,12 @@ JARVIS operates under a zero-cloud-memory architecture:
 - Private encryption and SSH keys are blocked.
 - Credit card numbers are blocked.
 
-## 3. Untrusted Source Injection Firewall
-Memory extraction evaluates provenance before persistence:
-- Candidates originating from `"browser"`, `"web"`, `"research"`, or untrusted scrapers cannot inject policy overrides (`SYSTEM:`, `override policy`, `owner authorized`, `disable approvals`).
-- Untrusted candidates are capped at 0.6 confidence and restricted to factual categories without administrative authority.
+## 3. Untrusted Source Direct-Memory Firewall
+Memory persistence evaluates provenance before allowing durable storage:
+- Direct `DurableMemoryService` persistence from any untrusted source (`"browser"`, `"web"`, `"research"`, `"untrusted_web"`, `"untrusted_browser"`, `"untrusted_research"`) unconditionally fails closed regardless of confidence.
+- Untrusted sources cannot inject instructions (`SYSTEM:`, `override policy`, `remember permanently`, `disable approvals`).
+- Untrusted inputs are completely excluded from active recall and context assembler snapshots, and are never marked owner-stated.
+- Explicit restatement by an authenticated owner via conversation (`source="user"`) is required to promote external knowledge to durable memory.
 
 ## 4. Cross-Owner & Cross-Device Isolation
 Every table in the SQLite database enforces `owner_id` scoping:

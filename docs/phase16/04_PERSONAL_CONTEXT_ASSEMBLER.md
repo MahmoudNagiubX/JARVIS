@@ -36,3 +36,10 @@ Every snapshot includes transparent selection telemetry:
 - `selected_world_facts`: Fact count (capped <= 12).
 - `active_goal_ids`: Goal IDs provided in context (capped <= 8).
 - `active_finding_ids`: Proactive finding IDs (capped <= 6).
+
+## 3. Symmetric Project Context Scoping
+When assembling context for a specific `project_id` (e.g. `"alpha"`):
+- `effective_scopes` is expanded to include `"owner"` (global) and `"project:alpha"`.
+- Both `MemoryQuery` and `WorldStateQuery` are scoped symmetrically with `scopes=("owner", "project:alpha")`.
+- Global owner preferences and facts, alongside project-specific memories and facts, are included in the turn context.
+- Unrelated project memories and world facts (e.g. `project:beta`) are strictly excluded.

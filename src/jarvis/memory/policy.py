@@ -59,10 +59,9 @@ class MemoryPolicy:
             return MemoryPolicyDecision(False, "raw_media_retention_forbidden", content)
         if candidate.source in self._untrusted_sources:
             # Untrusted sources (web/browser/research) cannot directly create owner memories
-            # or inject policy overrides.
+            # or inject policy overrides, regardless of confidence.
             lowered = content.casefold()
             if any(marker in lowered for marker in ("system:", "owner authorized", "disable approvals", "override policy", "remember permanently")):
                 return MemoryPolicyDecision(False, "untrusted_memory_injection_forbidden", content)
-            if candidate.confidence > 0.6:
-                return MemoryPolicyDecision(False, "untrusted_source_confidence_too_high", content)
+            return MemoryPolicyDecision(False, "untrusted_source_direct_memory_forbidden", content)
         return MemoryPolicyDecision(True, "policy_allowed", content)

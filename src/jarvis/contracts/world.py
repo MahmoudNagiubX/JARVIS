@@ -60,6 +60,8 @@ class WorldStateQuery:
     owner_id: str
     key_prefix: str | None = None
     include_expired: bool = False
+    scope: str | None = None
+    scopes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

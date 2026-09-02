@@ -56,7 +56,7 @@ Blocked Patterns:
 - Secrets: AWS secret access keys, private keys (BEGIN ... PRIVATE KEY)
 - Passwords & Passcodes
 - Raw media: Audio streams, video streams, raw screenshots
-- Untrusted Source Firewall: Browser, web, or research sources cannot inject "SYSTEM:", "override policy", "remember permanently", or "disable approvals".
+- Untrusted Source Firewall: Direct persistence from browser, web, research, or other untrusted sources unconditionally fails closed regardless of confidence (`untrusted_source_direct_memory_forbidden` or `untrusted_memory_injection_forbidden`). Only explicit authenticated owner input (`source="user"` / conversation) creates active durable memories.
 ```
 
 ## 5. Keyword Retrieval with Arabic Normalization

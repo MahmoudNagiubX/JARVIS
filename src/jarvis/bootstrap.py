@@ -302,7 +302,8 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     personalization = DurablePersonalizationService(repository, event_bus, audit)
     autonomy = AutonomyPolicy()
     offline = OfflineModeService()
-    proactive = DurableProactiveService(repository, event_bus, world_state, goals, tool_service, audit, autonomy)
+    notifications = NotificationService(repository, event_bus, audit)
+    proactive = DurableProactiveService(repository, event_bus, world_state, goals, tool_service, audit, autonomy, notifications=notifications)
     capabilities = CapabilityRegistry()
     device_fabric = DeviceFabricService(repository, event_bus, audit)
     windows_perception_provider = WindowsDesktopProvider()
@@ -340,7 +341,6 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     communications = CommunicationsHub(repository, event_bus, approval, permission, audit, autonomy)
     local_channel = LocalCommunicationChannel()
     communications.register_channel(local_channel)
-    notifications = NotificationService(repository, event_bus, audit)
     voice_routing = VoiceRoutingService(repository, event_bus)
     _register_capabilities(capabilities)
     desktop_context = ActiveDesktopContextService(world_state)
@@ -415,6 +415,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     event_bus.subscribe("device.revoked", propagate_device_revocation)
 
     async def experience_state(owner_id: str) -> dict[str, object]:
+        await proactive.rehydrate_active_notifications(owner_id)
         devices = tuple(
             DeviceProjection(item.device_id, item.status, item.name, tuple(sorted(item.capabilities)), item.last_seen)
             for item in await device_fabric.list(owner_id)

@@ -70,3 +70,54 @@ class PhaseSixteenContextAssemblyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("world_state", decoded)
         self.assertIn("goals", decoded)
         self.assertIn("metadata", decoded)
+
+    async def test_symmetric_project_context_scoping_global_alpha_beta_matrix(self) -> None:
+        """Project context scoping includes owner-global and target-project data while strictly excluding other projects."""
+        owner_id = self.identity.owner_id
+
+        # 1. Create owner-global memory (scope='owner')
+        await self.runtime.memory.create(
+            MemoryCandidate(owner_id, "Global owner stack is Python backend.", "preference", scope="owner")
+        )
+
+        # 2. Create project:alpha memory (scope='project:alpha')
+        await self.runtime.memory.create(
+            MemoryCandidate(owner_id, "Project Alpha uses Python 3.14.", "project", scope="project:alpha")
+        )
+
+        # 3. Create project:beta memory (scope='project:beta')
+        await self.runtime.memory.create(
+            MemoryCandidate(owner_id, "Project Beta uses Python 3.11 with secrets.", "project", scope="project:beta")
+        )
+
+        # 4. Create owner-global world fact (scope='owner')
+        await self.runtime.world_state.set_fact(
+            owner_id, "system.os_name", "Windows 11", freshness_seconds=3600, scope="owner"
+        )
+
+        # 5. Create project:alpha world fact (scope='project:alpha')
+        await self.runtime.world_state.set_fact(
+            owner_id, "project.alpha_branch", "feat/phase-16", freshness_seconds=3600, scope="project:alpha"
+        )
+
+        # 6. Create project:beta world fact (scope='project:beta')
+        await self.runtime.world_state.set_fact(
+            owner_id, "project.beta_token", "beta_leak_val", freshness_seconds=3600, scope="project:beta"
+        )
+
+        # 7. Assemble context for project_id='alpha'
+        snapshot = await self.assembler.assemble(
+            self.identity, self.device, "Python", project_id="alpha"
+        )
+
+        # Verify memories: global owner + project:alpha included; project:beta excluded
+        mem_contents = [m["content"] for m in snapshot.memories]
+        self.assertTrue(any("Global owner stack" in c for c in mem_contents), "Global owner memory must be included")
+        self.assertTrue(any("Project Alpha" in c for c in mem_contents), "Project Alpha memory must be included")
+        self.assertFalse(any("Project Beta" in c for c in mem_contents), "Project Beta memory must be excluded")
+
+        # Verify world state facts: global owner + project:alpha included; project:beta excluded
+        fact_keys = [f["key"] for f in snapshot.world_state]
+        self.assertIn("system.os_name", fact_keys, "Global world fact must be included")
+        self.assertIn("project.alpha_branch", fact_keys, "Project Alpha world fact must be included")
+        self.assertNotIn("project.beta_token", fact_keys, "Project Beta world fact must be excluded")

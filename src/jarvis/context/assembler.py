@@ -60,6 +60,8 @@ class ContextAssembler:
         if scope and scope not in effective_scopes:
             effective_scopes.append(scope)
         if project_id:
+            if "owner" not in effective_scopes:
+                effective_scopes.append("owner")
             proj_scope = f"project:{project_id}"
             if proj_scope not in effective_scopes:
                 effective_scopes.append(proj_scope)
@@ -75,7 +77,11 @@ class ContextAssembler:
             max_item_bytes=2048,
             max_total_bytes=4096,
         ))
-        facts = await self.world_state.facts(WorldStateQuery(identity.owner_id))
+        facts = await self.world_state.facts(WorldStateQuery(
+            identity.owner_id,
+            scope=query_scope,
+            scopes=query_scopes,
+        ))
         goals = await self.goals.list(identity.owner_id, ("active", "waiting", "blocked", "proposed", "draft"))
         findings = await self.proactive.list(identity.owner_id, active_only=True)
         profile = await self.personalization.get(identity.owner_id)
