@@ -338,10 +338,12 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         approval_row = repository.approval(approval_id)
         if approval_row is not None and str(approval_row.get("action", "")).startswith("browser."):
             return await browser_actions.decide(approval_id, approved, decided_by)
+        if approval_row is not None and str(approval_row.get("action", "")).startswith("home."):
+            return await home.decide_approval(approval_id, approved, decided_by)
         return await computer_actions.decide(approval_id, approved, decided_by)
 
     tool_service.set_delegated_approval_resumer(resume_delegated_approval)
-    home = HomeActionService(None, repository, event_bus, permission, audit, RestrictedMQTTTransport())
+    home = HomeActionService(None, repository, event_bus, permission, audit, RestrictedMQTTTransport(), approval=approval)
     communications = CommunicationsHub(repository, event_bus, approval, permission, audit, autonomy)
     local_channel = LocalCommunicationChannel()
     communications.register_channel(local_channel)
@@ -405,10 +407,6 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         if not isinstance(device_id, str) or not isinstance(owner_id, str):
             return
         await satellite_transport.revoke(device_id)
-        try:
-            await device_fabric.revoke(owner_id, device_id)
-        except KeyError:
-            pass
         await presence.clear_device(owner_id, device_id)
         await voice_routing.revoke_device_endpoints(owner_id, device_id)
         await world_state.set_fact(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import argparse
 import json
+import os
 from pathlib import Path
 
 from .api.core import CoreApplication
@@ -57,13 +58,32 @@ async def _main(args: argparse.Namespace) -> None:
                 "offline": runtime.offline.state.online is False,
                 "event_count": runtime.repository.event_count(),
             }, ensure_ascii=False))
-        if args.serve:
-            server = CoreHttpServer(application, port=args.port)
-            print(f"JARVIS HTTP API listening on http://127.0.0.1:{server.address[1]}")
-            try:
-                await asyncio.to_thread(server.serve_forever)
-            finally:
-                server.shutdown()
+        node_server = None
+        if args.serve_node:
+            from .api.node_http import CoreNodeHttpServer
+            node_server = CoreNodeHttpServer(
+                application,
+                host=args.node_host,
+                port=args.node_port,
+                allow_wildcard_bind=args.allow_wildcard_node_bind,
+            )
+            node_server.start()
+            print(f"JARVIS Node HTTP adapter listening on http://{node_server.host}:{node_server.port}")
+
+        try:
+            if args.serve:
+                server = CoreHttpServer(application, port=args.port)
+                print(f"JARVIS HTTP API listening on http://127.0.0.1:{server.address[1]}")
+                try:
+                    await asyncio.to_thread(server.serve_forever)
+                finally:
+                    server.shutdown()
+            elif args.serve_node:
+                stop_event = asyncio.Event()
+                await stop_event.wait()
+        finally:
+            if node_server is not None:
+                node_server.stop()
 
 
 def main() -> None:
@@ -75,6 +95,10 @@ def main() -> None:
     parser.add_argument("--status", action="store_true", help="print runtime status")
     parser.add_argument("--serve", action="store_true", help="serve the loopback HTTP API")
     parser.add_argument("--port", type=int, default=8787, help="loopback HTTP port")
+    parser.add_argument("--serve-node", action="store_true", help="serve the minimal authenticated node HTTP adapter")
+    parser.add_argument("--node-host", default=os.getenv("JARVIS_NODE_HOST", "127.0.0.1"), help="node HTTP adapter bind host (default: 127.0.0.1)")
+    parser.add_argument("--node-port", type=int, default=int(os.getenv("JARVIS_NODE_PORT", "8788")), help="node HTTP adapter bind port (default: 8788)")
+    parser.add_argument("--allow-wildcard-node-bind", action="store_true", default=os.getenv("JARVIS_ALLOW_WILDCARD_NODE_BIND", "false").lower() in {"true", "1", "yes", "on"}, help="explicit opt-in to allow 0.0.0.0 or :: wildcard bind on node server")
     parser.add_argument("--backup", metavar="PATH", help="create an explicit SQLite backup")
     parser.add_argument("--verify-backup", metavar="PATH", help="verify an SQLite backup")
     parser.add_argument("--restore-backup", metavar="SOURCE", help="restore SOURCE to --restore-target")

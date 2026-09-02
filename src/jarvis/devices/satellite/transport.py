@@ -217,6 +217,16 @@ class SatelliteTransportService:
                 if cached_fingerprint != fingerprint:
                     return CommandObservation(command.command_id, "denied", error_code="command_id_reuse")
                 return observation
+            if command.expires_at is None:
+                command = SatelliteCommand(
+                    command.command_id,
+                    command.action,
+                    command.capability,
+                    command.parameters,
+                    command.dry_run,
+                    command.protocol_version,
+                    datetime.now(UTC) + timedelta(seconds=self.command_ttl_seconds),
+                )
             pending = session.pending.get(command.command_id)
             if pending is not None:
                 if pending.fingerprint != fingerprint:
@@ -225,7 +235,7 @@ class SatelliteTransportService:
                 pending = _PendingCommand(
                     command,
                     fingerprint,
-                    datetime.now(UTC) + timedelta(seconds=self.command_ttl_seconds),
+                    command.expires_at or (datetime.now(UTC) + timedelta(seconds=self.command_ttl_seconds)),
                 )
                 try:
                     session.commands.put_nowait(command)

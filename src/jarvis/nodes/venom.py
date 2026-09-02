@@ -53,6 +53,12 @@ class VenomNode:
             "jarvis-venom": VenomServiceHealth("jarvis-venom", False, "inactive", datetime.now(UTC)),
             "mosquitto": VenomServiceHealth("mosquitto", False, "inactive", datetime.now(UTC)),
         }
+        self._capabilities: dict[str, str] = {
+            "mqtt_broker": "not_configured",
+            "backup_receiver": "not_configured",
+            "event_relay": "not_configured",
+            "ha_bridge": "not_configured",
+        }
         self._storage: VenomStorageHealth | None = None
         self._version = "phase17"
         self._last_heartbeat: datetime | None = None
@@ -64,6 +70,10 @@ class VenomNode:
     @property
     def version(self) -> str:
         return self._version
+
+    @property
+    def capabilities(self) -> dict[str, str]:
+        return dict(self._capabilities)
 
     def plan(self) -> VenomNodePlan:
         return VenomNodePlan(self.descriptor, tuple(sorted(self.descriptor.capabilities)), False)
@@ -84,6 +94,7 @@ class VenomNode:
             mqtt_healthy=self._services.get("mosquitto", VenomServiceHealth("mosquitto", False, "inactive", datetime.now(UTC))).active,
             ha_bridge_healthy=bool(self._config.get("ha_bridge_enabled", False) and self._health.available),
             backup_receive_healthy=bool(self._storage and self._storage.status == "healthy"),
+            capabilities=dict(self._capabilities),
         )
 
     def set_health(self, available: bool, reason: str) -> NodeHealth:
@@ -101,7 +112,10 @@ class VenomNode:
         now = timestamp or datetime.now(UTC)
         self._last_heartbeat = now
         self._status = NodeStatus.ONLINE.value
-        self._health = NodeHealth(self.descriptor.node_id, True, now, "heartbeat_received")
+        reason = "heartbeat_received"
+        if metadata and "details" in metadata and str(metadata["details"]).strip():
+            reason = str(metadata["details"]).strip()
+        self._health = NodeHealth(self.descriptor.node_id, True, now, reason)
         if metadata:
             if "storage" in metadata and isinstance(metadata["storage"], dict):
                 st = metadata["storage"]
@@ -118,6 +132,9 @@ class VenomNode:
                             bool(s.get("active", False)),
                             str(s.get("status", "unknown")),
                         )
+            if "capabilities" in metadata and isinstance(metadata["capabilities"], dict):
+                for k, v in metadata["capabilities"].items():
+                    self._capabilities[str(k)] = str(v)
         return self._health
 
     def update_storage_health(self, total_bytes: int, free_bytes: int, used_bytes: int) -> VenomStorageHealth:

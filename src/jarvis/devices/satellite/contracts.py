@@ -45,6 +45,7 @@ class SatelliteCommand:
     parameters: Mapping[str, Any] = field(default_factory=dict)
     dry_run: bool = True
     protocol_version: str = PROTOCOL_VERSION
+    expires_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

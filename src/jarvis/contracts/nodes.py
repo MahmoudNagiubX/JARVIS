@@ -70,6 +70,7 @@ class VenomDetailedHealth:
     mqtt_healthy: bool = False
     ha_bridge_healthy: bool = False
     backup_receive_healthy: bool = False
+    capabilities: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

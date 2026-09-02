@@ -197,6 +197,10 @@ class TestPhaseSeventeenDeviceFabric(unittest.IsolatedAsyncioTestCase):
             platform="windows",
         )
         result = await self.fabric.enroll_device(req)
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.reason, "device_id_already_registered_to_different_owner")
+        self.assertNotIn(ticket.code, self.fabric._enrollment_tickets)
+
     async def test_enrollment_same_owner_device_collision_fails_closed(self):
         # dev-same already registered under self.owner_id
         await self.fabric.register(DeviceRecord(

@@ -8,6 +8,7 @@ import platform
 import threading
 import time
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from http.client import HTTPException
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -133,6 +134,8 @@ class WindowsSatelliteAgent:
             return None
         if not isinstance(raw, dict):
             raise SatelliteAgentTransportError("invalid_satellite_command_envelope")
+        raw_expires = raw.get("expires_at")
+        expires_at = datetime.fromisoformat(str(raw_expires)) if raw_expires else None
         command = SatelliteCommand(
             str(raw.get("command_id", "")),
             str(raw.get("action", "")),
@@ -140,6 +143,7 @@ class WindowsSatelliteAgent:
             raw.get("parameters", {}) if isinstance(raw.get("parameters", {}), dict) else {},
             bool(raw.get("dry_run", True)),
             str(raw.get("protocol_version", "1")),
+            expires_at=expires_at,
         )
         observation = await self.execute_command(command)
         submission = await asyncio.to_thread(
@@ -159,6 +163,8 @@ class WindowsSatelliteAgent:
         return observation
 
     async def execute_command(self, command: SatelliteCommand) -> CommandObservation:
+        if command.expires_at is not None and datetime.now(UTC) >= command.expires_at:
+            return CommandObservation(command.command_id, "failed", error_code="command_expired")
         try:
             validate_command(command)
         except ValueError:

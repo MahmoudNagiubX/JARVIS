@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import unittest
 from datetime import UTC, datetime, timedelta
+from jarvis.authority.approvals.service import DurableApprovalEngine
 from jarvis.authority.audit.service import DurableAuditService
 from jarvis.authority.permissions.engine import PolicyPermissionEngine
 from jarvis.bus import InMemoryEventBus
@@ -32,6 +33,7 @@ class TestPhaseSeventeenHomeMqttEsp32(unittest.IsolatedAsyncioTestCase):
         self.bus = InMemoryEventBus()
         self.permission = PolicyPermissionEngine()
         self.audit = DurableAuditService(self.repo)
+        self.approval = DurableApprovalEngine(self.repo)
         self.owner_id = self.repo.create_owner("Owner One")
         self.identity = Identity(identity_id="ident-1", display_name="Owner", owner_id=self.owner_id, roles=frozenset({"owner"}))
         self.device = DeviceIdentity(
@@ -47,7 +49,7 @@ class TestPhaseSeventeenHomeMqttEsp32(unittest.IsolatedAsyncioTestCase):
             HomeEntity("climate.main_thermostat", "Main Thermostat", "climate", "cool", {"temperature": 22}, "living_room"),
         ))
         self.mqtt = RestrictedMQTTTransport(allowed_prefixes=(f"jarvis/{self.owner_id}/", "home/"))
-        self.service = HomeActionService(self.transport, self.repo, self.bus, self.permission, self.audit, mqtt=self.mqtt)
+        self.service = HomeActionService(self.transport, self.repo, self.bus, self.permission, self.audit, mqtt=self.mqtt, approval=self.approval)
 
     async def test_home_action_safe_allowlist(self):
         res = await self.service.execute(HomeAction("light.living_room", "turn_on", {"brightness": 80}, dry_run=False), self.identity, self.device)
@@ -57,6 +59,21 @@ class TestPhaseSeventeenHomeMqttEsp32(unittest.IsolatedAsyncioTestCase):
         res_off = await self.service.execute(HomeAction("light.living_room", "turn_off", dry_run=False), self.identity, self.device)
         self.assertEqual(res_off.status, "succeeded")
         self.assertEqual(self.transport.entities["light.living_room"].state, "off")
+
+        # Valid set_color succeeds
+        res_color = await self.service.execute(HomeAction("light.living_room", "set_color", {"color": "blue"}, dry_run=False), self.identity, self.device)
+        self.assertEqual(res_color.status, "succeeded")
+        self.assertEqual(self.transport.entities["light.living_room"].attributes.get("color"), "blue")
+
+        # Blank set_color denied with color_invalid
+        res_blank = await self.service.execute(HomeAction("light.living_room", "set_color", {"color": "   "}, dry_run=False), self.identity, self.device)
+        self.assertEqual(res_blank.status, "denied")
+        self.assertEqual(res_blank.error_code, "color_invalid")
+
+        # Non-string set_color denied with color_invalid
+        res_nonstr = await self.service.execute(HomeAction("light.living_room", "set_color", {"color": 123}, dry_run=False), self.identity, self.device)
+        self.assertEqual(res_nonstr.status, "denied")
+        self.assertEqual(res_nonstr.error_code, "color_invalid")
 
     async def test_home_action_blocked_dangerous_actions(self):
         for dangerous in ("lock", "unlock", "alarm", "security_override", "raw_shell"):
@@ -81,8 +98,27 @@ class TestPhaseSeventeenHomeMqttEsp32(unittest.IsolatedAsyncioTestCase):
         allowed = await mqtt.publish("evil/topic", json.dumps({"cmd": "hack"}))
         self.assertFalse(allowed)
 
+        # Allowed topic with no publisher -> returns False, not configured, zero published messages recorded
+        self.assertFalse(mqtt.configured)
+        allowed_no_pub = await mqtt.publish(f"jarvis/{self.owner_id}/dev-esp/command/relay", json.dumps({"action": "toggle"}))
+        self.assertFalse(allowed_no_pub)
+        self.assertEqual(mqtt.published, [])
+
+        # Configured publisher returning True -> returns True and records message
+        configured_mqtt = RestrictedMQTTTransport(publisher=lambda t, p: True, allowed_prefixes=(f"jarvis/{self.owner_id}/",))
+        self.assertTrue(configured_mqtt.configured)
+        ok_pub = await configured_mqtt.publish(f"jarvis/{self.owner_id}/dev-esp/command/relay", json.dumps({"action": "toggle"}))
+        self.assertTrue(ok_pub)
+        self.assertEqual(len(configured_mqtt.published), 1)
+
+        # Configured publisher returning False -> returns False and does not record
+        failing_mqtt = RestrictedMQTTTransport(publisher=lambda t, p: False, allowed_prefixes=(f"jarvis/{self.owner_id}/",))
+        fail_pub = await failing_mqtt.publish(f"jarvis/{self.owner_id}/dev-esp/command/relay", json.dumps({"action": "toggle"}))
+        self.assertFalse(fail_pub)
+        self.assertEqual(failing_mqtt.published, [])
+
         # Retained command topic -> rejected
-        allowed_retain = await mqtt.publish(f"jarvis/{self.owner_id}/dev-esp/command/relay", json.dumps({"action": "toggle"}), retain=True)
+        allowed_retain = await configured_mqtt.publish(f"jarvis/{self.owner_id}/dev-esp/command/relay", json.dumps({"action": "toggle"}), retain=True)
         self.assertFalse(allowed_retain)
 
         # Valid telemetry state parsing
@@ -157,12 +193,14 @@ class TestPhaseSeventeenHomeMqttEsp32(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.error_code, "device_capability_missing")
 
     async def test_home_action_consequential_risk_requires_approval(self):
+        heater = HomeEntity("switch.water_heater", "Water Heater", "switch", "off", {}, "basement")
+        self.transport.entities["switch.water_heater"] = heater
         mapping = HomeEntityMapping(
             entity_id="switch.water_heater",
             domain="switch",
             room_id="basement",
-            read_capabilities=frozenset({"home.read"}),
-            write_capabilities=frozenset({"home.control"}),
+            read_caps=frozenset({"home.read"}),
+            write_caps=frozenset({"home.control"}),
             risk_level="consequential",
             enabled=True,
         )
@@ -172,6 +210,24 @@ class TestPhaseSeventeenHomeMqttEsp32(unittest.IsolatedAsyncioTestCase):
             self.identity,
             self.device,
         )
+        self.assertEqual(res.status, "approval_required")
+        self.assertIsNotNone(res.approval_id)
+        # Verify pending approval exists in repository
+        row = self.repo.approval(res.approval_id)
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "pending")
+        # Entity has not turned on yet
+        self.assertEqual(self.transport.entities["switch.water_heater"].state, "off")
+
+        # Now approve it
+        decide_res = await self.service.decide_approval(res.approval_id, True, self.identity.identity_id)
+        self.assertEqual(decide_res.status, "succeeded")
+        self.assertEqual(self.transport.entities["switch.water_heater"].state, "on")
+
+        # Second approval execution is blocked (exactly-once)
+        second_res = await self.service.decide_approval(res.approval_id, True, self.identity.identity_id)
+        self.assertEqual(second_res.status, "failed")
+        self.assertEqual(second_res.error_code, "pending_action_unavailable_after_restart")
     async def test_home_action_list_entities_privacy_boundary_unmapped_not_exposed(self):
         # Transport has 2 entities: mapped light and unmapped secret sensor
         mapped_entity = HomeEntity("light.authorized_lamp", "Authorized Lamp", "light", "on", {}, "living_room")

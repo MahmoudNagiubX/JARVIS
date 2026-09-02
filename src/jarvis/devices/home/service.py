@@ -5,16 +5,21 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+from ...authority.approvals.service import DurableApprovalEngine
 from ...authority.audit.service import DurableAuditService
 from ...authority.permissions.engine import PolicyPermissionEngine
 from ...bus import InMemoryEventBus
+from ...network.validation import validate_private_core_url
 from ...contracts import (
+    ApprovalRequest,
+    ApprovalStatus,
     AuditRecord,
     DeviceIdentity,
     ESP32Ack,
@@ -51,42 +56,46 @@ class InMemoryHomeTransport:
             return HomeResult("failed", error_code="home_entity_not_found")
         if action.dry_run:
             return HomeResult("succeeded", {"dry_run": True, "entity_id": action.entity_id, "action": action.action}, verified=True)
-        attributes = dict(entity.attributes)
-        state = entity.state
-        if action.action == "turn_on":
-            state = "on"
-        elif action.action == "turn_off":
-            state = "off"
-        elif action.action in {"read_state", "read_sensor"}:
-            return HomeResult("succeeded", {"entity": entity.entity_id, "state": entity.state, "attributes": dict(entity.attributes)}, verified=True)
-        elif action.action == "set_brightness":
+        if action.action in {"turn_on", "turn_off"}:
+            new_state = "on" if action.action == "turn_on" else "off"
+            self.entities[action.entity_id] = HomeEntity(entity.entity_id, entity.name, entity.domain, new_state, entity.attributes, entity.room_id, datetime.now(UTC))
+            return HomeResult("succeeded", {"state": new_state, "entity_id": action.entity_id}, verified=True)
+        if action.action == "set_temperature":
+            temp = action.parameters.get("temperature")
+            if not isinstance(temp, (int, float)):
+                return HomeResult("denied", error_code="temperature_invalid")
+            attributes = dict(entity.attributes)
+            attributes["temperature"] = temp
+            self.entities[action.entity_id] = HomeEntity(entity.entity_id, entity.name, entity.domain, entity.state, attributes, entity.room_id, datetime.now(UTC))
+            return HomeResult("succeeded", {"temperature": temp, "entity_id": action.entity_id}, verified=True)
+        if action.action == "set_brightness":
             brightness = action.parameters.get("brightness")
             if not isinstance(brightness, (int, float)) or not 0 <= brightness <= 100:
                 return HomeResult("denied", error_code="brightness_invalid")
+            attributes = dict(entity.attributes)
             attributes["brightness"] = brightness
-        elif action.action == "set_color":
+            self.entities[action.entity_id] = HomeEntity(entity.entity_id, entity.name, entity.domain, entity.state, attributes, entity.room_id, datetime.now(UTC))
+            return HomeResult("succeeded", {"brightness": brightness, "entity_id": action.entity_id}, verified=True)
+        if action.action == "set_color":
             color = action.parameters.get("color")
             if not isinstance(color, str) or not color.strip():
                 return HomeResult("denied", error_code="color_invalid")
+            attributes = dict(entity.attributes)
             attributes["color"] = color.strip()
-        elif action.action in {"trigger_scene", "set_temperature", "publish_mqtt"}:
-            attributes["last_action"] = action.action
-            attributes.update(action.parameters)
-        else:
-            return HomeResult("denied", error_code="home_action_not_allowed")
-        self.entities[action.entity_id] = HomeEntity(entity.entity_id, entity.name, entity.domain, state, attributes, entity.room_id, datetime.now(UTC))
-        return HomeResult("succeeded", {"entity": action.entity_id, "state": state, "attributes": attributes}, verified=True)
+            self.entities[action.entity_id] = HomeEntity(entity.entity_id, entity.name, entity.domain, entity.state, attributes, entity.room_id, datetime.now(UTC))
+            return HomeResult("succeeded", {"color": color.strip(), "entity_id": action.entity_id}, verified=True)
+        if action.action == "trigger_scene":
+            return HomeResult("succeeded", {"scene": action.entity_id}, verified=True)
+        return HomeResult("denied", error_code="home_action_not_allowed")
 
 
 class HomeAssistantTransport:
-    """HTTP adapter for an already-running local Home Assistant instance."""
+    """Outbound Home Assistant REST bridge."""
 
     name = "home-assistant"
 
-    def __init__(self, base_url: str, token: str | None = None, request: Callable[[str, str, bytes | None, Mapping[str, str]], tuple[int, bytes]] | None = None) -> None:
-        if not base_url.startswith(("http://", "https://")):
-            raise ValueError("home assistant URL must be HTTP")
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: str = "http://127.0.0.1:8123", token: str | None = None, request: Callable[..., tuple[int, bytes]] | None = None) -> None:
+        self.base_url = validate_private_core_url(base_url, mode="local")
         self._token = token
         self._request = request
 
@@ -154,6 +163,10 @@ class RestrictedMQTTTransport:
         self.allowed_prefixes = tuple(prefix for prefix in allowed_prefixes if prefix)
         self.published: list[tuple[str, str]] = []
 
+    @property
+    def configured(self) -> bool:
+        return self._publisher is not None
+
     async def publish(self, topic: str, payload: str, *, retain: bool = False) -> bool:
         if not topic or not any(topic.startswith(prefix) for prefix in self.allowed_prefixes):
             return False
@@ -162,11 +175,13 @@ class RestrictedMQTTTransport:
         # Do not allow retained dangerous commands
         if retain and "/command/" in topic:
             return False
-        self.published.append((topic, payload))
         if self._publisher is None:
-            return True
+            return False
         result = self._publisher(topic, payload)
-        return bool(await result if inspect.isawaitable(result) else result)
+        success = bool(await result if inspect.isawaitable(result) else result)
+        if success:
+            self.published.append((topic, payload))
+        return success
 
     async def subscribe(self, topic: str) -> bool:
         return bool(topic and any(topic.startswith(prefix) for prefix in self.allowed_prefixes))
@@ -196,47 +211,64 @@ class RestrictedMQTTTransport:
             return None
 
     def parse_esp32_command(self, topic: str, payload: str) -> ESP32CommandEnvelope | None:
-        """Parse inbound command payload, validating TTL and schema."""
+        """Parse inbound command payload, validating TTL, command_id, and schema."""
         try:
             if not any(topic.startswith(prefix) for prefix in self.allowed_prefixes):
                 return None
             parts = topic.split("/")
-            # Topic format: jarvis/<owner>/<device>/command/<target>
             if len(parts) < 5 or parts[3] != "command":
                 return None
             device_id = parts[2]
-            target = "/".join(parts[4:])
+            target = parts[4]
+            if not target or not re.match(r"^[A-Za-z0-9_.-]{1,64}$", target):
+                return None
             data = json.loads(payload)
             if not isinstance(data, dict):
                 return None
-            command_id = str(data.get("command_id", ""))
-            action = str(data.get("action", ""))
-            if not command_id or not action:
+            command_id = str(data.get("command_id", "")).strip()
+            if not command_id or len(command_id) > 128:
                 return None
-            expires_at = None
-            if data.get("expires_at"):
-                expires_at = datetime.fromisoformat(str(data["expires_at"]))
-                if expires_at <= datetime.now(UTC):
-                    # Stale command expired
+            action = str(data.get("action", target)).strip()
+            if not action or len(action) > 64:
+                return None
+            params = data.get("parameters") if isinstance(data.get("parameters"), dict) else {}
+            now = datetime.now(UTC)
+            if "expires_at" in data and isinstance(data["expires_at"], str):
+                try:
+                    exp_dt = datetime.fromisoformat(data["expires_at"])
+                    expires_at = exp_dt if exp_dt.tzinfo else exp_dt.replace(tzinfo=UTC)
+                except Exception:
                     return None
+            else:
+                ttl = int(data.get("ttl_seconds", 30))
+                if ttl <= 0 or ttl > 300:
+                    return None
+                expires_at = now + timedelta(seconds=ttl)
+            if expires_at <= now:
+                return None
             return ESP32CommandEnvelope(
                 command_id=command_id,
                 device_id=device_id,
                 target=target,
                 action=action,
-                parameters=data.get("parameters", {}) if isinstance(data.get("parameters"), dict) else {},
+                parameters=params,
                 expires_at=expires_at,
                 dry_run=bool(data.get("dry_run", False)),
             )
         except (ValueError, TypeError, KeyError):
             return None
 
+    def format_esp32_ack(self, ack: ESP32Ack) -> tuple[str, str]:
+        topic = f"jarvis/ack/{ack.device_id}/{ack.command_id}"
+        payload = json.dumps({"command_id": ack.command_id, "status": ack.status, "output": ack.output, "error": ack.error, "timestamp": ack.timestamp.isoformat()})
+        return topic, payload
+
 
 class HomeActionService:
-    """Home action authority with explicit read/safe/high-risk boundaries."""
+    """Safe model-callable Home Assistant tool boundary with capability-checked allowlists."""
 
-    _read_actions = frozenset({"list_entities", "read_state", "read_sensor"})
     _safe_actions = frozenset({"turn_on", "turn_off", "set_brightness", "set_color", "trigger_scene", "set_temperature", "publish_mqtt"})
+    _read_actions = frozenset({"get_state", "list_entities", "read_sensor", "read_state"})
     _blocked_actions = frozenset({"lock", "unlock", "alarm", "security_override", "life_safety_override", "raw_shell", "system_exec"})
 
     def __init__(
@@ -247,6 +279,7 @@ class HomeActionService:
         permission: PolicyPermissionEngine,
         audit: DurableAuditService,
         mqtt: MQTTTransport | None = None,
+        approval: DurableApprovalEngine | None = None,
     ) -> None:
         self.transport = transport
         self.repository = repository
@@ -254,8 +287,10 @@ class HomeActionService:
         self.permission = permission
         self.audit = audit
         self.mqtt = mqtt
+        self.approval = approval
         self._entity_mappings: dict[str, HomeEntityMapping] = {}
         self._explicitly_configured: bool = False
+        self._pending_approvals: dict[str, tuple[HomeAction, Identity, DeviceIdentity, str]] = {}
         self._ensure_in_memory_mappings()
 
     def _ensure_in_memory_mappings(self) -> None:
@@ -336,6 +371,7 @@ class HomeActionService:
         self._ensure_in_memory_mappings()
 
         # Enforce enabled HomeEntityMapping for model-callable entity actions
+        mapping = None
         if action.action != "publish_mqtt":
             mapping = self._entity_mappings.get(action.entity_id)
             if mapping is None:
@@ -372,17 +408,50 @@ class HomeActionService:
             },
         )
         if decision.effect.value != "allow":
+            if decision.effect.value == "require_approval" and self.approval is not None:
+                approval_id = f"approval-home-{uuid4()}"
+                now = datetime.now(UTC)
+                expires_at = now + timedelta(minutes=15)
+                # Build sanitized preview: NO tokens, NO passwords, NO internal secrets
+                preview = {
+                    "entity_id": action.entity_id,
+                    "action": action.action,
+                    "domain": mapping.domain if mapping else (action.entity_id.split(".", 1)[0] if "." in action.entity_id else "home"),
+                    "parameters": {k: v for k, v in action.parameters.items() if k in {"temperature", "brightness", "color", "state", "scene"}},
+                    "risk_level": risk_level,
+                }
+                reason = "extreme_temperature_requires_approval" if extreme_temp else (decision.reason_code or "approval_required")
+                req = ApprovalRequest(
+                    approval_id=approval_id,
+                    action=f"home.{action.action}",
+                    requester_id=identity.owner_id,
+                    device_id=device.device_id,
+                    reason=reason,
+                    created_at=now,
+                    expires_at=expires_at,
+                    preview=preview,
+                )
+                await self.approval.request(req)
+                self._pending_approvals[approval_id] = (action, identity, device, correlation)
+                await self._emit("home.approval_requested", identity.owner_id, correlation, {"approval_id": approval_id, "entity_id": action.entity_id, "action": action.action}, EventState.ACCEPTED)
+                return HomeResult(
+                    status="approval_required",
+                    output={"approval_id": approval_id, "entity_id": action.entity_id, "action": action.action},
+                    error_code=reason,
+                    verified=False,
+                    approval_id=approval_id,
+                )
             status = "approval_required" if decision.effect.value == "require_approval" else "denied"
             reason = "extreme_temperature_requires_approval" if (extreme_temp and status == "approval_required") else decision.reason_code
             return await self._denied(identity, device, correlation, action, reason, status)
         await self._emit("home.action_started", identity.owner_id, correlation, {"entity_id": action.entity_id, "action": action.action}, EventState.ACCEPTED)
         if action.action == "publish_mqtt":
-            if self.mqtt is None:
-                return HomeResult("failed", error_code="mqtt_not_configured")
+            if self.mqtt is None or not getattr(self.mqtt, "configured", True):
+                return await self._denied(identity, device, correlation, action, "mqtt_not_configured", status="failed")
             topic = action.parameters.get("topic")
             payload = action.parameters.get("payload", "")
             if not isinstance(topic, str) or not isinstance(payload, str) or not await self.mqtt.publish(topic, payload):
-                return HomeResult("denied", error_code="mqtt_topic_not_allowed")
+                return HomeResult("failed", error_code="mqtt_publish_failed")
             result = HomeResult("succeeded", {"topic": topic}, verified=True)
         elif self.transport is None:
             result = HomeResult("failed", error_code="home_service_unavailable")
@@ -396,6 +465,60 @@ class HomeActionService:
             )
         else:
             result = await self.transport.execute(action)
+        event_type = "home.action_completed" if result.status == "succeeded" else "home.action_failed"
+        if result.status == "succeeded":
+            await self._emit("home.state_updated", identity.owner_id, correlation, {"entity_id": action.entity_id, "action": action.action}, EventState.COMPLETED)
+        await self._emit(event_type, identity.owner_id, correlation, {"entity_id": action.entity_id, "action": action.action, "error_code": result.error_code}, EventState.COMPLETED if result.status == "succeeded" else EventState.FAILED)
+        await self.audit.record(AuditRecord(f"audit-{uuid4()}", event_type, datetime.now(UTC), identity.identity_id, device.device_id, correlation, result.status, result.error_code, {"entity_id": action.entity_id, "action": action.action}))
+        return result
+
+    async def decide_approval(self, approval_id: str, approved: bool, decided_by: str) -> HomeResult:
+        """Exactly-once resume decision for a pending consequential home action."""
+        if self.approval is None:
+            return HomeResult("failed", error_code="approval_engine_unavailable")
+        app_row = self.repository.approval(approval_id)
+        if app_row is None:
+            return HomeResult("failed", error_code="approval_request_not_found")
+
+        pending = self._pending_approvals.get(approval_id)
+        if pending is None:
+            return HomeResult("failed", {"approval_id": approval_id}, error_code="pending_action_unavailable_after_restart", verified=False, approval_id=approval_id)
+
+        req_id = app_row.get("requester_id")
+        decider_owner = decided_by
+        if hasattr(self.repository, "identity"):
+            id_rec = self.repository.identity(decided_by)
+            if id_rec:
+                decider_owner = id_rec.get("owner_id", decided_by)
+        valid_decider = (
+            decided_by in ("owner", req_id, pending[1].identity_id, pending[1].owner_id)
+            or decider_owner in ("owner", req_id)
+        )
+        if not valid_decider:
+            return HomeResult("denied", error_code="approval_owner_mismatch")
+
+        decision = await self.approval.decide(approval_id, approved, decided_by)
+        self._pending_approvals.pop(approval_id, None)
+
+        if not approved or decision.status != ApprovalStatus.APPROVED:
+            action, identity, device, correlation = pending
+            await self._emit("home.approval_rejected", identity.owner_id, correlation, {"approval_id": approval_id, "action": action.action}, EventState.COMPLETED)
+            return HomeResult("denied", {"approval_id": approval_id}, error_code="approval_rejected", verified=False, approval_id=approval_id)
+
+        action, identity, device, correlation = pending
+        if action.action == "publish_mqtt":
+            if self.mqtt is None or not getattr(self.mqtt, "configured", True):
+                return await self._denied(identity, device, correlation, action, "mqtt_not_configured", status="failed")
+            topic = action.parameters.get("topic")
+            payload = action.parameters.get("payload", "")
+            if not isinstance(topic, str) or not isinstance(payload, str) or not await self.mqtt.publish(topic, payload):
+                return HomeResult("failed", error_code="mqtt_publish_failed")
+            result = HomeResult("succeeded", {"topic": topic}, verified=True)
+        elif self.transport is None:
+            result = HomeResult("failed", error_code="home_service_unavailable")
+        else:
+            result = await self.transport.execute(action)
+
         event_type = "home.action_completed" if result.status == "succeeded" else "home.action_failed"
         if result.status == "succeeded":
             await self._emit("home.state_updated", identity.owner_id, correlation, {"entity_id": action.entity_id, "action": action.action}, EventState.COMPLETED)

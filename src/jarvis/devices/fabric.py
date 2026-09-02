@@ -189,7 +189,7 @@ class DeviceFabricService:
             name=clean_name,
             role=ticket.role,
             transport="http-long-poll",
-            status=DeviceStatus.ONLINE.value,
+            status=DeviceStatus.REGISTERED.value,
             capabilities=granted_caps,
             trust_level="verified",
             last_seen=now,
@@ -211,7 +211,6 @@ class DeviceFabricService:
 
         await self._audit(record, "device.enrolled", "enrolled")
         await self._emit("device.enrolled", record, {"role": ticket.role, "capabilities": sorted(granted_caps)}, EventState.COMPLETED)
-        await self._emit("device.online", record, {"reason": "enrolled"}, EventState.COMPLETED)
         return DeviceEnrollmentResult(
             accepted=True,
             device_id=device_id,
@@ -388,8 +387,10 @@ class DeviceFabricService:
 
     async def revoke(self, owner_id: str, device_id: str) -> DeviceRecord:
         current = await self.get(owner_id, device_id)
-        if current is None:
+        if current is None or current.owner_id != owner_id:
             raise KeyError(device_id)
+        if current.status == DeviceStatus.REVOKED.value:
+            return current
         now = datetime.now(UTC)
         updated = DeviceRecord(
             current.device_id,

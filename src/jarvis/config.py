@@ -207,14 +207,21 @@ def _validate_profile(
     if role == "satellite" and not core_url:
         raise ValueError("JARVIS_CORE_URL is required for satellite runtime role")
     if core_url:
-        parsed = urlsplit(core_url)
-        if parsed.scheme != "http" or parsed.username or parsed.password or parsed.path not in ("", "/"):
-            raise ValueError("JARVIS_CORE_URL must be a loopback HTTP origin")
-        if parsed.hostname is None or parsed.port is None:
-            raise ValueError("JARVIS_CORE_URL must include a loopback host and port")
-        try:
-            address = ip_address(parsed.hostname)
-        except ValueError as exc:
-            raise ValueError("JARVIS_CORE_URL must use a loopback IP literal") from exc
-        if not address.is_loopback:
-            raise ValueError("JARVIS_CORE_URL must remain loopback-only")
+        if profile == "live-distributed":
+            from .network.validation import NetworkValidationError, validate_private_core_url
+            try:
+                validate_private_core_url(core_url, mode="live-distributed")
+            except NetworkValidationError as exc:
+                raise ValueError(f"JARVIS_CORE_URL validation failed: {exc}") from exc
+        else:
+            parsed = urlsplit(core_url)
+            if parsed.scheme != "http" or parsed.username or parsed.password or parsed.path not in ("", "/"):
+                raise ValueError("JARVIS_CORE_URL must be a loopback HTTP origin")
+            if parsed.hostname is None or parsed.port is None:
+                raise ValueError("JARVIS_CORE_URL must include a loopback host and port")
+            try:
+                address = ip_address(parsed.hostname)
+            except ValueError as exc:
+                raise ValueError("JARVIS_CORE_URL must use a loopback IP literal") from exc
+            if not address.is_loopback:
+                raise ValueError("JARVIS_CORE_URL must remain loopback-only")

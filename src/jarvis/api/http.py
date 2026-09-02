@@ -629,6 +629,14 @@ class CoreHttpServer:
                         ))
                         self._respond(HTTPStatus.OK, result)
                         return
+                    if route.startswith("/home/approvals/"):
+                        principal = self._authenticated(body)
+                        approval_id = route.rsplit("/", 1)[-1]
+                        result = asyncio.run(application.decide_home_approval(
+                            approval_id, bool(body["approved"]), principal.identity.owner_id
+                        ))
+                        self._respond(HTTPStatus.OK, result)
+                        return
                     if route == "/home/actions":
                         principal = self._authenticated(body)
                         result = asyncio.run(application.home_action(

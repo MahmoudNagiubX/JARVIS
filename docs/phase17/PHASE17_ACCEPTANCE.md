@@ -1,12 +1,26 @@
 # Phase 17 Acceptance Report
 
-## Final Acceptance Summary
-- **Mega Phase**: Phase 17 — Venom, Home, Multi-Device & Room Fabric.
-- **Base Commit**: `657a179d04516be6a2a0653f2dae906ec48424b4`.
-- **Architecture Choice**: Option A (NIGHTFURY Authoritative Core + Venom Linux Infrastructure Node).
-- **Single Logical Authority**: 100% verified. Exactly ONE database (SQLite on NIGHTFURY), ONE VoiceCore, ONE AgentRuntime, ONE EventBus, ONE identity engine.
-- **Python Test Results**: 47/47 Phase 17 focused tests passed (0 failures).
-- **Security & Integrity**: Salted PBKDF2-HMAC-SHA256 (`_hash_secret`) credential hashing, single-transaction atomic device enrollment, fail-closed room persistence, and privacy-bounded home entity exposure.
-- **Frontend Vitest Suite**: 75/75 tests passed.
-- **Frontend Build**: TypeScript & Vite build clean (`dist/app.js` and `dist/index.html`).
-- **Physical Gate Status**: CODE & ARCHITECTURE complete and fully verified. Physical remote deployment gate status: `BLOCKED_WAITING_FOR_CONNECTION_DETAILS` (truthful gate report: `venom@192.162.1.33`, fingerprint `SHA256:bhEw1uFGz6QnUeNfoA58u5T/xTzw0Le0KTZc26mTpPc` reached via non-interactive SSH but failed authentication; no unauthorized remote network mutation or credential storage performed).
+## Final acceptance summary
+
+- **Mega Phase**: Phase 17 - Venom, Home, Multi-Device & Room Fabric.
+- **Base commit**: `c3dc5abe20adc3d23605326ff35c9e2843477cde`.
+- **Architecture**: Option A - NIGHTFURY authoritative Core/SQLite/VoiceCore/AgentRuntime; Venom is a lightweight infrastructure node.
+- **Phase 17 focused tests**: 66 passed, 0 failed.
+- **Phases 13-16 regression**: 218 passed, 11 subtests passed, 0 failed.
+- **Full repository Python suite**: 502 passed, 36 subtests passed, 0 failed.
+- **Frontend Vitest**: 75 passed in 14 files, 0 failed.
+- **Frontend build**: TypeScript and Vite build clean; 68 modules transformed.
+- **Security**: `npm audit --audit-level=high` found 0 vulnerabilities; compileall and diff checks passed.
+
+## Closure gates
+
+- Authenticated LAN node transport, private Core URL policy, device revocation idempotency, canonical Home approvals, truthful MQTT delivery, Venom heartbeat/backoff, room owner/device binding, and remote execution deadlines pass in deterministic local tests.
+- The UI/Core HTTP server remains loopback-only. The node adapter is separate, authenticated, private-client restricted, and node-route-only.
+- Venom `backup_receiver`, `event_relay`, and `ha_bridge` remain `NOT_CONFIGURED`; MQTT reports actual broker health and is not advertised as successful without a publisher.
+- Enrollment remains `REGISTERED` until authenticated connect/heartbeat evidence.
+
+## Physical boundary
+
+Physical Venom deployment is **BLOCKED_AUTH / BLOCKED_WAITING_FOR_CREDENTIALS**. Owner evidence identifies `venom-server` at `192.162.1.33` with SSH fingerprint `SHA256:bhEw1uFGz6QnUeNfoA58u5T/xTzw0Le0KTZc26mTpPc`; non-interactive SSH authentication was unavailable. No remote mutation, credential storage, Home Assistant install, ESP32 acceptance, or room-acoustic acceptance is claimed.
+
+Phase 18 and Phase 19 physical work were not started.

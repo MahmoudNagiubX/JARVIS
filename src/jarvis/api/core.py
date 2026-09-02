@@ -257,7 +257,7 @@ class CoreApplication:
         if not isinstance(capabilities, (list, tuple)):
             raise ValueError("satellite capabilities must be a list")
         hello = SatelliteHello(
-            str(values.get("device_id", "")),
+            str(values.get("device_id") or principal.device.device_id),
             str(values.get("owner_id", principal.identity.owner_id)),
             str(values.get("platform", "windows")),
             str(values.get("software_version", "unknown")),
@@ -1103,7 +1103,47 @@ class CoreApplication:
     async def fabric_diagnostics(self, owner_id: str) -> dict[str, Any]:
         return await self.runtime.device_fabric.diagnostics(owner_id)
 
-    async def handle_room_voice_utterance(self, values: dict[str, object], owner_id: str | None = None) -> dict[str, Any]:
+    async def decide_home_approval(self, approval_id: str, approved: bool, owner_id: str) -> dict[str, Any]:
+        if self.runtime.home is None:
+            raise RuntimeError("home_service_unavailable")
+        res = await self.runtime.home.decide_approval(approval_id, approved, owner_id)
+        return asdict(res)
+
+    async def register_room_voice_endpoint(self, principal: DemoPrincipal, values: dict[str, object]) -> dict[str, Any]:
+        if self.runtime.voice_routing is None:
+            raise RuntimeError("voice_routing_unavailable")
+        endpoint_id = str(values.get("endpoint_id", "")).strip()
+        room_id = str(values.get("room_id", "")).strip() or None
+        if not endpoint_id:
+            raise ValueError("endpoint_id is required")
+        if room_id is not None:
+            if self.runtime.rooms is None:
+                raise RuntimeError("rooms_service_unavailable")
+            room = await self.runtime.rooms.get_room(principal.identity.owner_id, room_id)
+            if room is None:
+                raise KeyError(f"room {room_id} not found")
+        from ..contracts import VoiceEndpoint
+        endpoint = VoiceEndpoint(
+            endpoint_id=endpoint_id,
+            owner_id=principal.identity.owner_id,
+            room_id=room_id,
+            device_id=principal.device.device_id,
+            online=bool(values.get("online", True)),
+            input_enabled=bool(values.get("input_enabled", True)),
+            output_enabled=bool(values.get("output_enabled", True)),
+        )
+        registered = await self.runtime.voice_routing.register(principal.identity.owner_id, endpoint)
+        if room_id is not None:
+            await self.runtime.rooms.bind_voice_endpoint(principal.identity.owner_id, room_id, endpoint_id)
+        return asdict(registered)
+
+    async def handle_room_voice_utterance(
+        self,
+        values: dict[str, object],
+        owner_id: str | None = None,
+        identity: Identity | None = None,
+        device: DeviceIdentity | None = None,
+    ) -> dict[str, Any]:
         if self.runtime.room_voice is None:
             raise RuntimeError("room_voice_fabric_not_configured")
         envelope = RoomUtteranceEnvelope(
@@ -1114,12 +1154,57 @@ class CoreApplication:
             audio=None,
             confidence=float(values.get("confidence", 1.0)),
             is_final=bool(values.get("is_final", True)),
-            owner_id=owner_id,
+            owner_id=owner_id or (identity.owner_id if identity else None),
         )
-        res = await self.runtime.room_voice.handle_room_utterance(envelope, owner_id=owner_id)
+        res = await self.runtime.room_voice.handle_room_utterance(envelope, owner_id=owner_id, identity=identity, device=device)
         return asdict(res)
 
-    async def room_voice_barge_in(self, values: dict[str, object], owner_id: str = "owner") -> dict[str, Any]:
+    async def venom_heartbeat(self, principal: DemoPrincipal, values: dict[str, object]) -> dict[str, Any]:
+        status = bool(values.get("healthy", True))
+        details = str(values.get("details", "heartbeat"))
+        if status:
+            bounded_metadata: dict[str, object] = {
+                "details": details,
+            }
+            if "storage" in values and isinstance(values["storage"], dict):
+                st = values["storage"]
+                bounded_metadata["storage"] = {
+                    "total_bytes": int(st.get("total_bytes", 0)),
+                    "free_bytes": int(st.get("free_bytes", 0)),
+                    "used_bytes": int(st.get("used_bytes", 0)),
+                }
+            if "services" in values and isinstance(values["services"], list):
+                svcs = []
+                for s in values["services"]:
+                    if isinstance(s, dict) and "name" in s:
+                        svcs.append({
+                            "name": str(s["name"]),
+                            "active": bool(s.get("active", False)),
+                            "status": str(s.get("status", "unknown")),
+                        })
+                bounded_metadata["services"] = svcs
+            if "capabilities" in values and isinstance(values["capabilities"], dict):
+                bounded_metadata["capabilities"] = {
+                    str(k): str(v) for k, v in values["capabilities"].items()
+                }
+            self.runtime.venom.record_heartbeat(metadata=bounded_metadata)
+        else:
+            self.runtime.venom.set_health(status, details)
+        current = await self.runtime.device_fabric.get(principal.identity.owner_id, principal.device.device_id)
+        if current is not None:
+            await self.runtime.device_fabric.heartbeat(
+                DeviceHeartbeat(principal.device.device_id, datetime.now(UTC), {"transport": "lan-node-http", "details": details}),
+                principal.identity.owner_id,
+            )
+        return {"accepted": True, "healthy": status, "details": details, "timestamp": datetime.now(UTC).isoformat()}
+
+    async def room_voice_barge_in(
+        self,
+        values: dict[str, object],
+        *,
+        principal: DemoPrincipal | None = None,
+        owner_id: str | None = None,
+    ) -> dict[str, Any]:
         if self.runtime.room_voice is None:
             raise RuntimeError("room_voice_fabric_not_configured")
         barge = RoomVoiceBargeIn(
@@ -1129,5 +1214,11 @@ class CoreApplication:
             timestamp=datetime.now(UTC),
             reason=str(values.get("reason", "barge_in")),
         )
-        success = await self.runtime.room_voice.barge_in(barge, owner_id=owner_id)
+        effective_owner = principal.identity.owner_id if principal else (owner_id or "owner")
+        effective_device = principal.device if principal else None
+        success = await self.runtime.room_voice.barge_in(
+            barge,
+            owner_id=effective_owner,
+            device=effective_device,
+        )
         return {"barge_in": success}

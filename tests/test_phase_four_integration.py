@@ -114,7 +114,7 @@ class PhaseFourIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_home_actions_are_allowlisted_and_mqtt_topics_restricted(self) -> None:
         entity = HomeEntity("light.office", "Office light", "light", "off", {"brightness": 0}, "office")
-        mqtt = RestrictedMQTTTransport()
+        mqtt = RestrictedMQTTTransport(publisher=lambda topic, payload: True)
         home = HomeActionService(
             InMemoryHomeTransport((entity,)), self.runtime.repository, self.runtime.event_bus,
             self.runtime.permission, self.runtime.audit, mqtt,
