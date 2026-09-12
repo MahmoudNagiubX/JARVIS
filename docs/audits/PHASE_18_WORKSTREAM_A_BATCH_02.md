@@ -189,10 +189,111 @@ git diff --check
 
 - **Files staged (explicit paths, no `git add .`):** `src/jarvis/computer/native_input.py`, `src/jarvis/computer/service.py`, `src/jarvis/computer/semantic_uia.py`, `src/jarvis/contracts/computer.py`, `src/jarvis/contracts/semantic_ui.py`, `src/jarvis/tools/registry.py`, `src/jarvis/authority/permissions/engine.py`, `tests/test_phase_eighteen_native_input.py`, `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_02.md`, `docs/source_of_truth/02_JARVIS_CURRENT_STATE.md`, `docs/source_of_truth/03_JARVIS_GAP_REGISTER.md`, `docs/source_of_truth/04_JARVIS_EXECUTION_ROADMAP.md`.
 - **Commit message:** `feat: add grounded native input fallback`
-- **MILESTONE_1_COMMIT:** recorded after push, see final response.
+- **MILESTONE_1_COMMIT:** `b903de94140b21af10a9cfd3bbffe26a85106561`
 
 ---
 
-<!-- Sections 5 (Milestone 2), 6 (final regression), 7 (security review),
-     8 (gap status), 9 (manual dependencies), 10 (restrictions remaining), and
-     11 (recommended Batch 03) are appended here once those run. -->
+## 5. Milestone 2 — Repeatable Computer Use V2 evaluation suite
+
+**Commit:** `MILESTONE_2_COMMIT` (recorded in Section 5.7 below after push)
+
+### 5.1 Deterministic evaluation suite
+
+- `src/jarvis/evaluation/computer_use_v2.py` — a `computer_use_v2` `RegressionSuite`/`EvaluationCase` set (17 cases), registered through the existing `EvaluationService.register()` in `bootstrap.py`. No `ComputerUseEvaluationServiceV2` or any second evaluation authority was created.
+- Every case runs without a GUI or live Windows dependency (fakes at the OS/provider boundary — either a fresh `create_runtime()` harness with a fake `SemanticDesktopAdapter`, or the real `WindowsUIAutomationAdapter`/`WindowsNativeInputAdapter` classes driven against a fake control tree/provider from `src/jarvis/evaluation/semantic_uia_fixtures.py`).
+- The 17 cases map directly to the task's minimum list: canonical-authority routing, sensitive-window filtering, weak-identity actuation refusal, stale-target refusal, approval target-change binding, approval-required enforcement, fresh post-action verification (a "freezes at fetch" pattern fixture proving the post-action read is never the cached pre-action object), generic-invoke-stays-unverified, toggle/select fresh evidence, native-pointer grounding, native-key foreground grounding, no-raw-coordinates/no-raw-VK/no-filesystem-parameter schema checks, `verified` field survival, UI-text-cannot-self-authorize, and wrong-target-execution-count-zero across a negative-scenario battery.
+- All 17 cases pass: `17/17 evaluation cases passed`.
+
+### 5.2 Evaluation metrics
+
+Metrics tracked per the task's list are all directly observable from each case's structure rather than invented: pass rate (`EvaluationRun.summary`, e.g. `17/17`), wrong-action/policy-bypass count (case 17's `invoke_calls == []` assertion across the negative-scenario battery), stale-target refusal (case 4), verified-success correctness (cases 8/9/15 — `verified` is checked against the actual honest value, never assumed), unverified-success count (case 8), re-observation count (case 5's approval preview re-fetch, case 7's fresh-pattern-object proof). No "confidence percentage" of any kind is invented anywhere in this suite.
+
+### 5.3 Physical acceptance runner
+
+`scripts/phase18/computer_use_acceptance.py` — a durable, explicit opt-in development script (never imported by `AgentRuntime`/production startup; only runs when invoked directly via `python scripts/phase18/computer_use_acceptance.py --runs N`).
+
+Safety properties implemented directly in response to the Milestone 0 Notepad incident and the task's explicit requirements:
+- refuses on non-Windows (`platform.system()` check, tested);
+- Calculator scenario **refuses to run** if `CalculatorApp.exe` is already running (`tasklist` pre-check) rather than risk attaching to an owner's existing session the way the Milestone 0 probe accidentally did to Notepad;
+- Edge Guest scenario uses only a temporary local HTML file it creates itself, deleted in a `finally` block even on failure, and `--guest` mode (never the owner's normal profile, no login, no internet dependency);
+- window matching is title-based against each fixture's own known signature ("Calculator" / "JARVIS Computer Use V2 Acceptance Fixture"), never a bare enumeration dump — the full window list from `list_windows` is inspected in memory and discarded, never logged or persisted;
+- the Edge button search is filtered by the fixture's own exact label ("Invoke Me") specifically because a bare `control_type=ButtonControl` search can otherwise match Edge's own chrome buttons (Minimize/Maximize/Close/tab-bar) within the adapter's bounded inspect depth — this was caught and fixed during this milestone's own development (see 5.4);
+- both fixtures' processes are killed in `finally` blocks; confirmed via `Get-Process` after every run that no `CalculatorApp`/`msedge` process and no temp fixture file were left behind;
+- every action goes through `computer.semantic.read`/`computer.semantic.act`/`computer.pointer.act`/`computer.keyboard.key` with normal approval — `uiautomation`/raw `SendInput` is never called directly from the script;
+- the structured summary persists only bounded pass/attempt booleans and already-known-safe fixture labels (e.g. "Seven"/"Eight"/"CalculatorResults", all JARVIS-authored), never a raw UI dump.
+
+### 5.4 Required repeated physical runs (3x, same session)
+
+Run with `python scripts/phase18/computer_use_acceptance.py --runs 3` on NIGHTFURY. **First attempt caught a real bug**, disclosed rather than hidden: window matching originally required an exact `process_name` match, but Windows 11's in-box Calculator is hosted by the shared `ApplicationFrameHost.exe` process rather than exposing `CalculatorApp.exe` on its own top-level window — the first run therefore reported Calculator as "not found" 3/3 (a script bug, not a product regression) while an unfiltered Edge button search happened to match one of Edge's own chrome buttons rather than the fixture (also a script bug — no owner-visible harm occurred; the click landed on Edge's own UI, and Edge was closed immediately after by the script's own cleanup either way). Both were fixed (title-based window matching; exact-label button filtering) and the runner was re-run clean:
+
+| Scenario | Result (3 runs) | Evidence |
+| --- | --- | --- |
+| Calculator: semantic invoke | 3/3 | `status=completed`, independent display read-back matched `"Display is 7"` all 3 times |
+| Calculator: native left click | 3/3 | `pointer_target_verified=true`, `input_batch_accepted=true` all 3 times; generic click correctly `verified=false` |
+| Calculator: native Tab key | 3/3 | independent focus read-back confirmed focus moved Seven→Eight all 3 times |
+| Edge Guest: invoke | 0/3 | `not_found` — Chromium page content unreachable at the adapter's existing `MAX_INSPECT_DEPTH=5` bound (see 5.5) |
+| Edge Guest: toggle | 0/3 | same reason |
+| Edge Guest: select | 0/3 | same reason |
+
+No wrong-target execution occurred in any run. No approval was bypassed. Every Calculator/Edge process and temp file was confirmed cleaned up after each run and after the full 3-run session.
+
+### 5.5 Toggle/Select physical proof
+
+Still **not** available this batch. The exact observed pattern set for the Edge Guest fixture's checkbox/select controls could not even be recorded, because `find_elements` does not reach them at all — `inspect_window` at depth 5 (the adapter's maximum) shows the entire budget consumed by Edge's own UI-automation wrapper chrome (`WindowControl` → nested `PaneControl`s → tab bar / window buttons) before the actual rendered page is reached (documented in Milestone 0, §3.6, reproduced identically here). Production code was **not** altered to force this test to pass, per the task's explicit instruction. `toggle`/`select` remain code/test-proven only; this is the single largest remaining gap in this batch's physical evidence.
+
+### 5.6 Multi-monitor / DPI / secure-desktop evidence
+
+- **Unit-level (already in Milestone 1):** `CoordinateMathTests` covers negative virtual-desktop X/Y origin, extended-desktop dimensions, exact edges, and degenerate one-pixel geometries.
+- **Physical environment (recorded, not altered):** NIGHTFURY is a genuine two-monitor extended desktop — `SM_XVIRTUALSCREEN=-1920`, `SM_YVIRTUALSCREEN=0`, `SM_CXVIRTUALSCREEN=3840`, `SM_CYVIRTUALSCREEN=1080`, `SM_CMONITORS=2`, primary-monitor DPI 96 (100%). This is exactly the negative-origin/extended-dimension shape already unit-tested. No display setting was altered to obtain this reading.
+- Calculator opened on the primary monitor by default in the physical runs above; no window-move capability exists in scope to force it onto the non-primary (negative-X) monitor, so a live click physically executed with a negative absolute coordinate was not separately re-demonstrated this batch. Recording `MULTI_MONITOR_PHYSICAL_PENDING` for that specific scenario — the topology evidence itself is real and positive, not pending.
+- No non-100%-DPI monitor/config is available on NIGHTFURY; DPI physical proof stays partial per the task's own explicit allowance. No UIA bounding rectangle is ever manually rescaled anywhere in the code.
+- Secure desktop/UIPI: unit/policy tests cover sensitive-window denial and truthful `native_input_injection_failed` reporting for partial/zero SendInput; the codebase never elevates, never requests UIAccess, and never claims "UIPI blocked" without independent proof. No UAC surface was deliberately triggered to "test" it.
+
+### 5.7 Tests
+
+New test module `tests/test_phase_eighteen_evaluation_suite.py` — 10 tests:
+- suite registration (`computer_use_v2` present in `EvaluationService.suites()`);
+- suite has ≥17 cases with unique IDs;
+- all cases pass deterministically;
+- no physical test runs by default (`subprocess.Popen` patched to raise if the deterministic suite ever tries to launch a real process — it doesn't);
+- raw UI text not persisted (inspects the actual `evaluation_runs` row's `results_json`, bounds every string field);
+- regression detection (the existing generic `EvaluationService` mechanism, exercised against a suite registered/re-registered under one name to force a pass→fail transition);
+- physical runner script: refuses on non-Windows, never includes a full window enumeration in its summary, its HTML fixture is local/inert (no `http(s)://`), and its Edge-path lookup degrades honestly when Edge isn't found.
+
+Results:
+
+```text
+python -m pytest tests -k "evaluation or phase_eighteen" -q
+133 passed, 514 deselected
+
+python -m pytest tests -q
+647 passed, 36 subtests passed
+
+python -m compileall src tests scripts -q
+(clean)
+
+git diff --check
+(clean)
+
+cd ui && npm test -- --run
+14 test files, 75 passed
+
+npm run build
+built in 870ms
+
+npm audit --audit-level=high
+0 high/critical (2 pre-existing moderate, unrelated dev-dependency, exit 0)
+```
+
+### 5.8 Commit
+
+- **Files staged (explicit paths, no `git add .`):** `src/jarvis/evaluation/computer_use_v2.py`, `src/jarvis/evaluation/semantic_uia_fixtures.py`, `src/jarvis/bootstrap.py`, `scripts/phase18/computer_use_acceptance.py`, `tests/test_phase_eighteen_evaluation_suite.py`, `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_02.md`, `docs/source_of_truth/02_JARVIS_CURRENT_STATE.md`, `docs/source_of_truth/03_JARVIS_GAP_REGISTER.md`, `docs/source_of_truth/04_JARVIS_EXECUTION_ROADMAP.md`.
+- **Commit message:** `test: add computer-use evaluation suite`
+- **MILESTONE_2_COMMIT:** recorded after push, see final response.
+
+---
+
+<!-- Sections 6 (final regression), 7 (security review), 8 (gap status),
+     9 (manual dependencies), 10 (restrictions remaining), and 11
+     (recommended Batch 03) follow after the Milestone 2 push and final
+     batch gate. -->

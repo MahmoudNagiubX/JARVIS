@@ -381,6 +381,8 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     worker_coordinator = WorkerCoordinator(repository, event_bus, developer_gateway=None, permission=permission)
     evaluations = EvaluationService(repository, event_bus)
     evaluations.register_default_suites()
+    from .evaluation.computer_use_v2 import build_suite as _build_computer_use_v2_suite
+    evaluations.register(_build_computer_use_v2_suite())
     improvement_policy = ControlledImprovementPolicy()
     clients = ClientSessionService(repository, event_bus)
     presence = PresenceService(world_state, voice_routing, clients, device_fabric, repository, event_bus)
