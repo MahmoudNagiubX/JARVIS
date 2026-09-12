@@ -41,6 +41,7 @@ class JarvisConfig:
     voice_input_adapter: str = "noop"
     voice_output_adapter: str = "noop"
     desktop_awareness_enabled: bool = False
+    file_access_roots: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> "JarvisConfig":
@@ -77,6 +78,10 @@ class JarvisConfig:
         voice_input_adapter = os.getenv("JARVIS_VOICE_INPUT_ADAPTER", defaults.voice_input_adapter).strip().lower()
         voice_output_adapter = os.getenv("JARVIS_VOICE_OUTPUT_ADAPTER", defaults.voice_output_adapter).strip().lower()
         awareness_text = os.getenv("JARVIS_DESKTOP_AWARENESS_ENABLED", "false").strip().lower()
+        file_access_roots_text = os.getenv("JARVIS_FILE_ACCESS_ROOTS", "").strip()
+        file_access_roots = tuple(
+            entry.strip() for entry in file_access_roots_text.split(os.pathsep) if entry.strip()
+        ) if file_access_roots_text else ()
         try:
             timeout = float(timeout_text)
         except ValueError as exc:
@@ -148,6 +153,7 @@ class JarvisConfig:
             voice_input_adapter=voice_input_adapter,
             voice_output_adapter=voice_output_adapter,
             desktop_awareness_enabled=awareness_text in {"true", "1", "yes", "on"},
+            file_access_roots=file_access_roots,
         )
 
     @property

@@ -29,6 +29,7 @@ from ..contracts.semantic_ui import SemanticDesktopAdapter, SemanticElementSnaps
 from ..events import Event, EventCategory, EventState
 from ..persistence.repositories import RuntimeRepository
 from ..perception.windows import WindowsDesktopProvider
+from .file_access import FileAccessPolicy
 from .native_input import NativeInputResult, WindowsNativeInputAdapter
 from .semantic_uia import WindowsUIAutomationAdapter
 
@@ -59,10 +60,14 @@ class WindowsNativeComputerController:
         perception_provider: WindowsDesktopProvider | None = None,
         semantic_adapter: SemanticDesktopAdapter | None = None,
         native_input_adapter: WindowsNativeInputAdapter | None = None,
+        file_access_policy: FileAccessPolicy | None = None,
     ) -> None:
         self.perception_provider = perception_provider or WindowsDesktopProvider()
         self.semantic_adapter = semantic_adapter or WindowsUIAutomationAdapter(self.perception_provider)
         self.native_input_adapter = native_input_adapter or WindowsNativeInputAdapter(self.perception_provider, self.semantic_adapter)
+        # Fail-closed by default (GAP-0503): no configured roots means every
+        # path-requiring file action is denied, never silently unrestricted.
+        self.file_access_policy = file_access_policy or FileAccessPolicy()
         self._user32 = None
         self._kernel32 = None
         if platform.system().casefold() == "windows":
@@ -153,12 +158,15 @@ class WindowsNativeComputerController:
         subprocess.Popen([resolved], shell=False, close_fds=True)
         return ComputerResult("succeeded", {"application": name, "executable": resolved}, verified=True)
 
-    @staticmethod
-    def _open_path(parameters: Mapping[str, Any], kind: str) -> ComputerResult:
+    def _open_path(self, parameters: Mapping[str, Any], kind: str) -> ComputerResult:
         raw_path = parameters.get("path")
         if not isinstance(raw_path, str) or not raw_path.strip():
             raise ValueError("path_required")
-        path = Path(raw_path).expanduser().resolve()
+        decision = self.file_access_policy.evaluate(raw_path)
+        if not decision.allowed:
+            return ComputerResult("denied", error_code=decision.reason_code)
+        path = decision.resolved_path
+        assert path is not None
         if not path.exists() or (kind == "file" and not path.is_file()) or (kind == "folder" and not path.is_dir()):
             return ComputerResult("failed", {"path": str(path)}, "path_not_found")
         os.startfile(str(path))
@@ -180,36 +188,35 @@ class WindowsNativeComputerController:
                 break
         return ComputerResult("succeeded", {"processes": rows}, verified=True)
 
-    @staticmethod
-    def _inspect_file(parameters: Mapping[str, Any]) -> ComputerResult:
+    def _inspect_file(self, parameters: Mapping[str, Any]) -> ComputerResult:
         raw_path = parameters.get("path")
         if not isinstance(raw_path, str) or not raw_path.strip():
             raise ValueError("path_required")
-        path = Path(raw_path).expanduser().resolve()
+        decision = self.file_access_policy.evaluate(raw_path)
+        if not decision.allowed:
+            return ComputerResult("denied", error_code=decision.reason_code)
+        path = decision.resolved_path
+        assert path is not None
         if not path.is_file():
             return ComputerResult("failed", error_code="file_not_found")
         if path.stat().st_size > 1_000_000:
             return ComputerResult("denied", error_code="file_too_large")
         return ComputerResult("succeeded", {"path": str(path), "content": path.read_text(encoding="utf-8", errors="replace")}, verified=True)
 
-    @staticmethod
-    def _search_files(parameters: Mapping[str, Any]) -> ComputerResult:
+    def _search_files(self, parameters: Mapping[str, Any]) -> ComputerResult:
         raw_root = parameters.get("root") or parameters.get("path")
         pattern = parameters.get("pattern", "*")
         if not isinstance(raw_root, str) or not raw_root.strip():
             raise ValueError("root_required")
         if not isinstance(pattern, str) or len(pattern) > 200:
             raise ValueError("pattern_invalid")
-        root = Path(raw_root).expanduser().resolve()
-        if not root.is_dir():
-            return ComputerResult("failed", error_code="root_not_found")
-        matches: list[str] = []
-        for path in root.rglob(pattern):
-            if path.is_file():
-                matches.append(str(path))
-            if len(matches) >= 100:
-                break
-        return ComputerResult("succeeded", {"root": str(root), "matches": matches}, verified=True)
+        decision = self.file_access_policy.evaluate_search_root(raw_root)
+        if not decision.allowed:
+            return ComputerResult("denied", error_code=decision.reason_code)
+        root = decision.resolved_path
+        assert root is not None
+        matches, filtered_count = self.file_access_policy.filter_search_results(root, root.rglob(pattern))
+        return ComputerResult("succeeded", {"root": str(root), "matches": matches, "filtered_count": filtered_count}, verified=True)
 
     def _stop_safe_process(self, parameters: Mapping[str, Any]) -> ComputerResult:
         name = str(parameters.get("name", "")).casefold().strip()

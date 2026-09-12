@@ -115,11 +115,89 @@ Frontend was not run for Milestone 0 (no frontend files touched; deferred to the
 
 - **Files staged (explicit paths, no `git add .`):** `tasks/CLOUD_CODE_MASTER_PHASE_18_WORKSTREAM_A_BATCH_03.md`, `src/jarvis/computer/service.py`, `src/jarvis/computer/semantic_uia.py`, `src/jarvis/contracts/computer.py`, `src/jarvis/perception/windows.py`, `src/jarvis/evaluation/computer_use_v2.py`, `scripts/phase18/uia_fixture_host.py`, `scripts/phase18/computer_use_acceptance.py`, `tests/test_phase_eighteen_native_input.py`, `tests/test_phase_eighteen_owned_fixture.py`, `tests/test_phase_eighteen_evaluation_suite.py`, `tests/test_phase_eighteen_semantic_actions.py`, `tests/test_phase_eighteen_stabilization.py`, `tests/test_phase_eleven_agent_computer_tools.py`, `tests/test_phase_eleven_final_remediation.py`, `tests/test_phase_four_integration.py`, `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_03.md`, and any minimally-updated `docs/source_of_truth/*` files.
 - **Commit message:** `fix: harden computer target approvals and fixtures`
-- **MILESTONE_0_COMMIT:** recorded after push, see final response.
+- **MILESTONE_0_COMMIT:** `e4bfbcc077ae479504a8d4226e009a291ac93927`
 
 ---
 
-<!-- Sections 4 (Milestone 1), 5 (Milestone 2), 6 (physical results table),
-     7 (final tests), 8 (security review), 9 (gap state), 10 (manual
-     dependencies), 11 (incident-safety changes), 12 (recommended next
-     batch) are appended here once those milestones run. -->
+## 4. Milestone 1 — GAP-0503 file-root confinement
+
+**Commit:** `MILESTONE_1_COMMIT` (recorded in §4.6 below after push)
+
+### 4.1 One product-owned file access policy
+
+- New `src/jarvis/computer/file_access.py` — `FileAccessPolicy`, subordinate to `PolicyPermissionEngine` (no second permission authority). Answers exactly one question per concrete path: is it within an approved root, not sensitive, and not an escape?
+- Wired into `WindowsNativeComputerController.__init__` (`file_access_policy` parameter, defaulting to a policy with **no roots** — fail-closed) and used by `_open_path`, `_inspect_file`, `_search_files` (now instance methods, no longer `@staticmethod`, since they need `self.file_access_policy`).
+- `JarvisConfig.file_access_roots: tuple[str, ...] = ()` (new field) / `JARVIS_FILE_ACCESS_ROOTS` env var (platform path-separator-delimited), following the existing config conventions exactly — no second config subsystem. `bootstrap.py` constructs the policy once via `FileAccessPolicy.from_config_roots(config.file_access_roots)`.
+- No manual owner action was required or requested: physical acceptance uses only a `tempfile.TemporaryDirectory()` as its approved root, per the task's explicit instruction.
+
+### 4.2 Root model
+
+- Roots are normalized once (`Path(...).expanduser().resolve()`), deduplicated (case-insensitively, verified with a trailing-backslash variant of the same path), and bounded to `MAX_ROOTS = 20`.
+- A root must not itself be a bare drive (`C:\`), the user's home directory, or one of `AppData`/`LocalAppData`/`ProgramData`/`Windows`/`Program Files`/`Program Files (x86)`/`Users` sitting directly under a drive root — approving any of these would defeat confinement entirely (Section 8.2 of the task). Verified: `FileAccessPolicy.from_config_roots(("C:\\", str(Path.home())))` yields zero roots.
+- Containment is **component-wise** (`Path.relative_to()`), never string-prefix. Verified empirically: an approved root `...\Data` correctly does **not** match a sibling `...\Database` — the classic prefix-confusion bug the task specifically calls out.
+
+### 4.3 Sensitive path policy (defense in depth)
+
+Applied to every resolved path regardless of which approved root it falls under:
+
+- Directory-name-aware: `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube` anywhere in the path's components (catches e.g. `<root>\.ssh\id_rsa` and the `.ssh` directory itself).
+- Exact-filename-aware: `.env`, `.env.local`, `.env.development`, `.env.production`, `.env.test`, and the browser secret stores `Login Data`/`Cookies`/`Web Data` — **`.env.example` is deliberately absent** and stays allowed (verified by test), matching the task's explicit instruction not to deny a deliberately-safe template.
+- Suffix/stem-aware: `.pem`/`.key`/`.pfx`/`.p12`/`.ppk`, and `id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa` regardless of extension.
+- Substring-aware for classic OS credential/security store locations (`...\Windows\System32\config\...`, `...\Microsoft\Credentials\...`, `...\Microsoft\Protect\...`, `...\Microsoft\Crypto\...`).
+- A sensitive child encountered during search is silently omitted from `matches` and only contributes to a bounded `filtered_count` — its name is never surfaced.
+
+### 4.4 Path resolution / escape resistance
+
+- Every path is `Path(...).expanduser().resolve()`d **before** containment/sensitivity checks — on Windows, `resolve()` follows symlinks *and* directory junctions to their real target (via the OS's `GetFinalPathNameByHandleW`-backed resolution built into CPython's `pathlib`), so a link that physically points outside an approved root is denied regardless of how it was reached.
+- **This was verified empirically, not just asserted**: created a real Windows directory junction (`mklink /J`, which — unlike a symlink — does not require elevated/Developer-Mode privilege) from inside an approved root to an outside directory, confirmed `Path.resolve()` correctly resolves it to the real (outside) location, and confirmed the policy denies both the junction target file and the junction directory itself — through both the policy directly and the real `ComputerActionService` execution path.
+- `..`-traversal is denied the same way (resolution normalizes it away, then containment fails against the *real* target).
+
+### 4.5 Search behavior
+
+- `_search_files` now: validates the root through the policy (denies if outside/unconfigured/not-a-directory), then re-checks **every individual candidate** yielded by `root.rglob(pattern)` (resolve + containment + sensitivity) rather than trusting the bulk traversal alone — this is what makes the junction-escape-in-search case above safe even though `rglob` itself happily walks into the junction.
+- Bounded: `MAX_SEARCH_MATCHES = 100` (existing bound, preserved) and a new `MAX_SEARCH_CANDIDATES_SCANNED = 5000` defensive cap against runaway/circular-link traversal.
+- Deterministic typed denials: unconfigured → `file_root_not_configured`; root outside approved roots → `file_path_outside_allowed_root`; no schema `"bypass"`/`"allow_external"`/`"unsafe"` flag exists anywhere.
+
+### 4.6 Tests
+
+New test module `tests/test_phase_eighteen_file_access.py` — 26 tests:
+
+- **Root confinement** (8): file/folder inside an allowed root; sibling-prefix-confusion denied; `..`-traversal denied after resolve; absolute path outside denied; no-roots-configured fails closed; duplicate-root normalization; forbidden broad roots (`C:\`, home directory) rejected at construction.
+- **Link/reparse** (2): junction-target escape denied; search does not follow an escape junction into its results (both gracefully skip if junction creation is unavailable in a given CI environment, per the task's own allowance).
+- **Sensitive paths** (6): `.ssh/id_rsa` denied; `.env` denied; `.env.example` allowed; browser `Login Data` denied; normal `.py`/`.txt` files allowed; a sensitive child is omitted from search with a bounded `filtered_count`.
+- **Integration, through the real `ComputerActionService` → controller path** (10): `inspect_file`/`search_files`/`open_file`/`open_folder` all honor the policy; search excludes `.env` while including normal/nested files; outside-root denials for each of the four capabilities; canonical `computer.permission_checked` audit still recorded even for a denied file action; a completely unconfigured runtime denies every path-requiring action; the junction-escape case reproduced through the real service path (not just the policy unit).
+
+No pre-existing test broke — none of the current test suite previously exercised these four capabilities' real path-confinement behavior (confirmed by running the full suite before and after this milestone's change with identical pass counts aside from the new tests).
+
+Results:
+
+```text
+python -m pytest tests -k "computer or file or phase_eighteen" -q
+193 passed, 496 deselected
+
+python -m pytest tests -q
+688 passed, 36 subtests passed
+
+python -m compileall src tests scripts -q
+(clean)
+
+git diff --check
+(clean)
+```
+
+### 4.7 GAP-0503
+
+Marked `RESOLVED` (path-confinement scope only) per the task's own Section 8.13 closure criteria — see the Gap register update in §9 below for the exact scoping language (this does **not** mean file dialogs, write/move/copy/rename/delete, or rollback/recycle-bin support exist; none of that was in this milestone's scope and none of it was implemented).
+
+### 4.8 Commit
+
+- **Files staged (explicit paths, no `git add .`):** `src/jarvis/computer/file_access.py`, `src/jarvis/computer/service.py`, `src/jarvis/config.py`, `src/jarvis/bootstrap.py`, `tests/test_phase_eighteen_file_access.py`, `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_03.md`, `docs/source_of_truth/02_JARVIS_CURRENT_STATE.md`, `docs/source_of_truth/03_JARVIS_GAP_REGISTER.md`, `docs/source_of_truth/04_JARVIS_EXECUTION_ROADMAP.md`, `docs/source_of_truth/05_JARVIS_DECISION_LOG.md`.
+- **Commit message:** `fix: confine computer file access to approved roots`
+- **MILESTONE_1_COMMIT:** recorded after push, see final response.
+
+---
+
+<!-- Sections 5 (Milestone 2), 6 (physical results table), 7 (final tests),
+     8 (security review), 9 (gap state), 10 (manual dependencies), 11
+     (incident-safety changes), 12 (recommended next batch) are appended
+     here once Milestone 2 runs and the final batch gate completes. -->

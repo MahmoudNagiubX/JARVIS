@@ -20,6 +20,7 @@ from .autonomy.policy import AutonomyPolicy
 from .capabilities.registry import CapabilityRegistry
 from .communications.hub import CommunicationsHub, LocalCommunicationChannel
 from .computer.controller import ComputerExecutionRouter, WindowsComputerController
+from .computer.file_access import FileAccessPolicy
 from .computer.service import ComputerActionService, WindowsNativeComputerController
 from .context.assembler import ContextAssembler
 from .contracts import (
@@ -311,7 +312,10 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     capabilities = CapabilityRegistry()
     device_fabric = DeviceFabricService(repository, event_bus, audit)
     windows_perception_provider = WindowsDesktopProvider()
-    local_computer_controller = WindowsNativeComputerController(perception_provider=windows_perception_provider)
+    file_access_policy = FileAccessPolicy.from_config_roots(config.file_access_roots)
+    local_computer_controller = WindowsNativeComputerController(
+        perception_provider=windows_perception_provider, file_access_policy=file_access_policy,
+    )
     satellite_computer_controller = WindowsComputerController(satellite)
     computer_router = ComputerExecutionRouter(local_computer_controller, satellite_computer_controller)
     computer_actions = ComputerActionService(computer_router, repository, event_bus, permission, audit, approval)
