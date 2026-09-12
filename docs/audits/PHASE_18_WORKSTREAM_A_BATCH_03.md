@@ -264,11 +264,96 @@ exit 0 (2 pre-existing moderate, unrelated dev-dependency)
 
 - **Files staged (explicit paths, no `git add .`):** `src/jarvis/computer/native_input.py`, `src/jarvis/computer/service.py`, `src/jarvis/contracts/computer.py`, `src/jarvis/tools/registry.py`, `src/jarvis/authority/permissions/engine.py`, `src/jarvis/evaluation/computer_use_v2.py`, `scripts/phase18/uia_fixture_host.py`, `scripts/phase18/computer_use_acceptance.py`, `tests/test_phase_eighteen_native_input.py`, `tests/test_phase_eighteen_owned_fixture.py`, `tests/test_phase_eighteen_evaluation_suite.py`, `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_03.md`, `docs/source_of_truth/02_JARVIS_CURRENT_STATE.md`, `docs/source_of_truth/03_JARVIS_GAP_REGISTER.md`, `docs/source_of_truth/04_JARVIS_EXECUTION_ROADMAP.md`.
 - **Commit message:** `feat: expand grounded input and computer-use evaluation`
-- **MILESTONE_2_COMMIT:** recorded after push, see final response.
+- **MILESTONE_2_COMMIT:** `5aaa69c927f79adf0e4485e5a94dbd19e207683d`
 
 ---
 
-<!-- Sections 6 (physical results table), 7 (final tests), 8 (security
-     review), 9 (gap state), 10 (manual dependencies), 11 (incident-safety
-     changes), 12 (recommended next batch) follow after the Milestone 2
-     push and final batch gate. -->
+## 6. Physical results table (all runs, all milestones, owned fixture only)
+
+| Scenario | Milestone | Runs | Result | Independent evidence |
+| --- | --- | --- | --- | --- |
+| Semantic invoke | 0 & 2 | 3/3 + 3/3 | PASS | Fixture status label reads `"invoked"` every time |
+| Semantic toggle | 0 & 2 | 3/3 + 3/3 | PASS | Adapter fresh post-state re-check `true`; status label `"toggle:on"` |
+| Semantic select | 0 & 2 | 3/3 + 3/3 | PASS | Adapter fresh `IsSelected` re-check `true` (fixture label can't observe it — documented `LBN_SELCHANGE` limitation) |
+| Native left click | 2 | 3/3 | PASS | `pointer_target_verified` via real `GetCursorPos`; status label `"invoked"` |
+| Native right click | 2 | 3/3 | delivered, honestly unverified | `input_batch_accepted=true`; no status change expected (no context menu assumed) |
+| Native double click | 2 | 3/3 | PASS | Status label `"invoked"` (both underlying clicks landed) |
+| Native scroll | 2 | 3/3 | delivered, honestly unverified | `input_batch_accepted=true`; no "content changed" claim |
+| Native Tab key (focus) | 2 | 3/3 (0/3 before the `IsDialogMessageW` fix, disclosed not hidden) | PASS | Independent focus read-back: Invoke Target → Toggle Target |
+| Native chord (`ctrl+c`) | 2 | 3/3 | delivered | No observable effect on this fixture expected or claimed |
+| Non-primary-monitor click | 2 | 3/3 | **`NON_PRIMARY_MONITOR_PHYSICAL_PASS`** | Target bounds confirmed `x<0`; status label `"invoked"` |
+| Fixture child process cleanly exited | 0 & 2 | 3/3 each | PASS | `Popen.poll()` non-`None` after `terminate()`/`wait()` |
+
+No scenario was retried to force a pass. The one honest failure (Tab key, 0/3, before the fixture bug was found and fixed) is recorded above rather than hidden.
+
+## 7. Final tests
+
+At final branch HEAD (`5aaa69c927f79adf0e4485e5a94dbd19e207683d`):
+
+```text
+python -m pytest tests -q
+708 passed, 36 subtests passed
+
+python -m compileall src tests scripts -q
+(clean)
+
+git diff --check
+(clean)
+
+cd ui && npm test -- --run
+14 test files, 75 passed
+
+npm run build
+built in 835ms
+
+npm audit --audit-level=high
+exit 0 (2 pre-existing moderate vitest/mocker advisories, unrelated dev-dependency, no high/critical)
+```
+
+## 8. Security review
+
+Explicit checklist (Section 11 of the task file), each verified directly against the final diff/code:
+
+**Authority:** one `ComputerActionService`, one `PolicyPermissionEngine`, one `DurableApprovalEngine`, no direct tool→adapter bypass — all unchanged/reused, no second instance created anywhere.
+
+**UI targeting:** no weak-identity action (`uia_element_identity_weak` denial, reused by every element-targeted action including the three new pointer actions); no stale-target action; pointer approval is target-bound (R18B02-001, `_element_targeted_actions`); window-key/chord approval is target-bound (R18B02-003, `_window_targeted_actions`); approval cannot outlive the actual reference (`min(10min, reference_expires_at)`, computed once); no polling-TTL-extension bug (verified by `test_polling_preview_does_not_extend_pending_approval`).
+
+**Native input:** no raw x/y in any model schema (checked programmatically); no raw HWND; no raw VK/scancode (`computer.keyboard.key`'s `key` is a closed enum, `computer.keyboard.chord`'s `chord` is a closed 5-entry enum); no arbitrary hotkey string; no `ctrl+v` anywhere (grepped + evaluation-suite case); no drag/drop (grepped, not implemented); no UIAccess/elevation request anywhere in the code; a partial/zero `SendInput` count is always reported as the generic, honest `native_input_injection_failed`.
+
+**Files:** no default unrestricted disk access (fail-closed with zero configured roots); no string-prefix root comparison (component-wise `Path.relative_to`, verified sibling-prefix-confusion resistant); link/junction escape addressed (verified empirically with a real Windows junction, both directly and through the real service path); sensitive-path deny list exists and is applied as defense in depth; no file-dialog automation exists; no path-policy bypass (all four capabilities route through the one policy, no "unsafe"/"bypass" schema flag anywhere).
+
+**Physical test safety:** no Notepad, no Edge/Chrome dependency (both fully removed as fixtures after Batch 02's incident); no broad process-name kill anywhere in the runner (verified: `taskkill` appears only in the module docstring's own explanation of what it deliberately does not do); exact-PID-only cleanup (`Popen.terminate()`/`wait()`/`poll()`); unique nonce title per run; a title collision aborts rather than guesses; no owner window was ever enumerated-and-acted-on (only the runner's own exact-nonce-matched fixture); no owner document was touched; no secrets appear in any changed file (grepped; the one match was a benign hardcoded test string, `"super-secret-literal-text"`, used only to prove raw text is never persisted in an approval preview).
+
+## 9. Gap state (final, this batch)
+
+| Gap | Status | Note |
+| --- | --- | --- |
+| GAP-0101 (general Windows semantic UI control) | `RESOLVED` (core semantic capability) | invoke/toggle/select all physically proven 3/3 twice (Milestones 0 and 2) via the owned fixture; broader Computer Use V2 breadth continues under the gaps below |
+| GAP-0102 (mouse/keyboard) | `PARTIAL` | right-click/double-click/scroll/one chord added and physically proven; paste, drag/drop, arbitrary hotkeys remain deliberately absent |
+| GAP-0103 (OCR/visual) | `OPEN` | untouched this batch |
+| GAP-0104 (multi-app recovery) | `PARTIAL` | generalized fresh re-observation/target-change refusal to element- and window-targeted actions alike; still no autonomous multi-app replanning loop |
+| GAP-0105 (evaluation suite) | `PARTIAL` | 24-case deterministic suite plus a 3x-run opt-in physical runner across 10 scenario types; still a single-fixture foundation, not the broad real-app matrix named in the gap's original scope |
+| GAP-0106 (DPI/multi-monitor/secure-desktop) | `PARTIAL` | non-primary-monitor physical click now proven (`NON_PRIMARY_MONITOR_PHYSICAL_PASS`); non-100%-DPI and secure-desktop physical proof remain pending (no suitable hardware/UAC-trigger, per the task's own explicit allowance) |
+| GAP-0503 (file-root confinement) | `RESOLVED` (path-confinement scope) | all four existing path-requiring capabilities confined; write/move/copy/rename/delete and file dialogs remain unimplemented and out of this scope |
+
+## 10. Manual dependencies
+
+`NONE`. No API key, account, or token was needed anywhere in this batch. GitHub push auth was already configured (all three milestone pushes succeeded without any credential prompt or failure). File access policy is intentionally unconfigured/fail-closed by default after this batch — the owner can configure personal `JARVIS_FILE_ACCESS_ROOTS` later when real file workflows are started; the owner was not asked to choose roots during implementation, matching Section 14 of the task file. No `OPTIONAL_PHYSICAL_MULTI_MONITOR_STEP` was needed this batch either — NIGHTFURY's real 2-monitor topology let the runner test the non-primary monitor itself, with no owner assistance required.
+
+## 11. Incident-safety changes (carried forward from Batch 02, reinforced this batch)
+
+- Batch 02's incident (a supposed disposable Notepad probe attached to the owner's live single-instance Notepad session, likely losing one unsaved tab) directly motivated this entire batch's Milestone 0 fixture replacement. From this batch forward, Notepad/Edge/Chrome/VS Code/terminal/Explorer/Calculator/any owner-installed application is never used as a physical acceptance fixture — only the fully JARVIS-owned `uia_fixture_host.py`.
+- No broad `taskkill /IM ...` exists anywhere in the runner; cleanup is always exact-PID `terminate()`/`wait()`/liveness-confirmation.
+- Every fixture launch carries a fresh random nonce in its window title; the runner waits only for an exact title match and aborts on any collision, never falling back to "first similar title" — directly closing the class of bug that let the Notepad incident happen (attaching to a window that merely *looked* like the intended target).
+- Two additional, unrelated real bugs were found and fixed during this batch's own physical testing (both disclosed in §3.4/§5.4 above, neither hidden): 64-bit ctypes marshaling truncation in the fixture host's WinAPI calls, and a missing `IsDialogMessageW` call that silently broke Tab-key focus-cycling. Both are evidence the "run it for real, don't just unit-test it" discipline this batch followed is doing its job.
+
+## 12. Recommended next batch
+
+In priority order:
+
+1. **Broaden the evaluation suite toward its originally-named real-app breadth (GAP-0105)** — carefully, using only disposable/owner-safe fixtures informed directly by the Batch 02 Notepad incident; the owned Win32 fixture pattern from this batch is a template for adding more fixture *types* (e.g. a second owned fixture exercising a text-edit control) rather than reusing owner apps.
+2. **Paste, drag/drop, richer/arbitrary-but-still-bounded hotkeys (GAP-0102 remainder)** — paste specifically needs a design for how an approval preview can be trustworthy without ever exposing live clipboard contents (Section 9.6 of this batch's task already reasons through why it was deferred).
+3. **Autonomous multi-app recovery/replanning (GAP-0104 remainder)** — still no auto-retry or cross-application recovery loop; any design here must preserve the "no auto-retry after uncertain action" invariant this batch (and Batch 02) both depended on.
+4. **Non-100%-DPI and secure-desktop physical demonstrations (GAP-0106 remainder)** when suitable hardware/config becomes available — do not fabricate or force these.
+5. **File write/move/copy/rename/delete and file-dialog automation** — GAP-0503's original broader scope, deliberately deferred; should build directly on this batch's `FileAccessPolicy` rather than a parallel mechanism, and file-dialog automation specifically remains blocked pending a separate, deliberate design review (per the original GAP-0503 task language).
+6. **OCR/visual fallback (GAP-0103)** only after the above, per the existing roadmap ordering.
