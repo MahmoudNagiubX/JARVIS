@@ -416,6 +416,27 @@ def register_computer_tools(
             return ToolResult(ToolResultStatus.DENIED, error_code="element_ref_required")
         return await execute_action(f"semantic_{action}", {"element_ref": element_ref}, arguments, context)
 
+    async def pointer_act(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        action = arguments.get("action")
+        element_ref = arguments.get("element_ref")
+        if action not in {"move_to_element", "left_click_element"}:
+            return ToolResult(ToolResultStatus.DENIED, error_code="pointer_action_invalid")
+        if not isinstance(element_ref, str) or not element_ref.startswith("element-"):
+            return ToolResult(ToolResultStatus.DENIED, error_code="element_ref_required")
+        return await execute_action(f"pointer_{action}", {"element_ref": element_ref}, arguments, context)
+
+    async def keyboard_key(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        window_ref = arguments.get("window_ref")
+        key = arguments.get("key")
+        modifiers = arguments.get("modifiers", [])
+        if not isinstance(window_ref, str) or not window_ref.startswith("window-"):
+            return ToolResult(ToolResultStatus.DENIED, error_code="window_ref_required")
+        if not isinstance(key, str):
+            return ToolResult(ToolResultStatus.DENIED, error_code="native_input_key_not_allowed")
+        if not isinstance(modifiers, list) or not all(isinstance(item, str) for item in modifiers):
+            return ToolResult(ToolResultStatus.DENIED, error_code="native_input_key_not_allowed")
+        return await execute_action("keyboard_key", {"window_ref": window_ref, "key": key, "modifiers": modifiers}, arguments, context)
+
     registry.register(ToolSpec(
         "tool-computer-audio-adjust-v1", "computer.audio.adjust", "1", "Adjust local Windows audio by bounded media-key steps.",
         "safe", "tool.request", frozenset({"computer.input"}), 10.0, True, audio,
@@ -489,6 +510,51 @@ def register_computer_tools(
         # already-consumed approval must hit the existing, already-tested
         # ephemeral_arguments_unavailable typed failure instead of silently
         # re-entering the permission/approval flow from scratch.
+        argument_retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-pointer-act-v1", "computer.pointer.act", "1",
+        "Move the mouse pointer to a previously observed element, or left-click it, using bounded "
+        "native Windows input. Grounded strictly through an element reference - no raw coordinates, "
+        "no HWND. Consequential - requires owner approval. Delivery is never proof the application's "
+        "intended action occurred; a generic click stays unverified.",
+        "safe", "tool.request", frozenset({"computer.input"}), 15.0, False, pointer_act,
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["move_to_element", "left_click_element"]},
+                "element_ref": {"type": "string", "maxLength": 100},
+                "target_device_id": {"type": "string", "maxLength": 200},
+            },
+            "required": ["action", "element_ref"],
+            "additionalProperties": False,
+        },
+        argument_retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-keyboard-key-v1", "computer.keyboard.key", "1",
+        "Press one bounded named key (optionally with a small reviewed modifier combination such as "
+        "shift+tab) in a previously observed, grounded, foreground Windows window. No raw virtual-key "
+        "code, no arbitrary hotkey string, no Windows key, no Ctrl+Alt+Delete. Consequential - "
+        "requires owner approval.",
+        "safe", "tool.request", frozenset({"computer.input"}), 15.0, False, keyboard_key,
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "window_ref": {"type": "string", "maxLength": 100},
+                "key": {
+                    "type": "string",
+                    "enum": [
+                        "tab", "enter", "escape", "space", "left", "right", "up", "down",
+                        "home", "end", "page_up", "page_down", "backspace", "delete",
+                    ],
+                },
+                "modifiers": {"type": "array", "items": {"type": "string", "enum": ["shift"]}, "maxItems": 1},
+                "target_device_id": {"type": "string", "maxLength": 200},
+            },
+            "required": ["window_ref", "key"],
+            "additionalProperties": False,
+        },
         argument_retention=ToolResultRetention.EPHEMERAL,
     ))
 

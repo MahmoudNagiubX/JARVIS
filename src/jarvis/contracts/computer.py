@@ -46,6 +46,9 @@ class ComputerCapability(StrEnum):
     SEMANTIC_INVOKE = "semantic_invoke"
     SEMANTIC_TOGGLE = "semantic_toggle"
     SEMANTIC_SELECT = "semantic_select"
+    POINTER_MOVE_TO_ELEMENT = "pointer_move_to_element"
+    POINTER_LEFT_CLICK_ELEMENT = "pointer_left_click_element"
+    KEYBOARD_KEY = "keyboard_key"
 
 
 @dataclass(frozen=True, slots=True)

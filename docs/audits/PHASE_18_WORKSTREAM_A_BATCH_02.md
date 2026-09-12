@@ -114,10 +114,85 @@ Frontend suite was not run for Milestone 0 (no frontend files touched; deferred 
 
 - **Files staged (explicit paths, no `git add .`):** `tasks/CLOUD_CODE_MASTER_PHASE_18_WORKSTREAM_A_BATCH_02.md`, `src/jarvis/computer/semantic_uia.py`, `src/jarvis/computer/service.py`, `src/jarvis/contracts/semantic_ui.py`, `tests/test_phase_eighteen_semantic_uia.py`, `tests/test_phase_eighteen_semantic_actions.py`, `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_02.md`.
 - **Commit message:** `fix: harden semantic computer-use targets`
-- **MILESTONE_0_COMMIT:** recorded after push, see final response.
+- **MILESTONE_0_COMMIT:** `f365d144180095e12699940fadf6a5331ad20690`
 
 ---
 
-<!-- Sections 4 (Milestone 1), 5 (Milestone 2), 6 (final regression), 7 (security review),
+## 4. Milestone 1 — Grounded native input fallback
+
+**Commit:** `MILESTONE_1_COMMIT` (recorded in Section 4.7 below after push)
+
+### 4.1 Native input architecture
+
+- New module `src/jarvis/computer/native_input.py` with `WindowsNativeInputAdapter` — an execution provider, not an authority, reachable only through `WindowsNativeComputerController` → `ComputerActionService`, exactly like `WindowsUIAutomationAdapter`.
+- **No second input authority:** the shared low-level SendInput primitives (`_KEYBDINPUT`, `_INPUT_UNION`, `_INPUT`, `key_input()`) now live in `native_input.py` as the single canonical definition; `computer/service.py`'s existing literal-typing (`_keyboard_action`/`type_text`) and media-key (`_send_key`) code paths were left in place unchanged (public behavior preserved exactly, all pre-existing tests stayed green) rather than risk broad churn moving them, per the task's own explicit fallback allowance ("If moving existing code would create high-risk broad churn, keep the behavior in place").
+- **Reused, not re-derived, actuation-grade grounding:** a new `resolve_actionable_target(element_ref)` method was added to `WindowsUIAutomationAdapter` (and the `SemanticDesktopAdapter` Protocol) that performs the exact same fail-closed checks `invoke`/`toggle`/`select` already use (`_reresolve_actuation_target` — strong identity, enabled, not offscreen, not sensitive) but takes no action itself. Native mouse/keyboard grounding calls this rather than re-implementing weak/disabled/offscreen/stale detection a second time, so there remains exactly one place in the codebase that decides whether a target may be actuated.
+- Targeting pipeline for mouse (`_ground`): resolve target once (strong/actionable/fresh bounds) → validate + focus the containing window → confirm foreground → **resolve the target again** (focus can change layout) → confirm foreground once more → only then compute the click point. Every step fails closed with a typed code; nothing is retried automatically.
+
+### 4.2 Mouse
+
+- Exactly two actions, both element-ref-grounded, no raw coordinates ever accepted: `move_to_element`, `left_click_element`. Deliberately **not** implemented: raw coordinate move/click, right click, double click, drag/drop, wheel scroll (all explicitly out of scope this milestone).
+- Coordinates are provider-internal only — the center of the freshly re-observed element's bounds, normalized to the **entire Windows virtual desktop** (`SM_XVIRTUALSCREEN`/`SM_YVIRTUALSCREEN`/`SM_CXVIRTUALSCREEN`/`SM_CYVIRTUALSCREEN`), never the primary monitor alone. `SendInput` uses `MOUSEEVENTF_MOVE|ABSOLUTE|VIRTUALDESK` for movement and an `LEFTDOWN`/`LEFTUP` batch for click; `SetCursorPos`/deprecated `mouse_event` are never used.
+- A target whose center falls outside the reported virtual desktop is rejected before any `SendInput` call.
+- **Verification is honest, not fabricated:** `move_to_element` reads `GetCursorPos` back and reports `verified=True` only when the pointer actually landed within a small pixel tolerance of the grounded target — meaning only "the pointer reached the target," never "the application reacted." `left_click_element` is **always** `verified=False` generically (SendInput delivery is never proof of the intended semantic effect); bounded evidence (`input_batch_accepted`, `pointer_target_verified`, `target_window_foreground`) is returned instead so a separate evaluator can independently judge a specific scenario.
+
+### 4.3 Keyboard
+
+- New bounded named-key action (`press_key`, exposed as `computer.keyboard.key`) with a fixed 14-key allowlist (`tab`, `enter`, `escape`, `space`, arrows, `home`, `end`, `page_up`, `page_down`, `backspace`, `delete`) plus exactly one reviewed modifier combination, `shift+tab` — no raw VK integer, no scan code, no Windows key, no Ctrl+Alt+Delete, no arbitrary hotkey string; unsupported keys/combinations are denied (`native_input_key_not_allowed`) before any injection is attempted.
+- Existing literal `computer.keyboard.type` behavior was preserved exactly (unchanged code path, all pre-existing tests green) — this milestone did not touch it beyond sharing the low-level `_INPUT`/`_KEYBDINPUT` structures.
+- **User-interference safety (7.5):** before injecting, `GetAsyncKeyState` is checked for Shift/Ctrl/Alt/Win; if the owner is physically holding one of these (and it isn't one of JARVIS's own intended modifiers for this call), the action fails safely with `native_input_modifier_state_unsafe` rather than attempting to "correct" real physical input. Any modifier JARVIS itself presses is released in a guaranteed `finally` block — proven by a test that fails the key-press injection deliberately after a successful modifier press and confirms the release call still happens.
+- Grounded and foreground-checked like mouse input: the target window is validated, focused, and confirmed foreground both before pressing any modifier and again immediately before the key press itself; a foreground change in between blocks the injection (`window_focus_not_verified`).
+
+### 4.4 Virtual desktop coordinate math
+
+- `normalize_virtual_desktop_point(x, y, vleft, vtop, vwidth, vheight)` is a pure, independently unit-tested function mapping a virtual-desktop pixel to SendInput's `0..65535` absolute space, with the virtual desktop's own corners mapped to `0`/`65535` exactly (not the primary monitor's corners) — correctly handling a negative virtual-desktop origin (a monitor extending left/above the primary), a "second-monitor-like" coordinate, exact edges on both axes, a defensive one-pixel-wide/tall degenerate case (no division by zero), a zero-area virtual desktop, and out-of-bounds rejection.
+
+### 4.5 UIPI handling
+
+- JARVIS never elevates itself and never requests UIAccess (no code path does either). A partial/zero `SendInput` count is reported as the generic, honest `native_input_injection_failed` — the implementation does not claim "UIPI blocked" unless that is independently provable, matching the task's explicit instruction not to over-attribute injection failures.
+
+### 4.6 Physical acceptance
+
+Per the owner's direction after the Milestone 0 Notepad incident (§3.6), physical acceptance in this milestone used **only** the already-proven-disposable Calculator instance (confirmed not already running before launch), never Notepad or any other in-box app that might reuse a live owner session:
+
+- **Element-grounded click:** `find_elements` located Calculator's "Seven" button; `computer.pointer.act left_click_element` correctly required approval, executed after approval, and reported `input_batch_accepted=true`, `pointer_target_verified=true` (independent `GetCursorPos` confirmation the pointer physically reached the target), `target_window_foreground=true`, and — correctly, honestly — `verified=false` for the generic click itself. A **separate**, independent `computer.semantic.read` call against `automation_id="CalculatorResults"` then read back `"Display is 7"`, physically proving the real effect occurred (not the action's own self-report).
+- **Named key:** before the key press, an independent semantic read showed "Seven" with `focused=true` (left over from the click above). `computer.keyboard.key` with `key="tab"` correctly required approval and executed after approval. A **separate**, independent semantic re-read afterward showed "Seven" now `focused=false` and "Eight" now `focused=true` — physically proving Windows keyboard focus moved via the native Tab key press.
+- The disposable Calculator instance was closed (`taskkill /IM CalculatorApp.exe`) after the probe; confirmed no `CalculatorApp` process remained.
+- Every action in both scenarios went exclusively through `computer.pointer.act`/`computer.keyboard.key` with normal approval; `uiautomation`/raw `SendInput` was never called directly for acceptance (only inside the product adapter itself).
+
+### 4.7 Tests
+
+New test module `tests/test_phase_eighteen_native_input.py` — 37 tests across four groups matching Section 7.10 of the task file:
+
+- **Coordinate math** (9 tests, pure function, no adapter): primary monitor origin, primary monitor far edge, negative virtual-desktop origin, second-monitor-like coordinate, exact edges on both axes, one-pixel-wide/tall defensive math, zero-area virtual desktop, out-of-bounds rejection (all four sides).
+- **Mouse** (12 tests): weak ref denied, disabled denied, offscreen denied (no bounds), stale denied, containing-window-foreground-verified, target-revalidated-after-focus (asserts the semantic re-fetch happens exactly twice), SendInput-partial-count-is-failure, pointer-position-mismatch-not-verified, pointer-position-match-is-verified, left-click-never-generically-verified-true, left-click-input-delivery-failure, target-outside-virtual-desktop-denied.
+- **Keyboard** (10 tests): allowlist enforced (unsupported key denied), raw-VK-like string denied, unreviewed modifier combo denied (e.g. shift+enter), plain named key succeeds, modifier-currently-held fails safely, JARVIS's own modifier does not trigger the interference check, JARVIS-generated modifier always released, modifier released even when the key injection itself fails (guaranteed-cleanup test), foreground-change-before-key-press blocks injection, SendInput-partial-is-failure.
+- **Architecture** (6 tests): pointer move/click and keyboard key each require approval and execute exactly once through `ComputerActionService` → `PermissionEngine` → `ApprovalEngine`; audit/event records exist; both new tool schemas contain no raw x/y/HWND/VK/scan-code/filesystem fields and their `key` schema is exactly the bounded allowlist.
+
+Results:
+
+```text
+python -m pytest tests -k "phase_eighteen or phase_eleven or phase_ten" -q
+179 passed, 458 deselected
+
+python -m pytest tests -q
+637 passed, 36 subtests passed
+
+python -m compileall src tests -q
+(clean)
+
+git diff --check
+(clean)
+```
+
+### 4.8 Commit
+
+- **Files staged (explicit paths, no `git add .`):** `src/jarvis/computer/native_input.py`, `src/jarvis/computer/service.py`, `src/jarvis/computer/semantic_uia.py`, `src/jarvis/contracts/computer.py`, `src/jarvis/contracts/semantic_ui.py`, `src/jarvis/tools/registry.py`, `src/jarvis/authority/permissions/engine.py`, `tests/test_phase_eighteen_native_input.py`, `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_02.md`, `docs/source_of_truth/02_JARVIS_CURRENT_STATE.md`, `docs/source_of_truth/03_JARVIS_GAP_REGISTER.md`, `docs/source_of_truth/04_JARVIS_EXECUTION_ROADMAP.md`.
+- **Commit message:** `feat: add grounded native input fallback`
+- **MILESTONE_1_COMMIT:** recorded after push, see final response.
+
+---
+
+<!-- Sections 5 (Milestone 2), 6 (final regression), 7 (security review),
      8 (gap status), 9 (manual dependencies), 10 (restrictions remaining), and
-     11 (recommended Batch 03) are appended here once those milestones run. -->
+     11 (recommended Batch 03) are appended here once those run. -->

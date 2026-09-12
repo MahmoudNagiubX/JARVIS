@@ -41,6 +41,12 @@ class PolicyPermissionEngine:
             # deliberately absent from _read_actions/_safe_actions) is what actually
             # forces owner approval before any actuation.
             PermissionRule("tool.computer.semantic.act", PermissionEffect.ALLOW, "computer_semantic_act_boundary"),
+            # Same pattern: ComputerActionService's inner risk_level computation
+            # (consequential - pointer_move_to_element/pointer_left_click_element/
+            # keyboard_key are deliberately absent from _read_actions/_safe_actions)
+            # is what actually forces owner approval before any native input.
+            PermissionRule("tool.computer.pointer.act", PermissionEffect.ALLOW, "computer_pointer_act_boundary"),
+            PermissionRule("tool.computer.keyboard.key", PermissionEffect.ALLOW, "computer_keyboard_key_boundary"),
             # BrowserActionService owns the inner read/approval decision. The
             # outer tool wrapper must not create a second approval request.
             PermissionRule("tool.browser.", PermissionEffect.ALLOW, "browser_action_boundary"),

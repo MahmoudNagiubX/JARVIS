@@ -29,6 +29,7 @@ from ..contracts.semantic_ui import SemanticDesktopAdapter, SemanticElementSnaps
 from ..events import Event, EventCategory, EventState
 from ..persistence.repositories import RuntimeRepository
 from ..perception.windows import WindowsDesktopProvider
+from .native_input import NativeInputResult, WindowsNativeInputAdapter
 from .semantic_uia import ELEMENT_REF_TTL_SECONDS, WindowsUIAutomationAdapter
 
 
@@ -57,9 +58,11 @@ class WindowsNativeComputerController:
         *,
         perception_provider: WindowsDesktopProvider | None = None,
         semantic_adapter: SemanticDesktopAdapter | None = None,
+        native_input_adapter: WindowsNativeInputAdapter | None = None,
     ) -> None:
         self.perception_provider = perception_provider or WindowsDesktopProvider()
         self.semantic_adapter = semantic_adapter or WindowsUIAutomationAdapter(self.perception_provider)
+        self.native_input_adapter = native_input_adapter or WindowsNativeInputAdapter(self.perception_provider, self.semantic_adapter)
         self._user32 = None
         self._kernel32 = None
         if platform.system().casefold() == "windows":
@@ -125,6 +128,12 @@ class WindowsNativeComputerController:
                 return await self._semantic_act("toggle", action.parameters)
             if capability is ComputerCapability.SEMANTIC_SELECT:
                 return await self._semantic_act("select", action.parameters)
+            if capability is ComputerCapability.POINTER_MOVE_TO_ELEMENT:
+                return await self._pointer_act("move_to_element", action.parameters)
+            if capability is ComputerCapability.POINTER_LEFT_CLICK_ELEMENT:
+                return await self._pointer_act("left_click_element", action.parameters)
+            if capability is ComputerCapability.KEYBOARD_KEY:
+                return await self._keyboard_key(action.parameters)
             return ComputerResult("failed", error_code="native_action_not_configured")
         except (OSError, ValueError) as exc:
             return ComputerResult("failed", error_code=str(exc) or exc.__class__.__name__)
@@ -472,6 +481,30 @@ class WindowsNativeComputerController:
         if element is not None:
             payload["element"] = _semantic_snapshot_dict(element)
         return ComputerResult("succeeded", payload, verified=verified)
+
+    async def _pointer_act(self, action: str, parameters: Mapping[str, Any]) -> ComputerResult:
+        element_ref = self._require_element_ref(parameters)
+        if element_ref is None:
+            return ComputerResult("denied", error_code="element_ref_required")
+        method = getattr(self.native_input_adapter, action)
+        result: NativeInputResult = await method(element_ref)
+        return ComputerResult(result.status, dict(result.output), result.error_code, result.verified)
+
+    async def _keyboard_key(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        allowed_keys = {"window_ref", "key", "modifiers"}
+        if set(parameters) - allowed_keys or "window_ref" not in parameters or "key" not in parameters:
+            return ComputerResult("denied", error_code="keyboard_key_parameters_invalid")
+        window_ref = parameters.get("window_ref")
+        key = parameters.get("key")
+        modifiers = parameters.get("modifiers", [])
+        if not isinstance(window_ref, str) or not window_ref.startswith("window-"):
+            return ComputerResult("denied", error_code="window_ref_required")
+        if not isinstance(key, str):
+            return ComputerResult("denied", error_code="native_input_key_not_allowed")
+        if not isinstance(modifiers, list) or not all(isinstance(item, str) for item in modifiers):
+            return ComputerResult("denied", error_code="native_input_key_not_allowed")
+        result: NativeInputResult = await self.native_input_adapter.press_key(window_ref, key, tuple(modifiers))
+        return ComputerResult(result.status, dict(result.output), result.error_code, result.verified)
 
     @staticmethod
     def _require_element_ref(parameters: Mapping[str, Any]) -> str | None:

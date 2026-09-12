@@ -331,6 +331,24 @@ class WindowsUIAutomationAdapter:
         self._element_refs[element_ref] = new_entry
         return SemanticResult("succeeded", {"state": SemanticReferenceState.VALID.value, "element": snapshot})
 
+    async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+        """Read-only actuation-grade validation: the exact same fail-closed
+        checks invoke/toggle/select perform before acting (strong identity,
+        enabled, not offscreen, not sensitive - R18B01-005), but performs no
+        action itself. Milestone 1's native-input adapter grounds mouse/
+        keyboard targets through this rather than re-deriving the same
+        checks independently, so there is only ever one place that decides
+        whether a target may be actuated."""
+        if not self.available:
+            return SemanticResult("failed", error_code="uia_not_available")
+        control, entry, ancestry, error = self._reresolve_actuation_target(element_ref)
+        if control is None:
+            return SemanticResult(_status_for_error(error), error_code=error)
+        now = datetime.now(UTC)
+        snapshot, new_entry = self._make_snapshot(control, entry.window_ref, ancestry, now, element_ref=element_ref)
+        self._element_refs[element_ref] = new_entry
+        return SemanticResult("succeeded", {"element": snapshot})
+
     # -- bounded semantic actions: InvokePattern/TogglePattern/SelectionItemPattern only --
 
     async def invoke(self, element_ref: str) -> SemanticResult:
