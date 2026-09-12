@@ -37,6 +37,34 @@ class _FakeValuePattern:
         self.Value = value
 
 
+class _FakeInvokePattern:
+    def __init__(self) -> None:
+        self.invoked = False
+
+    def Invoke(self) -> None:
+        self.invoked = True
+
+
+class _FakeTogglePattern:
+    def __init__(self, initial_state: int = 0, *, stuck: bool = False) -> None:
+        self.ToggleState = initial_state
+        self._stuck = stuck
+
+    def Toggle(self) -> None:
+        if not self._stuck:
+            self.ToggleState = 1 if self.ToggleState == 0 else 0
+
+
+class _FakeSelectionItemPattern:
+    def __init__(self, *, stuck: bool = False) -> None:
+        self.IsSelected = False
+        self._stuck = stuck
+
+    def Select(self) -> None:
+        if not self._stuck:
+            self.IsSelected = True
+
+
 class _FakeControl:
     def __init__(
         self,
@@ -339,6 +367,142 @@ class SemanticUIAFoundationTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIsInstance(value, _FakeControl)
         self.assertTrue(snapshot.element_ref.startswith("element-"))
         self.assertIn("Invoke", snapshot.supported_patterns)
+
+    # -- Milestone 3: bounded semantic actions --
+
+    async def test_invoke_calls_pattern_and_is_never_verified_true_generically(self) -> None:
+        pattern = _FakeInvokePattern()
+        control = _FakeControl("Go", "ButtonControl", runtime_id=(7, 1), patterns={PATTERN_IDS["Invoke"]: pattern})
+        root = _FakeControl("Win", "WindowControl", runtime_id=(7,), children=[control])
+        provider = _FakeWindowProvider({"window-act": 888})
+        adapter = _adapter({888: root}, provider)
+        found = await adapter.find_elements("window-act", automation_id=None, control_type="ButtonControl")
+        ref = found.output["matches"][0].element_ref
+
+        result = await adapter.invoke(ref)
+        self.assertEqual(result.status, "succeeded")
+        self.assertTrue(pattern.invoked)
+        self.assertFalse(result.output["verified"])
+
+    async def test_invoke_unsupported_pattern_returns_typed_failure(self) -> None:
+        control = _FakeControl("Label", "TextControl", runtime_id=(7, 2))
+        root = _FakeControl("Win", "WindowControl", runtime_id=(7,), children=[control])
+        provider = _FakeWindowProvider({"window-act2": 889})
+        adapter = _adapter({889: root}, provider)
+        found = await adapter.find_elements("window-act2", control_type="TextControl")
+        ref = found.output["matches"][0].element_ref
+
+        result = await adapter.invoke(ref)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "uia_pattern_unsupported")
+
+    async def test_invoke_on_password_control_denied_before_pattern_check(self) -> None:
+        pattern = _FakeInvokePattern()
+        control = _FakeControl(
+            "Secret", "ButtonControl", runtime_id=(7, 3), is_password=True,
+            patterns={PATTERN_IDS["Invoke"]: pattern},
+        )
+        root = _FakeControl("Win", "WindowControl", runtime_id=(7,), children=[control])
+        provider = _FakeWindowProvider({"window-act3": 890})
+        adapter = _adapter({890: root}, provider)
+        found = await adapter.find_elements("window-act3", control_type="ButtonControl")
+        ref = found.output["matches"][0].element_ref
+
+        result = await adapter.invoke(ref)
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "uia_sensitive_value_denied")
+        self.assertFalse(pattern.invoked)
+
+    async def test_invoke_on_stale_element_never_acts(self) -> None:
+        pattern = _FakeInvokePattern()
+        control = _FakeControl("Go", "ButtonControl", runtime_id=(7, 4), patterns={PATTERN_IDS["Invoke"]: pattern})
+        root = _FakeControl("Win", "WindowControl", runtime_id=(7,), children=[control])
+        provider = _FakeWindowProvider({"window-act4": 891})
+        adapter = _adapter({891: root}, provider)
+        found = await adapter.find_elements("window-act4", control_type="ButtonControl")
+        ref = found.output["matches"][0].element_ref
+        adapter._element_refs[ref].expires_at = datetime.now(UTC) - timedelta(seconds=1)
+
+        result = await adapter.invoke(ref)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "uia_element_stale")
+        self.assertFalse(pattern.invoked)
+
+    async def test_invoke_on_ambiguous_reresolution_never_acts(self) -> None:
+        dup_a = _FakeControl("Dup", "ButtonControl", runtime_id=(8, 1))
+        root = _FakeControl("Win", "WindowControl", runtime_id=(8,), children=[dup_a])
+        provider = _FakeWindowProvider({"window-amb": 892})
+        adapter = _adapter({892: root}, provider)
+        found = await adapter.find_elements("window-amb", control_type="ButtonControl")
+        ref = found.output["matches"][0].element_ref
+
+        # Make the containing window now expose two elements with the SAME RuntimeId
+        # digest (a pathological/duplicate-identity scenario) - re-resolution must
+        # refuse to guess which one is the real target.
+        dup_b = _FakeControl("Dup", "ButtonControl", runtime_id=(8, 1))
+        pattern_a = _FakeInvokePattern()
+        dup_a._patterns = {PATTERN_IDS["Invoke"]: pattern_a}
+        new_root = _FakeControl("Win", "WindowControl", runtime_id=(8,), children=[dup_a, dup_b])
+        adapter._control_from_handle = lambda hwnd: {892: new_root}.get(hwnd)
+
+        result = await adapter.invoke(ref)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "uia_element_ambiguous")
+        self.assertFalse(pattern_a.invoked)
+
+    async def test_toggle_verified_true_when_state_actually_changes(self) -> None:
+        pattern = _FakeTogglePattern(initial_state=0)
+        control = _FakeControl("Check", "CheckBoxControl", runtime_id=(9, 1), patterns={PATTERN_IDS["Toggle"]: pattern})
+        root = _FakeControl("Win", "WindowControl", runtime_id=(9,), children=[control])
+        provider = _FakeWindowProvider({"window-tog": 893})
+        adapter = _adapter({893: root}, provider)
+        found = await adapter.find_elements("window-tog", control_type="CheckBoxControl")
+        ref = found.output["matches"][0].element_ref
+
+        result = await adapter.toggle(ref)
+        self.assertEqual(result.status, "succeeded")
+        self.assertTrue(result.output["verified"])
+        self.assertEqual(result.output["toggle_state_before"], 0)
+        self.assertEqual(result.output["toggle_state_after"], 1)
+
+    async def test_toggle_verified_false_when_state_does_not_change(self) -> None:
+        pattern = _FakeTogglePattern(initial_state=0, stuck=True)
+        control = _FakeControl("Check", "CheckBoxControl", runtime_id=(9, 2), patterns={PATTERN_IDS["Toggle"]: pattern})
+        root = _FakeControl("Win", "WindowControl", runtime_id=(9,), children=[control])
+        provider = _FakeWindowProvider({"window-tog2": 894})
+        adapter = _adapter({894: root}, provider)
+        found = await adapter.find_elements("window-tog2", control_type="CheckBoxControl")
+        ref = found.output["matches"][0].element_ref
+
+        result = await adapter.toggle(ref)
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.output["verified"])
+
+    async def test_select_verified_true_when_selected(self) -> None:
+        pattern = _FakeSelectionItemPattern()
+        control = _FakeControl("Item", "ListItemControl", runtime_id=(10, 1), patterns={PATTERN_IDS["SelectionItem"]: pattern})
+        root = _FakeControl("Win", "WindowControl", runtime_id=(10,), children=[control])
+        provider = _FakeWindowProvider({"window-sel": 895})
+        adapter = _adapter({895: root}, provider)
+        found = await adapter.find_elements("window-sel", control_type="ListItemControl")
+        ref = found.output["matches"][0].element_ref
+
+        result = await adapter.select(ref)
+        self.assertEqual(result.status, "succeeded")
+        self.assertTrue(result.output["verified"])
+
+    async def test_select_verified_false_when_not_selected(self) -> None:
+        pattern = _FakeSelectionItemPattern(stuck=True)
+        control = _FakeControl("Item", "ListItemControl", runtime_id=(10, 2), patterns={PATTERN_IDS["SelectionItem"]: pattern})
+        root = _FakeControl("Win", "WindowControl", runtime_id=(10,), children=[control])
+        provider = _FakeWindowProvider({"window-sel2": 896})
+        adapter = _adapter({896: root}, provider)
+        found = await adapter.find_elements("window-sel2", control_type="ListItemControl")
+        ref = found.output["matches"][0].element_ref
+
+        result = await adapter.select(ref)
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.output["verified"])
 
 
 if __name__ == "__main__":

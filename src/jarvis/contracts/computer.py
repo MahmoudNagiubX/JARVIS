@@ -43,6 +43,9 @@ class ComputerCapability(StrEnum):
     SEMANTIC_GET_ELEMENT = "semantic_get_element"
     SEMANTIC_GET_TEXT = "semantic_get_text"
     SEMANTIC_REVALIDATE = "semantic_revalidate"
+    SEMANTIC_INVOKE = "semantic_invoke"
+    SEMANTIC_TOGGLE = "semantic_toggle"
+    SEMANTIC_SELECT = "semantic_select"
 
 
 @dataclass(frozen=True, slots=True)

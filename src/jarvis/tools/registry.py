@@ -407,6 +407,15 @@ def register_computer_tools(
             return await execute_action(f"semantic_{action}", {"element_ref": element_ref}, arguments, context)
         return ToolResult(ToolResultStatus.DENIED, error_code="semantic_action_invalid")
 
+    async def semantic_act(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        action = arguments.get("action")
+        element_ref = arguments.get("element_ref")
+        if action not in {"invoke", "toggle", "select"}:
+            return ToolResult(ToolResultStatus.DENIED, error_code="semantic_action_invalid")
+        if not isinstance(element_ref, str) or not element_ref.startswith("element-"):
+            return ToolResult(ToolResultStatus.DENIED, error_code="element_ref_required")
+        return await execute_action(f"semantic_{action}", {"element_ref": element_ref}, arguments, context)
+
     registry.register(ToolSpec(
         "tool-computer-audio-adjust-v1", "computer.audio.adjust", "1", "Adjust local Windows audio by bounded media-key steps.",
         "safe", "tool.request", frozenset({"computer.input"}), 10.0, True, audio,
@@ -458,6 +467,29 @@ def register_computer_tools(
             "additionalProperties": False,
         },
         retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-semantic-act-v1", "computer.semantic.act", "1",
+        "Perform one bounded semantic UI Automation action (invoke a button/menu item, toggle a "
+        "checkbox/switch, or select a list/combo item) on a previously observed element. "
+        "Consequential - requires owner approval. No mouse/keyboard input, no text entry, no file "
+        "dialog interaction.",
+        "safe", "tool.request", frozenset({"computer.input"}), 15.0, False, semantic_act,
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["invoke", "toggle", "select"]},
+                "element_ref": {"type": "string", "maxLength": 100},
+                "target_device_id": {"type": "string", "maxLength": 200},
+            },
+            "required": ["action", "element_ref"],
+            "additionalProperties": False,
+        },
+        # Matches computer.keyboard.type/window.control: a second decide on an
+        # already-consumed approval must hit the existing, already-tested
+        # ephemeral_arguments_unavailable typed failure instead of silently
+        # re-entering the permission/approval flow from scratch.
+        argument_retention=ToolResultRetention.EPHEMERAL,
     ))
 
 

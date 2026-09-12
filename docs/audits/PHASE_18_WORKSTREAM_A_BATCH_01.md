@@ -245,3 +245,167 @@ Frontend re-run was not performed for this milestone - untouched (required again
 - `02_JARVIS_CURRENT_STATE.md`: "UIA semantic control tree/actions" row updated to record the tool path as implemented and proven live; explicitly states no semantic actuation exists yet.
 - `03_JARVIS_GAP_REGISTER.md`, GAP-0101: remains `OPEN` overall; added a "Batch 01 Milestone 2" `PARTIAL` note.
 - `04_JARVIS_EXECUTION_ROADMAP.md`: Workstream A status note extended to record Milestone 2 complete.
+
+---
+
+## 5. Milestone 3 — First bounded semantic UI actions
+
+### 5.1 Semantic actions implemented
+
+Three `WindowsUIAutomationAdapter` methods (`src/jarvis/computer/semantic_uia.py`): `invoke`, `toggle`, `select` - `InvokePattern`/`TogglePattern`/`SelectionItemPattern` only. `ValuePattern.SetValue`/text write, mouse/keyboard, drag/scroll injection, and OCR/visual fallback are explicitly **not** implemented - deferred per the task, not merely undocumented. Each method reuses the exact same stale-safe re-resolution (`_reresolve`) Milestone 1 built for reads, plus one new actuation-only gate (`_reresolve_actuation_target`): a password-marked control is denied (`uia_sensitive_value_denied`) **before** any pattern is even checked, let alone invoked.
+
+### 5.2 Actuation contract (as implemented)
+
+```text
+opaque element_ref
+→ re-resolve containing window_ref (existing WindowsDesktopProvider authority, privacy-checked)
+→ re-walk bounded tree, accept only on RuntimeId-digest match (stale/ambiguous -> refuse, never act)
+→ password/sensitive check (deny before pattern check)
+→ confirm the required pattern (Invoke/Toggle/SelectionItem) is actually present -> uia_pattern_unsupported otherwise
+→ ComputerActionService risk classification (consequential, since these three actions are
+   deliberately absent from _read_actions/_safe_actions) -> PermissionEngine -> ApprovalEngine
+→ perform exactly one pattern call (Invoke() / Toggle() / Select())
+→ re-observe (fresh snapshot + pattern-specific state re-read)
+→ typed, honest verified signal (never fabricated)
+→ audit via the existing ComputerActionService path
+```
+
+No retry loop exists anywhere in this path - a failed/unverified action is returned as-is; nothing "tries again" automatically.
+
+### 5.3 Risk/approval policy
+
+`SEMANTIC_INVOKE`/`SEMANTIC_TOGGLE`/`SEMANTIC_SELECT` were deliberately **not** added to `ComputerActionService._read_actions` or `_safe_actions`, so `execute()`'s existing risk computation (`"consequential"` for anything in neither set) applies unchanged - and `PolicyPermissionEngine.evaluate()` already short-circuits any `risk_level == "consequential"` straight to `REQUIRE_APPROVAL` **before** consulting the rules list, so this holds for every action name, typo-proof, with no per-action rule needed (unlike the read actions in Milestone 2, which each needed an explicit ALLOW rule). No global "all computer.\* safe" rule was added - the opposite: these three actions are approval-required by construction, not by an addable/removable rule. The new outer `computer.semantic.act` tool follows the exact same two-layer pattern already established for `computer.keyboard.type`/`computer.window.control` (outer `risk_level="safe"`/ALLOW is non-authoritative registry metadata; the inner `ComputerActionService` gate is what actually enforces approval) - documented explicitly in a code comment this time, addressing the minor doc-consistency note (F18A1-011) the Phase 18A.1 audit raised about the *existing* instances of this same pattern.
+
+### 5.4 Supported patterns - verification semantics
+
+- **Invoke:** always returns `verified=False` on success - there is no generic, provider-independent way to confirm an arbitrary `Invoke()` achieved its semantic intent (a button might open a dialog, submit a form, do nothing visible, etc.). This is stated as a design decision, not a gap: "invoke often remains unverified generically... acceptable because the model now receives explicit `verified=False`" (task §11.7), and Phase 18A.2's F18A1-003 fix means that flag now actually reaches the model.
+- **Toggle:** reads `ToggleState` before, calls `Toggle()`, reads `ToggleState` after; `verified = (before != after)`. Proven with both a state-changing fake and a "stuck" fake that leaves state unchanged (`verified=False` in that case) - both directions tested.
+- **Select:** calls `Select()`, then re-reads `IsSelected`; `verified = IsSelected`. Proven with both a normal fake (becomes selected) and a "stuck" fake (`verified=False`).
+
+None of the three ever reports `verified=True` from "the pattern call returned" alone - every verified value comes from an independent property re-read after the call.
+
+### 5.5 Target privacy / sensitive controls / file dialogs
+
+Password controls are denied before any pattern check (§5.1). No file-dialog-specific behavior was added - per the task's explicit "prefer deny/defer over clever bypasses," a file dialog's controls are just ordinary elements to this milestone's generic invoke/toggle/select (still requiring approval, and Milestone 1's read path already refuses to expose any path-entry `set_value`/text-write capability at all, which does not exist anywhere in this adapter). No UAC/secure-desktop automation was attempted or is possible through this path - a locked/secure desktop window is unreachable the same way any other window becomes stale (`WindowsDesktopProvider.validate_input_window` fails), returning a typed failure, never a hang or a fake success.
+
+### 5.6 Recovery
+
+Exactly the bounded, no-retry recovery the task specifies: a failed pre-action revalidation returns a typed stale/ambiguous failure without acting; a provider exception during the pattern call is caught and translated to `uia_action_failed:<ExceptionClassName>` (never a leaked raw COM string) without a retry; an unverified-but-executed result is returned as `succeeded, verified=False` rather than being silently retried. No blind double-invoke/double-click behavior exists anywhere in this code.
+
+### 5.7 Tests
+
+**Adapter-level** (`tests/test_phase_eighteen_semantic_uia.py`, +9 tests, **26 total, all passing**): `test_invoke_calls_pattern_and_is_never_verified_true_generically`, `test_invoke_unsupported_pattern_returns_typed_failure`, `test_invoke_on_password_control_denied_before_pattern_check`, `test_invoke_on_stale_element_never_acts`, `test_invoke_on_ambiguous_reresolution_never_acts`, `test_toggle_verified_true_when_state_actually_changes`, `test_toggle_verified_false_when_state_does_not_change`, `test_select_verified_true_when_selected`, `test_select_verified_false_when_not_selected`.
+
+**Approval/architecture-level** (`tests/test_phase_eighteen_semantic_actions.py`, **13 tests, all passing**): `test_invoke_requires_canonical_approval`, `test_toggle_and_select_also_require_approval`, `test_approved_invoke_executes_exactly_once_on_repeated_decide`, `test_denied_approval_never_acts`, `test_stale_pending_action_cannot_execute`, `test_invoke_unsupported_pattern_typed_failure_after_approval`, `test_invoke_on_password_control_denied_after_approval`, `test_toggle_verified_true_end_to_end`, `test_toggle_verified_false_end_to_end`, `test_select_verified_end_to_end`, `test_invoke_generic_action_never_verified_true`, `test_action_travels_through_computer_action_service_with_audit`, `test_no_filesystem_action_introduced`.
+
+**Regression fix found and applied during this milestone:** `test_approved_invoke_executes_exactly_once_on_repeated_decide` initially exposed a real (though non-unsafe) rough edge - `computer.semantic.act` used `DURABLE` argument retention, so a second `decide_and_resume` on an already-consumed approval silently re-entered the full permission/approval flow and minted a **new** approval request instead of failing cleanly (confirmed via direct inspection: the actuation itself was never called twice - `fake_adapter.invoke_calls` stayed length 1 - so this was never an unsafe double-execution, only a confusing repeat-decide UX). Fixed by switching `computer.semantic.act` to `argument_retention=ToolResultRetention.EPHEMERAL`, exactly matching `computer.keyboard.type`/`computer.window.control`'s existing convention - a second decide now hits the same already-tested `ephemeral_arguments_unavailable` typed failure those tools already rely on, rather than a fresh, confusing approval-required response.
+
+### 5.8 NIGHTFURY physical acceptance
+
+Through the actual `computer.semantic.act`/`computer.semantic.read` tool path (not raw `uiautomation`), against disposable Calculator:
+
+| Step | Result |
+|---|---|
+| Read Calculator display before | `"Display is 0"` |
+| Find "Seven" (`ButtonControl`, `num7Button`, patterns=`['Invoke']`) | 1 match |
+| `computer.semantic.act` invoke on Seven | `approval_required` (confirms approval-by-default holds even for a plain number button) |
+| Approve via `decide_and_resume` (normal owner/test path) | `completed`, `verified=False` (honest - matches §5.4) |
+| Read Calculator display after (independent read-back, not the actuation's own report) | `"Display is 7"` - **the real, physical effect is confirmed** |
+| Audit trail | 36 rows; `computer.permission_checked`, `computer.action_completed`, `permission.checked`, `tool.completed` all present |
+
+**Toggle/Select were not physically re-demonstrated live in this batch, disclosed honestly:** Calculator's `TogglePaneButton` (the one plausible on-screen toggle-like control) only exposes `InvokePattern` on this NIGHTFURY build, not `TogglePattern` - confirmed live during this probe, matching the earlier A1 evaluation's finding on the same control. No other convenient, safe, disposable `TogglePattern`/`SelectionItemPattern` control was found on Calculator/Notepad within this batch's scope. Per AGENTS.md §6 ("physical PASS requires physical evidence; tests/mocks are not physical evidence"), this report does **not** claim physical acceptance for `toggle`/`select` - only code/test acceptance (§5.7). Calculator was closed via `Stop-Process` after the probe (the only disposable instance created; its display showing "7" is a harmless, reversible artifact of a disposable instance, not owner data). Notepad's owner draft was not opened or touched in this milestone's live probe.
+
+### 5.9 Milestone 3 verification
+
+| Check | Result |
+|---|---|
+| `pytest tests/test_phase_eighteen_semantic_uia.py -q` | **26 passed** |
+| `pytest tests/test_phase_eighteen_semantic_actions.py -q` | **13 passed** |
+| `pytest tests -k "phase_eighteen or phase_eleven or phase_nine or phase_four or phase_two" -q` | **166 passed** |
+| `pytest tests -q` (full) | **584 passed, 0 skipped, 36 subtests** (562 Milestone-2 baseline + 9 + 13 new) |
+| `python -m compileall src tests -q` | PASS |
+| `git diff --check` | PASS |
+| `cd ui && npm test && npm run build && npm audit --audit-level=high` | deferred to the final batch-wide rerun (§6), per the task's explicit instruction that frontend is rerun once at final completion even though untouched throughout this batch |
+
+### 5.10 Milestone 3 documentation
+
+- `02_JARVIS_CURRENT_STATE.md`: UIA row updated to record bounded actuation (invoke physically proven; toggle/select test-proven only), and explicitly lists what remains unimplemented (set_value, mouse/keyboard, OCR, multi-app recovery, eval suite).
+- `03_JARVIS_GAP_REGISTER.md`, GAP-0101: added a Milestone 3 note. **Left as `OPEN`/`PARTIAL`, not marked `RESOLVED`** - the evidence is strong for `invoke` (physical) and thorough for `toggle`/`select` (test-only), but this report defers the final "is this gap now resolved" call to the owner/independent reviewer per the checkpoint workflow's own "independent review before next slice" rule, rather than self-declaring closure. GAP-0102 (mouse/keyboard), GAP-0103 (OCR/visual), GAP-0104 (multi-app recovery), GAP-0105 (evaluation suite), GAP-0106 (DPI/multi-monitor/secure-desktop), and GAP-0503 (file-access confinement) are all confirmed untouched and remain `OPEN`.
+- `04_JARVIS_EXECUTION_ROADMAP.md`: Workstream A status note extended to record all three milestones complete and names independent commit review as the next gate.
+
+Computer Use V2 is **not** claimed complete. Physical acceptance is claimed **only** for the one specific `invoke` scenario actually demonstrated, not generally.
+
+---
+
+## 6. Final full regression (after all three milestones)
+
+| Check | Result |
+|---|---|
+| `pytest tests -q` | **584 passed, 0 skipped, 36 subtests** |
+| `python -m compileall src tests -q` | PASS |
+| `git diff --check` | PASS with one intentional-Markdown-formatting note (documented per-milestone above, not reformatted) |
+| `npm test` (ui/) | **75 passed**, 14 files |
+| `npm run build` (ui/) | clean, 68 modules |
+| `npm audit --audit-level=high` (ui/) | **0 high/critical** (2 pre-existing moderate dev-only advisories, unrelated) |
+
+Explicit security regression checks against the full three-milestone diff (`git diff main...HEAD`):
+
+| Check | Result |
+|---|---|
+| No `shell=True` added | confirmed (grep clean) |
+| No `os.system` added | confirmed (grep clean) |
+| No raw COM/UIA object in model-facing output | confirmed - `_semantic_snapshot_dict`/`_semantic_tree_dict` convert every dataclass to plain dict/list/str/bool/int before it reaches `ComputerResult.output`; `test_no_raw_hwnd_or_com_object_in_public_snapshot` asserts this at the contract level |
+| No raw HWND accepted from model input | confirmed - both tool schemas (`computer.semantic.read`, `computer.semantic.act`) only accept opaque `window-*`/`element-*` string references, never an integer handle or coordinates |
+| No direct adapter bypass of `ComputerActionService` | confirmed - the adapter is only ever called from inside `WindowsNativeComputerController.execute()`, which only `ComputerActionService._execute_controller` invokes |
+| No new duplicate authority | confirmed - one `ComputerActionService`, one `PolicyPermissionEngine`, one `DurableApprovalEngine`, one `WindowsUIAutomationAdapter` implementation; no `ComputerActionServiceV2`/second permission or approval engine/alternate model-to-UIA path was created |
+| No silent approval bypass | confirmed - `semantic_invoke`/`semantic_toggle`/`semantic_select` are absent from `_read_actions`/`_safe_actions`, so `risk_level="consequential"` applies unconditionally; `test_invoke_requires_canonical_approval`/`test_toggle_and_select_also_require_approval` prove this directly |
+| No automatic repeat on uncertain action | confirmed - no retry/loop code was added anywhere in this batch; an unverified result is returned once, as-is |
+| No filesystem authority expansion | confirmed - `inspect_file`/`search_files`/`open_file`/`open_folder` were not touched; neither new tool schema contains a path-shaped parameter (`test_semantic_tool_schema_has_no_filesystem_parameters`, `test_no_filesystem_action_introduced`) |
+| No `ValuePattern` write exposed | confirmed - `set_value`/`SetValue` do not appear anywhere in the implementation, only in a docstring explaining they are deliberately absent |
+| No arbitrary mouse/keyboard expansion | confirmed - grep for mouse/`SendInput`/click-related additions across the full diff returns nothing; the existing bounded `SendInput` keyboard path from earlier phases is untouched |
+| No secret persistence | confirmed - no credential/API-key/token value appears anywhere in the diff (checked per-commit before each commit; see §2-§5) |
+| No owner-data acceptance test mutation | confirmed - every live probe either read the owner's pre-existing Notepad session without modification, or acted only on disposable Calculator/blank-window instances created and torn down by this batch itself |
+
+---
+
+## 7. Gaps closed / partial / open
+
+| Gap | Status after this batch |
+|---|---|
+| GAP-0101 (general Windows semantic UI control) | `OPEN`/`PARTIAL` - backend decision resolved (DEC-046); read foundation, canonical tool wiring, and bounded invoke/toggle/select actuation all implemented and test-green; `invoke` physically proven, `toggle`/`select` test-proven only. Left open for independent review before any closure claim. |
+| GAP-0102 (mouse/rich keyboard input) | `OPEN`, untouched |
+| GAP-0103 (visual grounding/OCR) | `OPEN`, untouched |
+| GAP-0104 (action verification/recovery, multi-app) | `OPEN`, untouched - this batch's recovery is bounded to the single-action stale/ambiguous/unsupported-pattern cases already covered, not the broader multi-app recovery loop GAP-0104 describes |
+| GAP-0105 (computer-use evaluation suite) | `OPEN`, untouched - this batch's tests are unit/integration + two manual NIGHTFURY probes, not the repeatable evaluation program GAP-0105 describes |
+| GAP-0106 (DPI/multi-monitor/secure-desktop proof) | `OPEN`, untouched |
+| GAP-0503 (file-root confinement / sensitive-path policy) | `OPEN`, untouched - explicitly verified not widened anywhere in this batch |
+
+---
+
+## 8. Manual dependencies
+
+**None required.** No API key, OAuth credential, Home Assistant token, MQTT credential, SSH credential, or personal data was requested, required, or used anywhere in this batch. The one local package installation (`uiautomation==2.0.29` into the environment used to run tests/probes on NIGHTFURY) required no secret - it is a public PyPI package, matching the task's explicit allowance ("If `computer-uia` installation is required locally for physical probe, normal package installation is allowed... No secret is needed").
+
+---
+
+## 9. Exact restrictions carried forward
+
+- **F18A1-010 / GAP-0503** remains open. This batch did not widen `inspect_file`, `search_files`, `open_file`, or `open_folder`; introduced no semantic file-picker automation; set no path values in any file dialog; invoked no Open/Save confirmation action; and used no UIA capability as a backdoor around file permissions. Neither `computer.semantic.read` nor `computer.semantic.act`'s schema contains a path-shaped parameter. **Any future slice that adds semantic file-dialog interaction must resolve GAP-0503 first**, not route around it through a semantic element reference.
+- No `ValuePattern`/`set_value` text-write capability was added - explicitly deferred (§5.1).
+- No mouse/keyboard/coordinate input capability was added or expanded - the existing bounded `SendInput` keyboard-text path from earlier phases is unchanged; no new input surface exists.
+- No OCR/visual fallback was added.
+- No second `ComputerActionService`/`PermissionEngine`/`ApprovalEngine`/audit path/model-to-UIA shortcut was created at any point across all three milestones.
+
+---
+
+## 10. Recommended next batch
+
+Per this task's own instruction, the next step is **independent GitHub commit review** of the four pushed commits before any further implementation - not another immediate implementation batch from this agent. Once reviewed, plausible next slices (in rough priority order, each its own small batch, none started here):
+
+1. **App-specific verification for `invoke`** on at least one real target class (e.g. a checkbox-adjacent button, a menu item with observable side effects) to narrow the "generic invoke is always unverified" gap without inventing a new authority.
+2. **Toggle/Select physical acceptance** on a real control that actually exposes those patterns (a real checkbox/list app), since this batch could not find one on disposable Calculator/Notepad.
+3. **GAP-0503 resolution** (file-root confinement/sensitive-path policy) - explicitly called out as a prerequisite before any semantic file-dialog work.
+4. **Bounded native mouse/keyboard** (GAP-0102) as its own carefully-scoped, separately-approved batch - not folded into semantic work.
+5. **Computer-use evaluation suite** (GAP-0105) to make future acceptance repeatable rather than ad hoc probe scripts.
+
+No merge to `main` was performed or is recommended without the owner's explicit instruction.

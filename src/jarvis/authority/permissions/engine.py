@@ -35,6 +35,12 @@ class PolicyPermissionEngine:
             # UIA observation (privacy/staleness); the outer tool wrapper only gates
             # entry to that boundary, matching the browser rule above.
             PermissionRule("tool.computer.semantic.read", PermissionEffect.ALLOW, "computer_semantic_read_boundary"),
+            # Same pattern as computer.keyboard.type/window.control above: the outer
+            # wrapper only gates entry, ComputerActionService's inner risk_level
+            # computation (consequential, since semantic_invoke/toggle/select are
+            # deliberately absent from _read_actions/_safe_actions) is what actually
+            # forces owner approval before any actuation.
+            PermissionRule("tool.computer.semantic.act", PermissionEffect.ALLOW, "computer_semantic_act_boundary"),
             # BrowserActionService owns the inner read/approval decision. The
             # outer tool wrapper must not create a second approval request.
             PermissionRule("tool.browser.", PermissionEffect.ALLOW, "browser_action_boundary"),

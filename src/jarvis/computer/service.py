@@ -119,6 +119,12 @@ class WindowsNativeComputerController:
                 return await self._semantic_get_text(action.parameters)
             if capability is ComputerCapability.SEMANTIC_REVALIDATE:
                 return await self._semantic_revalidate(action.parameters)
+            if capability is ComputerCapability.SEMANTIC_INVOKE:
+                return await self._semantic_act("invoke", action.parameters)
+            if capability is ComputerCapability.SEMANTIC_TOGGLE:
+                return await self._semantic_act("toggle", action.parameters)
+            if capability is ComputerCapability.SEMANTIC_SELECT:
+                return await self._semantic_act("select", action.parameters)
             return ComputerResult("failed", error_code="native_action_not_configured")
         except (OSError, ValueError) as exc:
             return ComputerResult("failed", error_code=str(exc) or exc.__class__.__name__)
@@ -446,6 +452,22 @@ class WindowsNativeComputerController:
         if element is not None:
             payload["element"] = _semantic_snapshot_dict(element)
         return ComputerResult(result.status, payload, result.error_code, verified=result.status == "succeeded")
+
+    async def _semantic_act(self, pattern: str, parameters: Mapping[str, Any]) -> ComputerResult:
+        element_ref = self._require_element_ref(parameters)
+        if element_ref is None:
+            return ComputerResult("denied", error_code="element_ref_required")
+        method = getattr(self.semantic_adapter, pattern)
+        result = await method(element_ref)
+        if result.status != "succeeded":
+            return ComputerResult(result.status, {}, result.error_code, False)
+        output = dict(result.output)
+        verified = bool(output.pop("verified", False))
+        element = output.pop("element", None)
+        payload: dict[str, Any] = dict(output)
+        if element is not None:
+            payload["element"] = _semantic_snapshot_dict(element)
+        return ComputerResult("succeeded", payload, verified=verified)
 
     @staticmethod
     def _require_element_ref(parameters: Mapping[str, Any]) -> str | None:

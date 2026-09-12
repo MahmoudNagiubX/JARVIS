@@ -100,7 +100,7 @@ Execute in this order unless new audit evidence changes priority.
 ### Workstream A — Computer Use V2
 **Why first:** this is the largest gap between current JARVIS and the owner's desired general-purpose assistant.
 
-**Status (2026-09-12):** A.1 backend evaluation complete (`docs/audits/PHASE_18_WORKSTREAM_A1_UIA_BACKEND_EVALUATION.md`, backend locked by DEC-046). Batch 01 Milestone 1 (read-only semantic UIA foundation) and Milestone 2 (canonical `computer.semantic.read` tool wiring) complete and proven live on NIGHTFURY. Semantic UIA implementation is now active — see `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_01.md` for the current milestone batch.
+**Status (2026-09-12):** A.1 backend evaluation complete (`docs/audits/PHASE_18_WORKSTREAM_A1_UIA_BACKEND_EVALUATION.md`, backend locked by DEC-046). Batch 01 Milestones 1-3 complete: read-only semantic UIA foundation, canonical `computer.semantic.read` tool wiring, and bounded approval-gated `computer.semantic.act` (invoke/toggle/select) - `invoke` physically proven live on NIGHTFURY. See `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_01.md` for full evidence. Independent review of the pushed commits is the next gate before any further Computer Use V2 slice (mouse/keyboard, OCR/visual, multi-app recovery, evaluation suite all remain future work).
 
 Deliver:
 - product-owned UIA target/inspection/action layer;

@@ -9,11 +9,17 @@ opaque, ephemeral, TTL-bound `element-<uuid>` references and the normalized
 
 Stale-target safety by construction: no live `uiautomation` Control object
 is ever held across two calls. Every re-resolution (`get_element`,
-`get_text_or_value`, `revalidate_reference`, and pattern actuation in a
-later milestone) re-walks the bounded tree from the containing window and
-accepts a match only when its live RuntimeId digest equals the digest
-captured at observation time - a same-named element with a different
-identity is never silently substituted.
+`get_text_or_value`, `revalidate_reference`, and the bounded `invoke`/
+`toggle`/`select` actuation methods) re-walks the bounded tree from the
+containing window and accepts a match only when its live RuntimeId digest
+equals the digest captured at observation time - a same-named element with
+a different identity is never silently substituted, and no stale/ambiguous
+reference is ever acted on.
+
+Actuation is intentionally narrow: only `InvokePattern`/`TogglePattern`/
+`SelectionItemPattern`. No `ValuePattern.SetValue`/`set_value`, no mouse/
+keyboard input, no file-dialog path entry - those remain out of scope
+(GAP-0503, DEC-046 successor work).
 """
 
 from __future__ import annotations
@@ -56,6 +62,13 @@ _WINDOW_ERROR_TRANSLATION = {
     "window_ref_expired": "uia_window_stale",
     "window_ref_changed": "uia_window_stale",
 }
+
+_DENIED_ERROR_CODES = {"sensitive_window_denied", "uia_sensitive_value_denied"}
+
+
+def _status_for_error(error: str) -> str:
+    return "denied" if error in _DENIED_ERROR_CODES else "failed"
+
 
 _REVALIDATION_STATE = {
     "uia_element_not_found": SemanticReferenceState.NOT_FOUND,
@@ -275,6 +288,76 @@ class WindowsUIAutomationAdapter:
         self._element_refs[element_ref] = new_entry
         return SemanticResult("succeeded", {"state": SemanticReferenceState.VALID.value, "element": snapshot})
 
+    # -- bounded semantic actions (Milestone 3): InvokePattern/TogglePattern/SelectionItemPattern only --
+
+    async def invoke(self, element_ref: str) -> SemanticResult:
+        if not self.available:
+            return SemanticResult("failed", error_code="uia_not_available")
+        control, entry, ancestry, error = self._reresolve_actuation_target(element_ref)
+        if control is None:
+            return SemanticResult(_status_for_error(error), error_code=error)
+        pattern_id = self._pattern_ids.get("Invoke")
+        pattern = self._get_pattern(control, pattern_id) if pattern_id is not None else None
+        if pattern is None:
+            return SemanticResult("failed", error_code="uia_pattern_unsupported")
+        try:
+            pattern.Invoke()
+        except Exception as exc:
+            return SemanticResult("failed", error_code=f"uia_action_failed:{exc.__class__.__name__}")
+        now = datetime.now(UTC)
+        snapshot, new_entry = self._make_snapshot(control, entry.window_ref, ancestry, now, element_ref=element_ref)
+        self._element_refs[element_ref] = new_entry
+        # No generic, provider-independent proof that an arbitrary InvokePattern call
+        # achieved its semantic intent exists yet - report succeeded but explicitly
+        # unverified rather than fabricating confidence (AGENTS.md closed-loop rule).
+        # App-specific adapters can supply stronger verification in a later slice.
+        return SemanticResult("succeeded", {"element": snapshot, "verified": False})
+
+    async def toggle(self, element_ref: str) -> SemanticResult:
+        if not self.available:
+            return SemanticResult("failed", error_code="uia_not_available")
+        control, entry, ancestry, error = self._reresolve_actuation_target(element_ref)
+        if control is None:
+            return SemanticResult(_status_for_error(error), error_code=error)
+        pattern_id = self._pattern_ids.get("Toggle")
+        pattern = self._get_pattern(control, pattern_id) if pattern_id is not None else None
+        if pattern is None:
+            return SemanticResult("failed", error_code="uia_pattern_unsupported")
+        try:
+            before_state = pattern.ToggleState
+            pattern.Toggle()
+            after_state = pattern.ToggleState
+        except Exception as exc:
+            return SemanticResult("failed", error_code=f"uia_action_failed:{exc.__class__.__name__}")
+        now = datetime.now(UTC)
+        snapshot, new_entry = self._make_snapshot(control, entry.window_ref, ancestry, now, element_ref=element_ref)
+        self._element_refs[element_ref] = new_entry
+        verified = before_state != after_state
+        return SemanticResult(
+            "succeeded",
+            {"element": snapshot, "verified": verified, "toggle_state_before": before_state, "toggle_state_after": after_state},
+        )
+
+    async def select(self, element_ref: str) -> SemanticResult:
+        if not self.available:
+            return SemanticResult("failed", error_code="uia_not_available")
+        control, entry, ancestry, error = self._reresolve_actuation_target(element_ref)
+        if control is None:
+            return SemanticResult(_status_for_error(error), error_code=error)
+        pattern_id = self._pattern_ids.get("SelectionItem")
+        pattern = self._get_pattern(control, pattern_id) if pattern_id is not None else None
+        if pattern is None:
+            return SemanticResult("failed", error_code="uia_pattern_unsupported")
+        try:
+            pattern.Select()
+            is_selected = bool(pattern.IsSelected)
+        except Exception as exc:
+            return SemanticResult("failed", error_code=f"uia_action_failed:{exc.__class__.__name__}")
+        now = datetime.now(UTC)
+        snapshot, new_entry = self._make_snapshot(control, entry.window_ref, ancestry, now, element_ref=element_ref)
+        self._element_refs[element_ref] = new_entry
+        return SemanticResult("succeeded", {"element": snapshot, "verified": is_selected})
+
     # -- internal boundary: nothing below this line returns a raw provider object --
 
     def _resolve_window_root(self, window_ref: str) -> tuple[Any, str]:
@@ -339,6 +422,15 @@ class WindowsUIAutomationAdapter:
         control, ancestry = candidates[0]
         return control, entry, ancestry, ""
 
+    def _reresolve_actuation_target(self, element_ref: str) -> tuple[Any, _ElementRefEntry | None, tuple[str, ...], str]:
+        """Same stale-safe re-resolution as reads, plus the actuation-only sensitive-control gate."""
+        control, entry, ancestry, error = self._reresolve(element_ref)
+        if control is None:
+            return None, entry, ancestry, error
+        if bool(getattr(control, "IsPassword", False)):
+            return None, entry, ancestry, "uia_sensitive_value_denied"
+        return control, entry, ancestry, ""
+
     def _make_snapshot(
         self,
         control: Any,
@@ -376,6 +468,13 @@ class WindowsUIAutomationAdapter:
             return control.GetPattern(pattern_id) is not None
         except Exception:
             return False
+
+    @staticmethod
+    def _get_pattern(control: Any, pattern_id: int) -> Any | None:
+        try:
+            return control.GetPattern(pattern_id)
+        except Exception:
+            return None
 
     def _read_text(self, control: Any) -> str | None:
         text_pattern_id = self._pattern_ids.get("Text")
