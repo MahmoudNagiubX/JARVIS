@@ -132,8 +132,47 @@ class HomeAssistantTransport:
             data.pop("brightness", None)
         if action.action == "set_temperature" and not isinstance(data.get("temperature"), (int, float)):
             return HomeResult("denied", error_code="temperature_invalid")
-        status, _ = await asyncio.to_thread(self._call, "POST", f"/api/services/{domain}/{service}", json.dumps(data).encode("utf-8"))
-        return HomeResult("succeeded" if 200 <= status < 300 else "failed", {"http_status": status, "entity_id": action.entity_id}, None if 200 <= status < 300 else f"home_assistant_http_{status}", 200 <= status < 300)
+        try:
+            status, _ = await asyncio.to_thread(self._call, "POST", f"/api/services/{domain}/{service}", json.dumps(data).encode("utf-8"))
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            # Provider disconnect/timeout must degrade truthfully, not escape as an
+            # uncaught exception from the canonical Home action path.
+            return HomeResult("failed", {"entity_id": action.entity_id}, f"home_assistant_unreachable:{exc.__class__.__name__}", False)
+        if not 200 <= status < 300:
+            return HomeResult("failed", {"http_status": status, "entity_id": action.entity_id}, f"home_assistant_http_{status}", False)
+        # HTTP acceptance is not physical proof. Verification requires an
+        # independent, bounded (single-attempt, no polling) state read-back.
+        verified = await self._verify_state(action, data)
+        return HomeResult("succeeded", {"http_status": status, "entity_id": action.entity_id}, None, verified)
+
+    async def _verify_state(self, action: HomeAction, data: Mapping[str, object]) -> bool:
+        if action.action not in {"turn_on", "turn_off", "set_brightness", "set_temperature"}:
+            # set_color/trigger_scene have no deterministic, generically comparable
+            # state on the standard entity endpoint - report honestly, never guess.
+            return False
+        try:
+            status, body = await asyncio.to_thread(self._call, "GET", f"/api/states/{action.entity_id}", None)
+        except (urllib.error.URLError, OSError, TimeoutError):
+            return False
+        if status != 200:
+            return False
+        try:
+            decoded = json.loads(body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return False
+        if not isinstance(decoded, dict):
+            return False
+        state = decoded.get("state")
+        attributes = decoded.get("attributes") if isinstance(decoded.get("attributes"), dict) else {}
+        if action.action == "turn_on":
+            return state == "on"
+        if action.action == "turn_off":
+            return state == "off"
+        if action.action == "set_brightness":
+            return attributes.get("brightness_pct") == data.get("brightness_pct")
+        if action.action == "set_temperature":
+            return attributes.get("temperature") == data.get("temperature")
+        return False
 
     def _call(self, method: str, path: str, body: bytes | None) -> tuple[int, bytes]:
         headers = {"Content-Type": "application/json"}

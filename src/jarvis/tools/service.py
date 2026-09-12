@@ -46,6 +46,9 @@ class ToolCallResult:
     approval_id: str | None = None
     argument_digest: str | None = None
     retention: ToolResultRetention = ToolResultRetention.DURABLE
+    # None = verification not applicable (no execution attempted, e.g. denied/pending);
+    # True/False = the handler's own evidence for an action that actually ran.
+    verified: bool | None = None
 
 
 @dataclass(slots=True)
@@ -281,7 +284,10 @@ class ToolExecutionService:
         if result.status is not ToolResultStatus.SUCCEEDED:
             status = ToolExecutionStatus.DENIED if result.status is ToolResultStatus.DENIED else ToolExecutionStatus.FAILED
             self.repository.update_tool_call(tool_call_id, status.value, _retained_output(spec, result.output))
-            return ToolCallResult(tool_call_id, spec.name, status, result.output, result.error_code, argument_digest=digest, retention=spec.retention)
+            # A denial means no execution was attempted (verification does not apply);
+            # a failure after an attempted action carries the handler's own verified evidence.
+            attempted_verified = result.verified if status is ToolExecutionStatus.FAILED else None
+            return ToolCallResult(tool_call_id, spec.name, status, result.output, result.error_code, argument_digest=digest, retention=spec.retention, verified=attempted_verified)
         self.repository.update_tool_call(tool_call_id, "completed", _retained_output(spec, result.output))
         await self.audit.record(AuditRecord(f"audit-{uuid4()}", "tool.completed", datetime.now(UTC),
                                             context.identity.identity_id if context.identity else None,
@@ -289,7 +295,7 @@ class ToolExecutionService:
                                             context.correlation_id, "succeeded", None,
                                             {"tool_call_id": tool_call_id, "tool": spec.name, "verified": result.verified}))
         await self._emit("tool.completed", EventCategory.TOOL, context, {"tool_call_id": tool_call_id, "verified": result.verified}, state=EventState.COMPLETED)
-        return ToolCallResult(tool_call_id, spec.name, ToolExecutionStatus.COMPLETED, result.output, argument_digest=digest, retention=spec.retention)
+        return ToolCallResult(tool_call_id, spec.name, ToolExecutionStatus.COMPLETED, result.output, argument_digest=digest, retention=spec.retention, verified=result.verified)
 
     async def _finish_delegated(self, pending: _DelegatedApproval, approval_id: str, result: object, context: ToolContext) -> ToolCallResult:
         raw_status = str(getattr(result, "status", "failed"))
@@ -298,6 +304,7 @@ class ToolExecutionService:
         verified = bool(getattr(result, "verified", False))
         if raw_status == "succeeded":
             status = ToolExecutionStatus.COMPLETED
+            final_verified: bool | None = verified
             self.repository.update_tool_call(pending.tool_call_id, "completed", _retained_output_by_retention(pending.retention, output))
             await self.audit.record(AuditRecord(
                 f"audit-{uuid4()}", "tool.completed", datetime.now(UTC),
@@ -309,11 +316,13 @@ class ToolExecutionService:
             await self._emit("tool.completed", EventCategory.TOOL, context, {"tool_call_id": pending.tool_call_id, "verified": verified}, state=EventState.COMPLETED)
         elif raw_status == "denied":
             status = ToolExecutionStatus.DENIED
+            final_verified = None
             self.repository.update_tool_call(pending.tool_call_id, "denied", _retained_output_by_retention(pending.retention, output))
         else:
             status = ToolExecutionStatus.FAILED
+            final_verified = verified
             self.repository.update_tool_call(pending.tool_call_id, "failed", {"retained": False, "error_code": error_code or "delegated_action_failed"})
-        return ToolCallResult(pending.tool_call_id, pending.name, status, output, error_code, approval_id, pending.digest, pending.retention)
+        return ToolCallResult(pending.tool_call_id, pending.name, status, output, error_code, approval_id, pending.digest, pending.retention, verified=final_verified)
 
     def _delegated_failure(self, pending: _DelegatedApproval, error_code: str, *, approval_id: str | None = None) -> ToolCallResult:
         self._reconcile_delegated_failure(pending, error_code, approval_id=approval_id)

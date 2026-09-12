@@ -190,7 +190,7 @@ class AgentRuntime:
             )
             for item in run.context.get("messages", [])
         ]
-        messages.append(LLMMessage(LLMRole.TOOL, self._bounded_tool_message(tool_result.output, tool_result.error_code)))
+        messages.append(LLMMessage(LLMRole.TOOL, self._bounded_tool_message(tool_result.output, tool_result.error_code, tool_result.verified)))
         ephemeral = {len(messages) - 1: tool_result} if tool_result.retention is ToolResultRetention.EPHEMERAL else {}
         self.repository.update_run(run_id, status="running", pending_approval_id=None, context_json=self._run_context(messages, None, ephemeral))
         return await self._execute(run_id, identity, device, messages_override=messages, ephemeral_results=ephemeral)
@@ -333,7 +333,7 @@ class AgentRuntime:
                         self.repository.update_run(run_id, status="paused", pending_approval_id=tool_result.approval_id, context_json=context_json)
                         await self._emit("run.paused", EventCategory.AGENT, run, {"approval_id": tool_result.approval_id})
                         return AgentRunOutcome(run.id, run.conversation_id, run.session_id, AgentRunState.PAUSED, pending_approval_id=tool_result.approval_id, context_snapshot=context_snapshot)
-                    messages.append(LLMMessage(LLMRole.TOOL, self._bounded_tool_message(tool_result.output, tool_result.error_code)))
+                    messages.append(LLMMessage(LLMRole.TOOL, self._bounded_tool_message(tool_result.output, tool_result.error_code, tool_result.verified)))
                     if tool_result.retention is ToolResultRetention.EPHEMERAL:
                         ephemeral_results[len(messages) - 1] = tool_result
             self.repository.update_run(run_id, status="failed", completed_at=datetime.now(UTC), failure_code="max_agent_steps", context_json=self._run_context(messages, context_snapshot, ephemeral_results))
@@ -372,25 +372,31 @@ class AgentRuntime:
         return self.tool_selector.select(intent)
 
     @classmethod
-    def _bounded_tool_message(cls, output: object, error_code: str | None = None) -> str:
-        """Keep tool evidence useful without overflowing a local model context."""
+    def _bounded_tool_message(cls, output: object, error_code: str | None = None, verified: bool | None = None) -> str:
+        """Keep tool evidence useful without overflowing a local model context.
+
+        `verified` (when not None) is merged in as an explicit machine-readable
+        field so the model can never infer success from output/error_code
+        shape alone — it must see the handler's own verification evidence.
+        """
 
         value = output if output is not None else {"error": error_code or "tool_failed"}
         compact = cls._compact_tool_value(value)
+        if verified is not None:
+            compact = {**compact, "verified": verified} if isinstance(compact, dict) else {"result": compact, "verified": verified}
         serialized = json.dumps(compact, ensure_ascii=False, separators=(",", ":"), default=str)
         if len(serialized) <= cls.MAX_TOOL_MESSAGE_CHARS:
             return serialized
         prefix_length = cls.MAX_TOOL_MESSAGE_CHARS - 80
         while prefix_length >= 0:
-            bounded = json.dumps(
-                {"truncated": True, "content_prefix": serialized[:prefix_length]},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
+            envelope: dict[str, object] = {"truncated": True, "content_prefix": serialized[:prefix_length]}
+            if verified is not None:
+                envelope["verified"] = verified
+            bounded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
             if len(bounded) <= cls.MAX_TOOL_MESSAGE_CHARS:
                 return bounded
             prefix_length -= max(1, len(bounded) - cls.MAX_TOOL_MESSAGE_CHARS)
-        return '{"truncated":true}'
+        return json.dumps({"truncated": True, "verified": verified}) if verified is not None else '{"truncated":true}'
 
     @classmethod
     def _compact_tool_value(cls, value: object) -> object:

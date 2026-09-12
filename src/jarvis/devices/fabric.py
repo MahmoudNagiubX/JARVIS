@@ -409,11 +409,11 @@ class DeviceFabricService:
             enrolled_at=current.enrolled_at,
             revoked_at=now,
         )
+        # Revoke the credential that IdentityService.authenticate() actually checks
+        # first, and let a failure propagate (fail closed). A device must never be
+        # reported/audited as revoked while its credential could still authenticate.
+        self.repository.revoke_device(device_id, now)
         self.repository.upsert_device_fabric(updated)
-        try:
-            self.repository.revoke_device(device_id, now)
-        except Exception:
-            pass
         await self._audit(updated, "device.revoked", "revoked")
         await self._emit("device.offline", updated, {"reason": "revoked"}, EventState.COMPLETED)
         await self._emit("device.revoked", updated, {"reason": "revoked"}, EventState.COMPLETED)

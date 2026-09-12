@@ -498,7 +498,10 @@ class ComputerActionService:
     ) -> ComputerResult:
         pending = self._pending.get(approval_id)
         if pending is None or self.approvals is None:
-            raise KeyError(approval_id)
+            # Missing/stale in-memory pending approval (restart, or already
+            # consumed by a prior decide) must degrade truthfully, matching the
+            # Browser/Home approval-path convention, not raise a raw KeyError.
+            return ComputerResult("failed", error_code="pending_action_unavailable_after_restart", verified=False, approval_id=approval_id)
         action, pending_identity, pending_device, target, adapter, _expires_at = pending
         if identity is not None and identity.owner_id != pending_identity.owner_id:
             raise PermissionError("approval_owner_mismatch")
