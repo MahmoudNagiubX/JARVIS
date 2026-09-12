@@ -214,6 +214,148 @@ async def _run_owned_fixture_scenarios() -> dict:
                 "independent_status_matches_expected": bool(verified and output.get("post_state") is True),
             }
 
+        # -- native left click (re-uses "Invoke Target" - independent
+        # status read-back proves the real physical click landed) --
+        if invoke_ref is not None:
+            status, verified, output = await _approve_and_run(
+                runtime, identity, context, "computer.pointer.act", {"action": "left_click_element", "element_ref": invoke_ref}
+            )
+            status_after = await _read_status(runtime, context, window_ref)
+            scenario["native_left_click"] = {
+                "status": status, "verified": verified,
+                "pointer_target_verified": output.get("pointer_target_verified"),
+                "independent_status_matches_expected": status_after == "invoked",
+            }
+
+            # -- native right click (delivery evidence only - a standard
+            # Win32 button does not react to a right click, so no status
+            # change is expected; never assume a context menu opened) --
+            status, verified, output = await _approve_and_run(
+                runtime, identity, context, "computer.pointer.act", {"action": "right_click_element", "element_ref": invoke_ref}
+            )
+            scenario["native_right_click"] = {"status": status, "verified": verified, "input_batch_accepted": output.get("input_batch_accepted")}
+
+            # -- native double click (both individual clicks re-fire
+            # BN_CLICKED on the same button - independent status read-back
+            # still proves delivery + effect) --
+            status, verified, output = await _approve_and_run(
+                runtime, identity, context, "computer.pointer.act", {"action": "double_click_element", "element_ref": invoke_ref}
+            )
+            status_after = await _read_status(runtime, context, window_ref)
+            scenario["native_double_click"] = {
+                "status": status, "verified": verified,
+                "independent_status_matches_expected": status_after == "invoked",
+            }
+
+            # -- native scroll (delivery evidence only over the list box -
+            # no generic "content changed" claim) --
+            status, verified, output = await _approve_and_run(
+                runtime, identity, context, "computer.pointer.act",
+                {"action": "scroll_element", "element_ref": invoke_ref, "direction": "down", "steps": 1},
+            )
+            scenario["native_scroll"] = {"status": status, "verified": verified, "input_batch_accepted": output.get("input_batch_accepted")}
+
+        # -- native Tab key (independent focus read-back: Invoke Target has
+        # focus from the clicks above, Tab should move it to Toggle Target) --
+        status, verified, output = await _approve_and_run(
+            runtime, identity, context, "computer.keyboard.key", {"window_ref": window_ref, "key": "tab"}
+        )
+        toggle_focus_check = await runtime.tool_service.execute(
+            "computer.semantic.read",
+            {"action": "find_elements", "window_ref": window_ref, "control_type": "CheckBoxControl", "name": "Toggle Target"},
+            context,
+        )
+        toggle_focused = bool(
+            toggle_focus_check.status.value == "completed"
+            and toggle_focus_check.output.get("matches")
+            and toggle_focus_check.output["matches"][0].get("focused")
+        )
+        scenario["native_key_tab"] = {"status": status, "independent_focus_moved": toggle_focused}
+
+        # -- native chord (delivery evidence only - Ctrl+C over a window
+        # with no text selection has no observable effect on this fixture) --
+        status, verified, output = await _approve_and_run(
+            runtime, identity, context, "computer.keyboard.chord", {"window_ref": window_ref, "chord": "ctrl+c"}
+        )
+        scenario["native_chord"] = {"status": status, "verified": verified}
+
+        return scenario
+    finally:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+            scenario["fixture_child_confirmed_exited"] = proc.poll() is not None
+        await runtime.shutdown()
+
+
+def _virtual_desktop_metrics() -> tuple[int, int, int, int, int]:
+    import ctypes
+    user32 = ctypes.WinDLL("user32.dll")
+    return (
+        int(user32.GetSystemMetrics(76)), int(user32.GetSystemMetrics(77)),
+        int(user32.GetSystemMetrics(78)), int(user32.GetSystemMetrics(79)),
+        int(user32.GetSystemMetrics(80)),
+    )
+
+
+async def _run_non_primary_monitor_scenario() -> dict:
+    """Positions the owned fixture's own window on the non-primary
+    (negative-X) monitor and attempts one grounded native left click,
+    independently verified via the fixture's own status label (9.11). Never
+    a general production window-move capability - this flag exists only on
+    the disposable evaluation fixture."""
+    scenario: dict = {"attempted": True}
+    vleft, vtop, vwidth, vheight, monitor_count = _virtual_desktop_metrics()
+    scenario["virtual_desktop_geometry"] = {
+        "x_origin": vleft, "y_origin": vtop, "width": vwidth, "height": vheight, "monitor_count": monitor_count,
+    }
+    if vleft >= 0 or monitor_count < 2:
+        scenario["attempted"] = False
+        scenario["skip_reason"] = "MULTI_MONITOR_PHYSICAL_PENDING"
+        return scenario
+    if not FIXTURE_HOST_SCRIPT.exists():
+        scenario["attempted"] = False
+        scenario["skip_reason"] = "fixture_host_script_missing"
+        return scenario
+
+    nonce = str(uuid.uuid4())
+    title = f"JARVIS-CUV2-FIXTURE-{nonce}"
+    target_x = vleft + 100
+    runtime, identity, device, context = await _new_harness()
+    proc: subprocess.Popen | None = None
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, str(FIXTURE_HOST_SCRIPT), "--nonce", nonce, "--x", str(target_x), "--y", "100"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
+        )
+        window_ref, error = await _find_exact_fixture_window(runtime, context, title)
+        if window_ref is None:
+            scenario["error"] = error
+            return scenario
+        invoke_ref = await _find_one(runtime, context, window_ref, "ButtonControl", "Invoke Target")
+        if invoke_ref is None:
+            scenario["error"] = "invoke_target_not_found"
+            return scenario
+        found = await runtime.tool_service.execute(
+            "computer.semantic.read", {"action": "get_element", "element_ref": invoke_ref}, context
+        )
+        bounds = found.output.get("element", {}).get("bounds") if found.status.value == "completed" else None
+        scenario["target_bounds_on_non_primary_monitor"] = bool(bounds and bounds.get("x", 0) < 0)
+        status, verified, output = await _approve_and_run(
+            runtime, identity, context, "computer.pointer.act", {"action": "left_click_element", "element_ref": invoke_ref}
+        )
+        status_after = await _read_status(runtime, context, window_ref)
+        scenario["native_left_click"] = {
+            "status": status,
+            "pointer_target_verified": output.get("pointer_target_verified"),
+            "independent_status_matches_expected": status_after == "invoked",
+        }
+        if scenario["target_bounds_on_non_primary_monitor"] and scenario["native_left_click"]["independent_status_matches_expected"]:
+            scenario["result"] = "NON_PRIMARY_MONITOR_PHYSICAL_PASS"
         return scenario
     finally:
         if proc is not None:
@@ -228,7 +370,10 @@ async def _run_owned_fixture_scenarios() -> dict:
 
 
 async def _run_once() -> dict:
-    return {"owned_fixture": await _run_owned_fixture_scenarios()}
+    return {
+        "owned_fixture": await _run_owned_fixture_scenarios(),
+        "non_primary_monitor": await _run_non_primary_monitor_scenario(),
+    }
 
 
 def _summarize(runs: list[dict]) -> dict:
@@ -252,7 +397,18 @@ def _summarize(runs: list[dict]) -> dict:
         "semantic_invoke": rate(lambda r: r["owned_fixture"].get("invoke", {}).get("independent_status_matches_expected") if attempted(r) else None),
         "semantic_toggle": rate(lambda r: r["owned_fixture"].get("toggle", {}).get("independent_status_matches_expected") if attempted(r) else None),
         "semantic_select": rate(lambda r: r["owned_fixture"].get("select", {}).get("independent_status_matches_expected") if attempted(r) else None),
+        "native_left_click": rate(lambda r: r["owned_fixture"].get("native_left_click", {}).get("independent_status_matches_expected") if attempted(r) else None),
+        "native_right_click_delivered": rate(lambda r: r["owned_fixture"].get("native_right_click", {}).get("input_batch_accepted") if attempted(r) else None),
+        "native_double_click": rate(lambda r: r["owned_fixture"].get("native_double_click", {}).get("independent_status_matches_expected") if attempted(r) else None),
+        "native_scroll_delivered": rate(lambda r: r["owned_fixture"].get("native_scroll", {}).get("input_batch_accepted") if attempted(r) else None),
+        "native_key_tab": rate(lambda r: r["owned_fixture"].get("native_key_tab", {}).get("independent_focus_moved") if attempted(r) else None),
+        "native_chord_completed": rate(lambda r: r["owned_fixture"].get("native_chord", {}).get("status") == "completed" if attempted(r) else None),
         "fixture_child_confirmed_exited": rate(lambda r: r["owned_fixture"].get("fixture_child_confirmed_exited") if attempted(r) else None),
+        "non_primary_monitor": {
+            "attempted": any(r["non_primary_monitor"].get("attempted") for r in runs),
+            "pass_count": sum(1 for r in runs if r["non_primary_monitor"].get("result") == "NON_PRIMARY_MONITOR_PHYSICAL_PASS"),
+            "geometry": runs[0]["non_primary_monitor"].get("virtual_desktop_geometry") if runs else None,
+        },
     }
 
 

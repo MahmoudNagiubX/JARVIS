@@ -47,6 +47,7 @@ class PolicyPermissionEngine:
             # is what actually forces owner approval before any native input.
             PermissionRule("tool.computer.pointer.act", PermissionEffect.ALLOW, "computer_pointer_act_boundary"),
             PermissionRule("tool.computer.keyboard.key", PermissionEffect.ALLOW, "computer_keyboard_key_boundary"),
+            PermissionRule("tool.computer.keyboard.chord", PermissionEffect.ALLOW, "computer_keyboard_chord_boundary"),
             # BrowserActionService owns the inner read/approval decision. The
             # outer tool wrapper must not create a second approval request.
             PermissionRule("tool.browser.", PermissionEffect.ALLOW, "browser_action_boundary"),

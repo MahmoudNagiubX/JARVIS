@@ -419,10 +419,20 @@ def register_computer_tools(
     async def pointer_act(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
         action = arguments.get("action")
         element_ref = arguments.get("element_ref")
-        if action not in {"move_to_element", "left_click_element"}:
+        if action not in {"move_to_element", "left_click_element", "right_click_element", "double_click_element", "scroll_element"}:
             return ToolResult(ToolResultStatus.DENIED, error_code="pointer_action_invalid")
         if not isinstance(element_ref, str) or not element_ref.startswith("element-"):
             return ToolResult(ToolResultStatus.DENIED, error_code="element_ref_required")
+        if action == "scroll_element":
+            direction = arguments.get("direction")
+            steps = arguments.get("steps")
+            if direction not in ("up", "down"):
+                return ToolResult(ToolResultStatus.DENIED, error_code="native_input_scroll_direction_invalid")
+            if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 5:
+                return ToolResult(ToolResultStatus.DENIED, error_code="native_input_scroll_steps_invalid")
+            return await execute_action("pointer_scroll_element", {"element_ref": element_ref, "direction": direction, "steps": steps}, arguments, context)
+        if set(arguments) & {"direction", "steps"}:
+            return ToolResult(ToolResultStatus.DENIED, error_code="pointer_action_invalid")
         return await execute_action(f"pointer_{action}", {"element_ref": element_ref}, arguments, context)
 
     async def keyboard_key(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
@@ -436,6 +446,15 @@ def register_computer_tools(
         if not isinstance(modifiers, list) or not all(isinstance(item, str) for item in modifiers):
             return ToolResult(ToolResultStatus.DENIED, error_code="native_input_key_not_allowed")
         return await execute_action("keyboard_key", {"window_ref": window_ref, "key": key, "modifiers": modifiers}, arguments, context)
+
+    async def keyboard_chord(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        window_ref = arguments.get("window_ref")
+        chord = arguments.get("chord")
+        if not isinstance(window_ref, str) or not window_ref.startswith("window-"):
+            return ToolResult(ToolResultStatus.DENIED, error_code="window_ref_required")
+        if not isinstance(chord, str):
+            return ToolResult(ToolResultStatus.DENIED, error_code="native_input_chord_not_allowed")
+        return await execute_action("keyboard_chord", {"window_ref": window_ref, "chord": chord}, arguments, context)
 
     registry.register(ToolSpec(
         "tool-computer-audio-adjust-v1", "computer.audio.adjust", "1", "Adjust local Windows audio by bounded media-key steps.",
@@ -514,16 +533,25 @@ def register_computer_tools(
     ))
     registry.register(ToolSpec(
         "tool-computer-pointer-act-v1", "computer.pointer.act", "1",
-        "Move the mouse pointer to a previously observed element, or left-click it, using bounded "
-        "native Windows input. Grounded strictly through an element reference - no raw coordinates, "
-        "no HWND. Consequential - requires owner approval. Delivery is never proof the application's "
-        "intended action occurred; a generic click stays unverified.",
+        "Move the mouse pointer to a previously observed element, left-click, right-click, or "
+        "double-click it, or scroll over it, using bounded native Windows input. Grounded strictly "
+        "through an element reference - no raw coordinates, no HWND, no raw wheel delta. "
+        "Consequential - requires owner approval. Delivery is never proof the application's intended "
+        "action occurred; a generic click/scroll stays unverified.",
         "safe", "tool.request", frozenset({"computer.input"}), 15.0, False, pointer_act,
         parameters_schema={
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["move_to_element", "left_click_element"]},
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "move_to_element", "left_click_element", "right_click_element",
+                        "double_click_element", "scroll_element",
+                    ],
+                },
                 "element_ref": {"type": "string", "maxLength": 100},
+                "direction": {"type": "string", "enum": ["up", "down"]},
+                "steps": {"type": "integer", "minimum": 1, "maximum": 5},
                 "target_device_id": {"type": "string", "maxLength": 200},
             },
             "required": ["action", "element_ref"],
@@ -553,6 +581,25 @@ def register_computer_tools(
                 "target_device_id": {"type": "string", "maxLength": 200},
             },
             "required": ["window_ref", "key"],
+            "additionalProperties": False,
+        },
+        argument_retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-keyboard-chord-v1", "computer.keyboard.chord", "1",
+        "Send one bounded, reviewed keyboard chord (ctrl+a/c/f/z/y only) to a previously observed, "
+        "grounded, foreground Windows window. No raw virtual-key code, no arbitrary modifier+key "
+        "parser, no paste, no save, no Alt+F4, no Windows-key combination, no Ctrl+Alt+Delete. "
+        "Consequential - requires owner approval.",
+        "safe", "tool.request", frozenset({"computer.input"}), 15.0, False, keyboard_chord,
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "window_ref": {"type": "string", "maxLength": 100},
+                "chord": {"type": "string", "enum": ["ctrl+a", "ctrl+c", "ctrl+f", "ctrl+z", "ctrl+y"]},
+                "target_device_id": {"type": "string", "maxLength": 200},
+            },
+            "required": ["window_ref", "chord"],
             "additionalProperties": False,
         },
         argument_retention=ToolResultRetention.EPHEMERAL,

@@ -55,8 +55,13 @@ SM_CYVIRTUALSCREEN = 79
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_RIGHTDOWN = 0x0008
+MOUSEEVENTF_RIGHTUP = 0x0010
+MOUSEEVENTF_WHEEL = 0x0800
 MOUSEEVENTF_ABSOLUTE = 0x8000
 MOUSEEVENTF_VIRTUALDESK = 0x4000
+WHEEL_DELTA = 120
+MAX_SCROLL_STEPS = 5
 
 VK_SHIFT = 0x10
 VK_CONTROL = 0x11
@@ -90,6 +95,17 @@ MODIFIER_VK: dict[str, int] = {"shift": VK_SHIFT}
 _ALLOWED_MODIFIER_COMBOS: frozenset[tuple[tuple[str, ...], str]] = frozenset({
     ((), key) for key in NAMED_KEY_VK
 } | {(("shift",), "tab")})
+
+# A very small explicit chord allowlist (9.5) - never an arbitrary
+# modifier+key parser. Deliberately excludes paste (Ctrl+V), save (Ctrl+S),
+# Alt+F4, any Windows-key combination, and Ctrl+Alt+Delete.
+NAMED_CHORDS: dict[str, tuple[int, int]] = {
+    "ctrl+a": (VK_CONTROL, ord("A")),
+    "ctrl+c": (VK_CONTROL, ord("C")),
+    "ctrl+f": (VK_CONTROL, ord("F")),
+    "ctrl+z": (VK_CONTROL, ord("Z")),
+    "ctrl+y": (VK_CONTROL, ord("Y")),
+}
 
 # Physically-held modifiers JARVIS must never try to "correct" (7.5).
 _INTERFERING_MODIFIER_VKS: tuple[int, ...] = (VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN)
@@ -142,8 +158,8 @@ def unicode_input(unit: int, flags: int) -> _INPUT:
     return _INPUT(1, _INPUT_UNION(ki=_KEYBDINPUT(0, unit, flags, 0, None)))
 
 
-def _mouse_input(dx: int, dy: int, flags: int) -> _INPUT:
-    return _INPUT(0, _INPUT_UNION(mi=_MOUSEINPUT(dx, dy, 0, flags, 0, None)))
+def _mouse_input(dx: int, dy: int, flags: int, *, mouse_data: int = 0) -> _INPUT:
+    return _INPUT(0, _INPUT_UNION(mi=_MOUSEINPUT(dx, dy, mouse_data & 0xFFFFFFFF, flags, 0, None)))
 
 
 def normalize_virtual_desktop_point(
@@ -298,6 +314,94 @@ class WindowsNativeInputAdapter:
         # here; a separate evaluator may independently prove a scenario.
         return NativeInputResult("succeeded", evidence, verified=False)
 
+    async def right_click_element(self, element_ref: str) -> NativeInputResult:
+        if not self.available:
+            return NativeInputResult("failed", {}, "native_input_unavailable")
+        target, error = await self._ground(element_ref)
+        if target is None:
+            return NativeInputResult(_status_for(error), {}, error)
+        accepted, _pointer_verified, evidence = self._move_pointer(target)
+        if not accepted:
+            return NativeInputResult("failed", evidence, "native_input_injection_failed", verified=False)
+        click_inputs = (
+            _mouse_input(0, 0, MOUSEEVENTF_RIGHTDOWN),
+            _mouse_input(0, 0, MOUSEEVENTF_RIGHTUP),
+        )
+        sent = self._send_input(click_inputs)
+        input_batch_accepted = sent == len(click_inputs)
+        evidence = {
+            **evidence,
+            "input_batch_accepted": input_batch_accepted,
+            "target_window_foreground": self.window_provider.is_foreground(target.hwnd),
+        }
+        if not input_batch_accepted:
+            return NativeInputResult("failed", evidence, "native_input_injection_failed", verified=False)
+        # Never assumed a context menu opened merely because input was
+        # delivered (9.2) - generic right click stays unverified, same
+        # honesty rule as left click.
+        return NativeInputResult("succeeded", evidence, verified=False)
+
+    async def double_click_element(self, element_ref: str) -> NativeInputResult:
+        if not self.available:
+            return NativeInputResult("failed", {}, "native_input_unavailable")
+        target, error = await self._ground(element_ref)
+        if target is None:
+            return NativeInputResult(_status_for(error), {}, error)
+        accepted, _pointer_verified, evidence = self._move_pointer(target)
+        if not accepted:
+            return NativeInputResult("failed", evidence, "native_input_injection_failed", verified=False)
+        # Exactly one bounded double-click sequence - never an arbitrary
+        # click count, and no timing is ever exposed to the model (9.3).
+        # System double-click timing (GetDoubleClickTime) governs whether
+        # Windows itself recognizes this as a double click; the two clicks
+        # are still delivered as a single bounded SendInput batch.
+        click_inputs = (
+            _mouse_input(0, 0, MOUSEEVENTF_LEFTDOWN),
+            _mouse_input(0, 0, MOUSEEVENTF_LEFTUP),
+            _mouse_input(0, 0, MOUSEEVENTF_LEFTDOWN),
+            _mouse_input(0, 0, MOUSEEVENTF_LEFTUP),
+        )
+        sent = self._send_input(click_inputs)
+        input_batch_accepted = sent == len(click_inputs)
+        evidence = {
+            **evidence,
+            "input_batch_accepted": input_batch_accepted,
+            "target_window_foreground": self.window_provider.is_foreground(target.hwnd),
+        }
+        if not input_batch_accepted:
+            return NativeInputResult("failed", evidence, "native_input_injection_failed", verified=False)
+        return NativeInputResult("succeeded", evidence, verified=False)
+
+    async def scroll_element(self, element_ref: str, direction: str, steps: int) -> NativeInputResult:
+        if not self.available:
+            return NativeInputResult("failed", {}, "native_input_unavailable")
+        if direction not in ("up", "down"):
+            return NativeInputResult("denied", {}, "native_input_scroll_direction_invalid")
+        if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= MAX_SCROLL_STEPS:
+            return NativeInputResult("denied", {}, "native_input_scroll_steps_invalid")
+        target, error = await self._ground(element_ref)
+        if target is None:
+            return NativeInputResult(_status_for(error), {}, error)
+        accepted, _pointer_verified, evidence = self._move_pointer(target)
+        if not accepted:
+            return NativeInputResult("failed", evidence, "native_input_injection_failed", verified=False)
+        # Bounded signed multiple of WHEEL_DELTA only - never a raw wheel
+        # delta from the model (9.4).
+        signed_delta = WHEEL_DELTA * steps * (1 if direction == "up" else -1)
+        scroll_inputs = (_mouse_input(0, 0, MOUSEEVENTF_WHEEL, mouse_data=signed_delta),)
+        sent = self._send_input(scroll_inputs)
+        input_batch_accepted = sent == len(scroll_inputs)
+        evidence = {
+            **evidence,
+            "input_batch_accepted": input_batch_accepted,
+            "target_window_foreground": self.window_provider.is_foreground(target.hwnd),
+        }
+        if not input_batch_accepted:
+            return NativeInputResult("failed", evidence, "native_input_injection_failed", verified=False)
+        # Delivery evidence only - never a generic "content changed" claim
+        # (9.4).
+        return NativeInputResult("succeeded", evidence, verified=False)
+
     def _move_pointer(self, target: _GroundedTarget) -> tuple[bool, bool, dict[str, object]]:
         vleft, vtop, vwidth, vheight = self._metrics_provider()
         normalized = normalize_virtual_desktop_point(
@@ -366,14 +470,52 @@ class WindowsNativeInputAdapter:
         if vk is None:
             return NativeInputResult("denied", {}, "native_input_key_not_allowed")
         modifier_vks = [MODIFIER_VK[name] for name in normalized_modifiers]
+        hwnd, ground_failure = self._ground_window(window_ref)
+        if hwnd is None:
+            return ground_failure
+        failure = await self._press_key_sequence(hwnd, vk, modifier_vks)
+        if failure is not None:
+            return failure
+        target_window_foreground = self.window_provider.is_foreground(hwnd)
+        return NativeInputResult(
+            "succeeded",
+            {"key": key, "modifiers": list(normalized_modifiers), "target_window_foreground": target_window_foreground},
+            verified=False,
+        )
+
+    async def press_chord(self, window_ref: str, chord: str) -> NativeInputResult:
+        if not self.available:
+            return NativeInputResult("failed", {}, "native_input_unavailable")
+        mapping = NAMED_CHORDS.get(chord)
+        if mapping is None:
+            return NativeInputResult("denied", {}, "native_input_chord_not_allowed")
+        modifier_vk, key_vk = mapping
+        hwnd, ground_failure = self._ground_window(window_ref)
+        if hwnd is None:
+            return ground_failure
+        failure = await self._press_key_sequence(hwnd, key_vk, [modifier_vk])
+        if failure is not None:
+            return failure
+        target_window_foreground = self.window_provider.is_foreground(hwnd)
+        return NativeInputResult("succeeded", {"chord": chord, "target_window_foreground": target_window_foreground}, verified=False)
+
+    def _ground_window(self, window_ref: str) -> tuple[int | None, NativeInputResult | None]:
         try:
             hwnd = self.window_provider.validate_input_window(window_ref)
         except ValueError as exc:
-            return NativeInputResult("denied" if str(exc) == "sensitive_window_denied" else "failed", {}, str(exc) or "uia_window_stale")
+            reason = str(exc) or "uia_window_stale"
+            return None, NativeInputResult("denied" if reason == "sensitive_window_denied" else "failed", {}, reason)
         if not self.window_provider.focus_window(window_ref):
-            return NativeInputResult("failed", {}, "window_focus_not_verified")
+            return None, NativeInputResult("failed", {}, "window_focus_not_verified")
         if not self.window_provider.is_foreground(hwnd):
-            return NativeInputResult("failed", {}, "window_focus_not_verified")
+            return None, NativeInputResult("failed", {}, "window_focus_not_verified")
+        return hwnd, None
+
+    async def _press_key_sequence(self, hwnd: int, key_vk: int, modifier_vks: list[int]) -> NativeInputResult | None:
+        """Shared modifier-press/key-press/guaranteed-release sequence used
+        by both `press_key` and `press_chord` - one input-sequencing
+        implementation, not two. Returns None on success, or the failure
+        `NativeInputResult` to propagate."""
         # Never try to "correct" modifiers the real user is physically
         # holding - fail safely instead (7.5). JARVIS's own intended
         # modifiers (if any) are not owner interference.
@@ -392,7 +534,7 @@ class WindowsNativeInputAdapter:
                 pressed_modifiers.append(modifier_vk)
             if not self.window_provider.is_foreground(hwnd):
                 return NativeInputResult("failed", {}, "window_focus_not_verified")
-            key_inputs = (key_input(vk, 0), key_input(vk, 0x0002))
+            key_inputs = (key_input(key_vk, 0), key_input(key_vk, 0x0002))
             sent = self._send_input(key_inputs)
             if sent != len(key_inputs):
                 return NativeInputResult("failed", {}, "native_input_injection_failed")
@@ -401,12 +543,7 @@ class WindowsNativeInputAdapter:
             # (7.5) - guaranteed cleanup, never left physically "held".
             for modifier_vk in reversed(pressed_modifiers):
                 self._send_input((key_input(modifier_vk, 0x0002),))
-        target_window_foreground = self.window_provider.is_foreground(hwnd)
-        return NativeInputResult(
-            "succeeded",
-            {"key": key, "modifiers": list(normalized_modifiers), "target_window_foreground": target_window_foreground},
-            verified=False,
-        )
+        return None
 
 
 def _status_for(error: str | None) -> str:

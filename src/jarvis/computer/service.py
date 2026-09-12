@@ -137,8 +137,16 @@ class WindowsNativeComputerController:
                 return await self._pointer_act("move_to_element", action.parameters)
             if capability is ComputerCapability.POINTER_LEFT_CLICK_ELEMENT:
                 return await self._pointer_act("left_click_element", action.parameters)
+            if capability is ComputerCapability.POINTER_RIGHT_CLICK_ELEMENT:
+                return await self._pointer_act("right_click_element", action.parameters)
+            if capability is ComputerCapability.POINTER_DOUBLE_CLICK_ELEMENT:
+                return await self._pointer_act("double_click_element", action.parameters)
+            if capability is ComputerCapability.POINTER_SCROLL_ELEMENT:
+                return await self._pointer_scroll(action.parameters)
             if capability is ComputerCapability.KEYBOARD_KEY:
                 return await self._keyboard_key(action.parameters)
+            if capability is ComputerCapability.KEYBOARD_CHORD:
+                return await self._keyboard_chord(action.parameters)
             if capability is ComputerCapability.RESOLVE_ELEMENT_TARGET:
                 return await self._resolve_element_target(action.parameters)
             if capability is ComputerCapability.RESOLVE_WINDOW_TARGET:
@@ -501,6 +509,34 @@ class WindowsNativeComputerController:
         result: NativeInputResult = await method(element_ref)
         return ComputerResult(result.status, dict(result.output), result.error_code, result.verified)
 
+    async def _pointer_scroll(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        allowed_keys = {"element_ref", "direction", "steps"}
+        if set(parameters) != allowed_keys:
+            return ComputerResult("denied", error_code="scroll_parameters_invalid")
+        element_ref = parameters.get("element_ref")
+        direction = parameters.get("direction")
+        steps = parameters.get("steps")
+        if not isinstance(element_ref, str) or not element_ref.startswith("element-"):
+            return ComputerResult("denied", error_code="element_ref_required")
+        if direction not in ("up", "down"):
+            return ComputerResult("denied", error_code="native_input_scroll_direction_invalid")
+        if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 5:
+            return ComputerResult("denied", error_code="native_input_scroll_steps_invalid")
+        result: NativeInputResult = await self.native_input_adapter.scroll_element(element_ref, direction, steps)
+        return ComputerResult(result.status, dict(result.output), result.error_code, result.verified)
+
+    async def _keyboard_chord(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        if set(parameters) != {"window_ref", "chord"}:
+            return ComputerResult("denied", error_code="keyboard_chord_parameters_invalid")
+        window_ref = parameters.get("window_ref")
+        chord = parameters.get("chord")
+        if not isinstance(window_ref, str) or not window_ref.startswith("window-"):
+            return ComputerResult("denied", error_code="window_ref_required")
+        if not isinstance(chord, str):
+            return ComputerResult("denied", error_code="native_input_chord_not_allowed")
+        result: NativeInputResult = await self.native_input_adapter.press_chord(window_ref, chord)
+        return ComputerResult(result.status, dict(result.output), result.error_code, result.verified)
+
     async def _keyboard_key(self, parameters: Mapping[str, Any]) -> ComputerResult:
         allowed_keys = {"window_ref", "key", "modifiers"}
         if set(parameters) - allowed_keys or "window_ref" not in parameters or "key" not in parameters:
@@ -628,6 +664,9 @@ class ComputerActionService:
         ComputerCapability.SEMANTIC_SELECT.value,
         ComputerCapability.POINTER_MOVE_TO_ELEMENT.value,
         ComputerCapability.POINTER_LEFT_CLICK_ELEMENT.value,
+        ComputerCapability.POINTER_RIGHT_CLICK_ELEMENT.value,
+        ComputerCapability.POINTER_DOUBLE_CLICK_ELEMENT.value,
+        ComputerCapability.POINTER_SCROLL_ELEMENT.value,
     })
     # Every action grounded by a window_ref (not an element_ref) instead
     # gets a trusted WINDOW-target preview/binding (R18B02-003): a bounded
@@ -635,6 +674,7 @@ class ComputerActionService:
     _window_targeted_actions = frozenset({
         ComputerCapability.KEYBOARD_ACTION.value,
         ComputerCapability.KEYBOARD_KEY.value,
+        ComputerCapability.KEYBOARD_CHORD.value,
     })
 
     def __init__(
@@ -965,6 +1005,8 @@ class ComputerActionService:
             # identity alongside it).
             preview["text_length"] = len(text) if isinstance(text, str) else None
             preview["text_digest"] = _text_digest(text) if isinstance(text, str) else None
+        elif action.action == ComputerCapability.KEYBOARD_CHORD.value:
+            preview["chord"] = parameters.get("chord")
         else:
             preview["key"] = parameters.get("key")
             modifiers = parameters.get("modifiers")

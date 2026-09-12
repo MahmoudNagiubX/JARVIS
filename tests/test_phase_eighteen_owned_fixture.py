@@ -150,7 +150,8 @@ class OwnedFixtureRunnerLogicTests(unittest.IsolatedAsyncioTestCase):
                 "toggle": {"independent_status_matches_expected": True},
                 "select": {"independent_status_matches_expected": True},
                 "fixture_child_confirmed_exited": True,
-            }
+            },
+            "non_primary_monitor": {"attempted": False, "skip_reason": "MULTI_MONITOR_PHYSICAL_PENDING"},
         }]
         summary = self.module._summarize(fake_runs)
         import json

@@ -48,7 +48,11 @@ class ComputerCapability(StrEnum):
     SEMANTIC_SELECT = "semantic_select"
     POINTER_MOVE_TO_ELEMENT = "pointer_move_to_element"
     POINTER_LEFT_CLICK_ELEMENT = "pointer_left_click_element"
+    POINTER_RIGHT_CLICK_ELEMENT = "pointer_right_click_element"
+    POINTER_DOUBLE_CLICK_ELEMENT = "pointer_double_click_element"
+    POINTER_SCROLL_ELEMENT = "pointer_scroll_element"
     KEYBOARD_KEY = "keyboard_key"
+    KEYBOARD_CHORD = "keyboard_chord"
     # Internal-only capabilities: never registered in any ToolSpec, so the
     # model can never request them directly. ComputerActionService uses
     # these to build a fresh, trusted target preview/binding before creating

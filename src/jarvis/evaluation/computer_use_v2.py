@@ -94,12 +94,12 @@ class _FakeSemanticAdapter:
         return SemanticResult("succeeded", {"element": _snapshot(element_ref), "verified": True})
 
 
-async def _new_runtime_context() -> SimpleNamespace:
+async def _new_runtime_context(*, file_access_roots: tuple[str, ...] = ()) -> SimpleNamespace:
     from ..bootstrap import create_runtime
     from ..config import JarvisConfig
     from ..contracts import ToolContext
 
-    runtime = create_runtime(JarvisConfig(environment="test", database_path=":memory:"))
+    runtime = create_runtime(JarvisConfig(environment="test", database_path=":memory:", file_access_roots=file_access_roots))
     await runtime.start()
     identity = await runtime.identity.bootstrap_owner("Computer Use V2 Evaluation Owner")
     enrollment = await runtime.identity.create_enrollment(
@@ -446,6 +446,186 @@ async def _case_wrong_target_execution_count_zero(_context: Any) -> bool:
         await ctx.runtime.shutdown()
 
 
+# -- 18. trusted window-target approval preview (R18B02-003) --
+
+async def _case_window_target_approval_is_trusted(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    try:
+        class _FakeWindowProvider:
+            def describe_window(self, window_ref: str) -> dict[str, object]:
+                from datetime import UTC, datetime, timedelta
+                return {
+                    "window_ref": window_ref, "title": "Trusted Fixture Window", "process_name": "python.exe",
+                    "expires_at": datetime.now(UTC) + timedelta(minutes=10), "identity_digest": "digest-1",
+                }
+
+        ctx.runtime.computer_actions.controller.local.perception_provider = _FakeWindowProvider()
+        requested = await ctx.runtime.tool_service.execute(
+            "computer.keyboard.key", {"window_ref": "window-1", "key": "tab"}, ctx.context
+        )
+        if requested.approval_id is None:
+            return False
+        row = ctx.runtime.repository.approval(requested.approval_id)
+        import json
+        preview = json.loads(row["preview_json"])
+        return preview.get("window_title") == "Trusted Fixture Window" and preview.get("process_name") == "python.exe" and "parameters" not in preview
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 19/20/21. file-root confinement, sensitive-path denial, escape refusal --
+
+async def _case_file_root_confinement(_context: Any) -> bool:
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory(prefix="jarvis_cuv2_eval_") as tmp:
+        allowed = Path(tmp) / "allowed"
+        allowed.mkdir()
+        (allowed / "normal.txt").write_text("hi", encoding="utf-8")
+        outside = Path(tmp) / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("nope", encoding="utf-8")
+
+        ctx = await _new_runtime_context(file_access_roots=(str(allowed),))
+        try:
+            from ..contracts import ComputerAction
+            inside = await ctx.runtime.computer_actions.execute(
+                ComputerAction("inspect_file", {"path": str(allowed / "normal.txt")}, False), ctx.identity, ctx.device,
+            )
+            outside_result = await ctx.runtime.computer_actions.execute(
+                ComputerAction("inspect_file", {"path": str(outside / "secret.txt")}, False), ctx.identity, ctx.device,
+            )
+            return (
+                inside.status == "succeeded"
+                and outside_result.status == "denied"
+                and outside_result.error_code == "file_path_outside_allowed_root"
+            )
+        finally:
+            await ctx.runtime.shutdown()
+
+
+async def _case_sensitive_path_denial(_context: Any) -> bool:
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory(prefix="jarvis_cuv2_eval_") as tmp:
+        allowed = Path(tmp) / "allowed"
+        allowed.mkdir()
+        (allowed / ".env").write_text("SECRET=1", encoding="utf-8")
+
+        ctx = await _new_runtime_context(file_access_roots=(str(allowed),))
+        try:
+            from ..contracts import ComputerAction
+            result = await ctx.runtime.computer_actions.execute(
+                ComputerAction("inspect_file", {"path": str(allowed / ".env")}, False), ctx.identity, ctx.device,
+            )
+            return result.status == "denied" and result.error_code == "file_sensitive_path_denied"
+        finally:
+            await ctx.runtime.shutdown()
+
+
+async def _case_symlink_escape_refused(_context: Any) -> bool:
+    # This deterministic suite never launches a real process (see
+    # "no physical test runs by default" - test_phase_eighteen_evaluation_
+    # suite.py), so it does not create a real junction here (that requires
+    # spawning `cmd /c mklink`); the real, physical junction-escape proof
+    # lives in tests/test_phase_eighteen_file_access.py, exercised through
+    # both the policy directly and the real ComputerActionService path.
+    # This case instead proves the same underlying contract - a path that
+    # *resolves* outside the approved root is denied - using a plain nested
+    # `..`-escape, which needs no subprocess.
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory(prefix="jarvis_cuv2_eval_") as tmp:
+        allowed = Path(tmp) / "allowed"
+        allowed.mkdir()
+        outside = Path(tmp) / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("nope", encoding="utf-8")
+        escape_path = allowed / ".." / "outside" / "secret.txt"
+
+        ctx = await _new_runtime_context(file_access_roots=(str(allowed),))
+        try:
+            from ..contracts import ComputerAction
+            result = await ctx.runtime.computer_actions.execute(
+                ComputerAction("inspect_file", {"path": str(escape_path)}, False), ctx.identity, ctx.device,
+            )
+            return result.status == "denied" and result.error_code == "file_path_outside_allowed_root"
+        finally:
+            await ctx.runtime.shutdown()
+
+
+# -- 22. right-click/double-click/scroll stay element-grounded --
+
+async def _case_expanded_pointer_actions_stay_element_grounded(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    try:
+        ctx.semantic.element_error["element-weak"] = "uia_element_identity_weak"
+        results = []
+        for action, extra in (
+            ("right_click_element", {}), ("double_click_element", {}), ("scroll_element", {"direction": "up", "steps": 1}),
+        ):
+            requested = await ctx.runtime.tool_service.execute(
+                "computer.pointer.act", {"action": action, "element_ref": "element-weak", **extra}, ctx.context
+            )
+            results.append(requested.status.value == "denied")
+        return all(results)
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 23. chord allowlist rejects raw/unlisted combinations --
+
+async def _case_chord_allowlist_rejects_unlisted(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    try:
+
+        class _Provider:
+            def describe_window(self, window_ref: str) -> dict[str, object]:
+                from datetime import UTC, datetime, timedelta
+                return {"window_ref": window_ref, "title": "W", "process_name": "python.exe", "expires_at": datetime.now(UTC) + timedelta(minutes=10), "identity_digest": "d"}
+
+        ctx.runtime.computer_actions.controller.local.perception_provider = _Provider()
+        spec = ctx.runtime.tools.get("computer.keyboard.chord")
+        if spec is None or "ctrl+v" in str(spec.parameters_schema).casefold():
+            return False
+        # "ctrl+v" is a valid string (so the tool handler's own type check
+        # passes it through) but is not in the product's chord allowlist -
+        # the real denial happens inside the adapter at execution time, so
+        # this must request approval, approve it, and check the FINAL
+        # outcome, not assume an immediate denial.
+        requested = await ctx.runtime.tool_service.execute(
+            "computer.keyboard.chord", {"window_ref": "window-1", "chord": "ctrl+v"}, ctx.context
+        )
+        if requested.status.value != "approval_required" or requested.approval_id is None:
+            return False
+        decided = await ctx.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, ctx.identity.identity_id, ctx.context
+        )
+        return decided.status.value == "denied" and decided.error_code == "native_input_chord_not_allowed"
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 24/25. no paste, no drag/drop anywhere in the model-facing surface --
+
+async def _case_no_paste_or_drag_drop_in_any_schema(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    try:
+        for tool_name in ("computer.pointer.act", "computer.keyboard.key", "computer.keyboard.chord", "computer.keyboard.type"):
+            spec = ctx.runtime.tools.get(tool_name)
+            if spec is None:
+                return False
+            blob = str(spec.parameters_schema).casefold()
+            if "paste" in blob or "drag" in blob or "drop" in blob or "ctrl+v" in blob:
+                return False
+        return True
+    finally:
+        await ctx.runtime.shutdown()
+
+
 def build_suite() -> RegressionSuite:
     cases = (
         EvaluationCase("cuv2-01", "semantic read uses canonical authority", "computer_use_v2", _case_semantic_read_canonical),
@@ -465,6 +645,13 @@ def build_suite() -> RegressionSuite:
         EvaluationCase("cuv2-15", "model-visible verified survives", "computer_use_v2", _case_verified_field_survives_pipeline),
         EvaluationCase("cuv2-16", "UI text cannot self-authorize", "computer_use_v2", _case_ui_text_cannot_self_authorize),
         EvaluationCase("cuv2-17", "wrong-target execution count remains zero in fixture cases", "computer_use_v2", _case_wrong_target_execution_count_zero),
+        EvaluationCase("cuv2-18", "window-targeted approval preview is trusted", "computer_use_v2", _case_window_target_approval_is_trusted),
+        EvaluationCase("cuv2-19", "file-root confinement", "computer_use_v2", _case_file_root_confinement),
+        EvaluationCase("cuv2-20", "sensitive-path denial", "computer_use_v2", _case_sensitive_path_denial),
+        EvaluationCase("cuv2-21", "path-resolution escape refusal (real junction proof lives in test_phase_eighteen_file_access.py)", "computer_use_v2", _case_symlink_escape_refused),
+        EvaluationCase("cuv2-22", "right-click/double-click/scroll stay element-grounded", "computer_use_v2", _case_expanded_pointer_actions_stay_element_grounded),
+        EvaluationCase("cuv2-23", "chord allowlist rejects unlisted combinations", "computer_use_v2", _case_chord_allowlist_rejects_unlisted),
+        EvaluationCase("cuv2-24", "no paste or drag/drop in any model-facing schema", "computer_use_v2", _case_no_paste_or_drag_drop_in_any_schema),
     )
     return RegressionSuite(
         SUITE_NAME, cases,

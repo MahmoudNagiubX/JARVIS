@@ -237,6 +237,105 @@ class MouseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error_code, "native_input_injection_failed")
 
 
+class ExpandedPointerActionTests(unittest.IsolatedAsyncioTestCase):
+    """Milestone 2 (Batch 03): right_click_element/double_click_element/
+    scroll_element - all still element-grounded through the exact same
+    `_ground()` pipeline as move/left-click, never a raw coordinate."""
+
+    async def test_right_click_is_element_grounded_and_unverified(self) -> None:
+        semantic = _FakeSemanticAdapter(bounds=SemanticBounds(0, 0, 20, 20))
+        adapter = _adapter(semantic, _FakeWindowProvider(), get_cursor_pos=lambda: (10, 10))
+        result = await adapter.right_click_element("element-1")
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.verified)
+        self.assertTrue(result.output["input_batch_accepted"])
+
+    async def test_right_click_denied_for_weak_identity(self) -> None:
+        semantic = _FakeSemanticAdapter(bounds=SemanticBounds(0, 0, 20, 20))
+        semantic.error_code = "uia_element_identity_weak"
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.right_click_element("element-weak")
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "uia_element_identity_weak")
+
+    async def test_double_click_sends_exactly_two_click_pairs_and_unverified(self) -> None:
+        sent_inputs: list[int] = []
+
+        def record_send(inputs: object) -> int:
+            for item in inputs:
+                sent_inputs.append(item.mi.dwFlags)
+            return len(inputs)
+
+        semantic = _FakeSemanticAdapter(bounds=SemanticBounds(0, 0, 20, 20))
+        adapter = _adapter(semantic, _FakeWindowProvider(), send_input=record_send)
+        result = await adapter.double_click_element("element-1")
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.verified)
+        # One move + two full (down, up) left-click pairs = 5 SendInput calls
+        # worth of flags recorded (move flag, then LEFTDOWN/LEFTUP x2).
+        from jarvis.computer.native_input import MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP
+        self.assertEqual(sent_inputs.count(MOUSEEVENTF_LEFTDOWN), 2)
+        self.assertEqual(sent_inputs.count(MOUSEEVENTF_LEFTUP), 2)
+
+    async def test_scroll_up_and_down_send_bounded_wheel_delta(self) -> None:
+        sent_data: list[tuple[int, int]] = []
+
+        def record_send(inputs: object) -> int:
+            for item in inputs:
+                sent_data.append((item.mi.dwFlags, item.mi.mouseData))
+            return len(inputs)
+
+        semantic = _FakeSemanticAdapter(bounds=SemanticBounds(0, 0, 20, 20))
+        adapter = _adapter(semantic, _FakeWindowProvider(), send_input=record_send)
+        result = await adapter.scroll_element("element-1", "up", 2)
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.verified)
+        from jarvis.computer.native_input import MOUSEEVENTF_WHEEL, WHEEL_DELTA
+        wheel_events = [data for flags, data in sent_data if flags == MOUSEEVENTF_WHEEL]
+        self.assertEqual(len(wheel_events), 1)
+        # mouseData is an unsigned DWORD carrying the signed delta - convert
+        # back to signed to check the actual scroll direction/magnitude.
+        signed = wheel_events[0] if wheel_events[0] < 2**31 else wheel_events[0] - 2**32
+        self.assertEqual(signed, WHEEL_DELTA * 2)
+
+    async def test_scroll_down_is_negative_delta(self) -> None:
+        sent_data: list[int] = []
+
+        def record_send(inputs: object) -> int:
+            for item in inputs:
+                sent_data.append(item.mi.mouseData)
+            return len(inputs)
+
+        semantic = _FakeSemanticAdapter(bounds=SemanticBounds(0, 0, 20, 20))
+        adapter = _adapter(semantic, _FakeWindowProvider(), send_input=record_send)
+        from jarvis.computer.native_input import MOUSEEVENTF_WHEEL, WHEEL_DELTA
+        result = await adapter.scroll_element("element-1", "down", 1)
+        self.assertEqual(result.status, "succeeded")
+        signed = sent_data[-1] if sent_data[-1] < 2**31 else sent_data[-1] - 2**32
+        self.assertEqual(signed, -WHEEL_DELTA)
+
+    async def test_scroll_steps_out_of_range_denied(self) -> None:
+        semantic = _FakeSemanticAdapter(bounds=SemanticBounds(0, 0, 20, 20))
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.scroll_element("element-1", "up", 6)
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "native_input_scroll_steps_invalid")
+
+    async def test_scroll_invalid_direction_denied(self) -> None:
+        semantic = _FakeSemanticAdapter(bounds=SemanticBounds(0, 0, 20, 20))
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.scroll_element("element-1", "sideways", 1)
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "native_input_scroll_direction_invalid")
+
+    async def test_double_click_denied_for_offscreen_target(self) -> None:
+        semantic = _FakeSemanticAdapter(bounds=None)
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.double_click_element("element-1")
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "uia_target_not_interactable")
+
+
 class KeyboardTests(unittest.IsolatedAsyncioTestCase):
     async def test_key_allowlist_enforced_unsupported_key_denied(self) -> None:
         semantic = _FakeSemanticAdapter(bounds=None)
@@ -337,6 +436,62 @@ class KeyboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error_code, "native_input_injection_failed")
 
 
+class ChordTests(unittest.IsolatedAsyncioTestCase):
+    """Milestone 2 (Batch 03): computer.keyboard.chord - a very small,
+    explicit allowlist, never an arbitrary modifier+key parser (9.5)."""
+
+    async def test_allowed_chord_succeeds(self) -> None:
+        semantic = _FakeSemanticAdapter(bounds=None)
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.press_chord("window-1", "ctrl+c")
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.verified)
+        self.assertEqual(result.output["chord"], "ctrl+c")
+
+    async def test_unlisted_chord_denied(self) -> None:
+        semantic = _FakeSemanticAdapter(bounds=None)
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        for forbidden in ("ctrl+v", "ctrl+s", "alt+f4", "win+d", "ctrl+alt+delete", "ctrl+shift+esc"):
+            result = await adapter.press_chord("window-1", forbidden)
+            self.assertEqual(result.status, "denied", forbidden)
+            self.assertEqual(result.error_code, "native_input_chord_not_allowed", forbidden)
+
+    async def test_chord_modifier_held_by_owner_fails_safely(self) -> None:
+        from jarvis.computer.native_input import VK_MENU
+
+        semantic = _FakeSemanticAdapter(bounds=None)
+        adapter = _adapter(semantic, _FakeWindowProvider(), is_modifier_pressed=lambda vk: vk == VK_MENU)
+        result = await adapter.press_chord("window-1", "ctrl+a")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "native_input_modifier_state_unsafe")
+
+    async def test_chord_modifier_always_released(self) -> None:
+        from jarvis.computer.native_input import VK_CONTROL
+
+        sent_inputs: list[tuple[int, int]] = []
+
+        def record_send(inputs: object) -> int:
+            for item in inputs:
+                sent_inputs.append((item.ki.wVk, item.ki.dwFlags))
+            return len(inputs)
+
+        semantic = _FakeSemanticAdapter(bounds=None)
+        adapter = _adapter(semantic, _FakeWindowProvider(), send_input=record_send)
+        result = await adapter.press_chord("window-1", "ctrl+z")
+        self.assertEqual(result.status, "succeeded")
+        ctrl_events = [flags for vk, flags in sent_inputs if vk == VK_CONTROL]
+        self.assertIn(0, ctrl_events)
+        self.assertIn(0x0002, ctrl_events)
+
+    async def test_chord_is_window_grounded_not_element_grounded(self) -> None:
+        # A chord takes a window_ref, not an element_ref - confirmed by
+        # signature/behavior: it never touches the semantic adapter at all.
+        semantic = _FakeSemanticAdapter(bounds=None)
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.press_chord("window-1", "ctrl+f")
+        self.assertEqual(result.status, "succeeded")
+
+
 class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.runtime = create_runtime(JarvisConfig(environment="test", database_path=":memory:"))
@@ -356,7 +511,11 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self) -> None:
                 self.move_calls: list[str] = []
                 self.click_calls: list[str] = []
+                self.right_click_calls: list[str] = []
+                self.double_click_calls: list[str] = []
+                self.scroll_calls: list[tuple[str, str, int]] = []
                 self.key_calls: list[tuple[str, str, tuple[str, ...]]] = []
+                self.chord_calls: list[tuple[str, str]] = []
 
             async def move_to_element(self, element_ref: str):
                 from jarvis.computer.native_input import NativeInputResult
@@ -368,10 +527,30 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
                 self.click_calls.append(element_ref)
                 return NativeInputResult("succeeded", {"input_batch_accepted": True}, verified=False)
 
+            async def right_click_element(self, element_ref: str):
+                from jarvis.computer.native_input import NativeInputResult
+                self.right_click_calls.append(element_ref)
+                return NativeInputResult("succeeded", {"input_batch_accepted": True}, verified=False)
+
+            async def double_click_element(self, element_ref: str):
+                from jarvis.computer.native_input import NativeInputResult
+                self.double_click_calls.append(element_ref)
+                return NativeInputResult("succeeded", {"input_batch_accepted": True}, verified=False)
+
+            async def scroll_element(self, element_ref: str, direction: str, steps: int):
+                from jarvis.computer.native_input import NativeInputResult
+                self.scroll_calls.append((element_ref, direction, steps))
+                return NativeInputResult("succeeded", {"input_batch_accepted": True}, verified=False)
+
             async def press_key(self, window_ref: str, key: str, modifiers: tuple[str, ...] = ()):
                 from jarvis.computer.native_input import NativeInputResult
                 self.key_calls.append((window_ref, key, modifiers))
                 return NativeInputResult("succeeded", {"key": key}, verified=False)
+
+            async def press_chord(self, window_ref: str, chord: str):
+                from jarvis.computer.native_input import NativeInputResult
+                self.chord_calls.append((window_ref, chord))
+                return NativeInputResult("succeeded", {"chord": chord}, verified=False)
 
         self.fake_native = _FakeNativeInputAdapter()
         self.runtime.computer_actions.controller.local.native_input_adapter = self.fake_native
@@ -454,6 +633,75 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decided.status.value, "completed")
         self.assertEqual(self.fake_native.key_calls, [("window-1", "tab", ())])
 
+    async def test_right_click_requires_approval_and_executes_once_approved(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.pointer.act", {"action": "right_click_element", "element_ref": "element-1"}, context
+        )
+        self.assertEqual(requested.status.value, "approval_required")
+        assert requested.approval_id is not None
+        decided = await self.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, self.identity.identity_id, context
+        )
+        self.assertEqual(decided.status.value, "completed")
+        self.assertEqual(self.fake_native.right_click_calls, ["element-1"])
+
+    async def test_double_click_requires_approval_and_executes_once_approved(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.pointer.act", {"action": "double_click_element", "element_ref": "element-1"}, context
+        )
+        self.assertEqual(requested.status.value, "approval_required")
+        assert requested.approval_id is not None
+        decided = await self.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, self.identity.identity_id, context
+        )
+        self.assertEqual(decided.status.value, "completed")
+        self.assertEqual(self.fake_native.double_click_calls, ["element-1"])
+
+    async def test_scroll_requires_approval_and_executes_once_approved(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.pointer.act", {"action": "scroll_element", "element_ref": "element-1", "direction": "down", "steps": 3}, context
+        )
+        self.assertEqual(requested.status.value, "approval_required")
+        assert requested.approval_id is not None
+        decided = await self.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, self.identity.identity_id, context
+        )
+        self.assertEqual(decided.status.value, "completed")
+        self.assertEqual(self.fake_native.scroll_calls, [("element-1", "down", 3)])
+
+    async def test_chord_requires_approval_and_executes_once_approved(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.keyboard.chord", {"window_ref": "window-1", "chord": "ctrl+c"}, context
+        )
+        self.assertEqual(requested.status.value, "approval_required")
+        assert requested.approval_id is not None
+        decided = await self.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, self.identity.identity_id, context
+        )
+        self.assertEqual(decided.status.value, "completed")
+        self.assertEqual(self.fake_native.chord_calls, [("window-1", "ctrl+c")])
+
+    def test_chord_tool_schema_has_no_paste_and_no_arbitrary_hotkey(self) -> None:
+        spec = self.runtime.tools.get("computer.keyboard.chord")
+        assert spec is not None
+        chord_enum = set(spec.parameters_schema["properties"]["chord"]["enum"])
+        self.assertEqual(chord_enum, {"ctrl+a", "ctrl+c", "ctrl+f", "ctrl+z", "ctrl+y"})
+        for forbidden in ("ctrl+v", "ctrl+s", "alt+f4", "win+d", "ctrl+alt+delete"):
+            self.assertNotIn(forbidden, chord_enum)
+
+    def test_no_drag_drop_action_exists_anywhere_in_computer_tools(self) -> None:
+        for tool_name in ("computer.pointer.act", "computer.keyboard.key", "computer.keyboard.chord", "computer.keyboard.type"):
+            spec = self.runtime.tools.get(tool_name)
+            assert spec is not None
+            blob = str(spec.parameters_schema).casefold()
+            self.assertNotIn("drag", blob)
+            self.assertNotIn("drop", blob)
+            self.assertNotIn("paste", blob)
+
     async def test_audit_and_permission_events_recorded(self) -> None:
         context = self._context()
         requested = await self.runtime.tool_service.execute(
@@ -471,7 +719,9 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
         assert spec is not None
         properties = set(spec.parameters_schema.get("properties", {}))
         self.assertFalse(properties & {"x", "y", "hwnd", "path", "root", "pattern", "file", "folder", "vk", "flags"})
-        self.assertEqual(properties, {"action", "element_ref", "target_device_id"})
+        # direction/steps are bounded enum/range fields for scroll_element
+        # only (Milestone 2) - never a raw coordinate/delta.
+        self.assertEqual(properties, {"action", "element_ref", "direction", "steps", "target_device_id"})
 
     def test_keyboard_key_tool_schema_has_no_raw_vk_or_filesystem_fields(self) -> None:
         spec = self.runtime.tools.get("computer.keyboard.key")

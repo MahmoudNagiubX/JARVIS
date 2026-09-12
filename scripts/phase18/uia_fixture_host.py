@@ -136,6 +136,8 @@ def _configure_prototypes() -> None:
     user32.TranslateMessage.restype = wintypes.BOOL
     user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
     user32.DispatchMessageW.restype = LRESULT
+    user32.IsDialogMessageW.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.MSG)]
+    user32.IsDialogMessageW.restype = wintypes.BOOL
     # The 2nd param is a resource ordinal (IDC_ARROW=32512) cast as a pointer
     # (MAKEINTRESOURCEW), never a real string - c_void_p accepts that integer
     # directly, LPCWSTR would not.
@@ -207,6 +209,8 @@ def main() -> int:
     _configure_prototypes()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nonce", required=True, help="Unique per-run token embedded in the window title.")
+    parser.add_argument("--x", type=int, default=100, help="Evaluation-only: initial window X position (virtual desktop coordinates).")
+    parser.add_argument("--y", type=int, default=100, help="Evaluation-only: initial window Y position (virtual desktop coordinates).")
     args = parser.parse_args()
     title = f"JARVIS-CUV2-FIXTURE-{args.nonce}"
 
@@ -225,7 +229,7 @@ def main() -> int:
 
     hwnd = user32.CreateWindowExW(
         0, class_name, title, WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        100, 100, 340, 360, None, None, wndclass.hInstance, None,
+        args.x, args.y, 340, 360, None, None, wndclass.hInstance, None,
     )
     if not hwnd:
         print("ERROR create_window_failed", file=sys.stderr)
@@ -264,8 +268,14 @@ def main() -> int:
 
     msg = wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-        user32.TranslateMessage(ctypes.byref(msg))
-        user32.DispatchMessageW(ctypes.byref(msg))
+        # A plain top-level window (unlike a real dialog box) does not
+        # cycle keyboard focus between WS_TABSTOP children on Tab by
+        # itself - IsDialogMessageW is what makes that navigation work
+        # here (a real bug caught during Batch 03 physical acceptance:
+        # every Tab-key test reported focus never moved).
+        if not user32.IsDialogMessageW(hwnd, ctypes.byref(msg)):
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
     return 0
 
 

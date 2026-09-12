@@ -193,11 +193,82 @@ Marked `RESOLVED` (path-confinement scope only) per the task's own Section 8.13 
 
 - **Files staged (explicit paths, no `git add .`):** `src/jarvis/computer/file_access.py`, `src/jarvis/computer/service.py`, `src/jarvis/config.py`, `src/jarvis/bootstrap.py`, `tests/test_phase_eighteen_file_access.py`, `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_03.md`, `docs/source_of_truth/02_JARVIS_CURRENT_STATE.md`, `docs/source_of_truth/03_JARVIS_GAP_REGISTER.md`, `docs/source_of_truth/04_JARVIS_EXECUTION_ROADMAP.md`, `docs/source_of_truth/05_JARVIS_DECISION_LOG.md`.
 - **Commit message:** `fix: confine computer file access to approved roots`
-- **MILESTONE_1_COMMIT:** recorded after push, see final response.
+- **MILESTONE_1_COMMIT:** `a21ae23d1aa81aa507b0d2b3527a7cfe513a2bc4`
 
 ---
 
-<!-- Sections 5 (Milestone 2), 6 (physical results table), 7 (final tests),
-     8 (security review), 9 (gap state), 10 (manual dependencies), 11
-     (incident-safety changes), 12 (recommended next batch) are appended
-     here once Milestone 2 runs and the final batch gate completes. -->
+## 5. Milestone 2 — Input expansion + owned-fixture evaluation + multi-monitor physical proof
+
+**Commit:** `MILESTONE_2_COMMIT` (recorded in §5.6 below after push)
+
+### 5.1 Extended pointer actions
+
+- `computer.pointer.act` gained three new `action` enum values, all reusing the exact same element-grounding (`_ground()`) pipeline as `move_to_element`/`left_click_element` - never a second targeting implementation:
+  - `right_click_element` — move + `MOUSEEVENTF_RIGHTDOWN`/`RIGHTUP`. Never assumes a context menu opened merely because input was delivered; stays honestly unverified.
+  - `double_click_element` — move + two full left-click pairs (down/up ×2) in one bounded `SendInput` batch. Exactly one double-click sequence, never an arbitrary click count; no timing is ever exposed to the model.
+  - `scroll_element` — new bounded `direction` (`up`/`down`) and `steps` (1-5) parameters; internally a signed multiple of `WHEEL_DELTA=120` via `MOUSEEVENTF_WHEEL` — never a raw wheel delta from the model. Reports delivery evidence only, never a generic "content changed" claim.
+- All three (plus the existing two) are in `ComputerActionService._element_targeted_actions`, so they automatically get the full R18B02-001 trusted-preview/approval-binding treatment from Milestone 0 — no separate approval path was written for them.
+
+### 5.2 Named chord surface
+
+- New `computer.keyboard.chord` tool with a five-entry allowlist: `ctrl+a`, `ctrl+c`, `ctrl+f`, `ctrl+z`, `ctrl+y`. Deliberately excludes paste (`ctrl+v`), save (`ctrl+s`), `alt+f4`, any Windows-key combination, and Ctrl+Alt+Delete — verified by test that none of these ever reach the allowlist or the schema.
+- `WindowsNativeInputAdapter.press_key`/`press_chord` were refactored to share one `_press_key_sequence`/`_ground_window` implementation — modifier-interference checking, press/release sequencing, and guaranteed cleanup are now written once, not duplicated for the chord path.
+- Chord actions are window-targeted (`_window_targeted_actions`), getting the same R18B02-003 trusted window-title/process preview as `computer.keyboard.key`.
+
+### 5.3 Owned-fixture evaluation suite expansion
+
+The `computer_use_v2` deterministic suite grew from 17 to **24** cases (`src/jarvis/evaluation/computer_use_v2.py`), still entirely fake/mock-based with no GUI dependency (verified: `subprocess.Popen` is patched to raise in `test_no_physical_test_runs_by_default`, and it still passes). New cases: window-targeted approval preview is trusted (title/process, no raw parameter dump); file-root confinement (inside allowed vs. outside denied); sensitive-path denial (`.env`); path-resolution escape refusal (a `..`-escape — the real junction-based proof deliberately stays in the dedicated `test_phase_eighteen_file_access.py` unit tests, since creating a real junction requires spawning a subprocess, which this deterministic suite must never do); right-click/double-click/scroll all still refuse for a weak-identity target (proving they stay element-grounded, not a separate code path); the chord allowlist rejects `ctrl+v` (requested, approved, then denied at execution by the adapter's own allowlist check — not a naive "immediately denied" assumption); and no `paste`/`drag`/`drop` substring exists anywhere in any computer tool's schema.
+
+### 5.4 Owned fixture host improvements + physical acceptance (3 clean iterations)
+
+- Added an evaluation-only `--x`/`--y` launch flag to `scripts/phase18/uia_fixture_host.py` for the non-primary-monitor scenario (never a general production window-move capability).
+- **A second real bug was found and fixed during this milestone's own physical testing**: the fixture's message loop never called `IsDialogMessageW`, which Win32 requires for Tab-key focus-cycling between `WS_TABSTOP` children to work at all on a plain (non-dialog) top-level window — every Tab-key test reported focus never moved until this was found (via a targeted before/after-focus debug probe) and fixed.
+- The acceptance runner (`scripts/phase18/computer_use_acceptance.py`) was extended to exercise every new scenario, plus a dedicated non-primary-monitor scenario: confirms NIGHTFURY's real virtual-desktop topology (recorded, never altered), launches the fixture positioned on the negative-X monitor, confirms via semantic read that the target element's bounds are genuinely there (`x < 0`), and performs one grounded native left click, independently verified via the fixture's own status read-back.
+
+Run via `python scripts/phase18/computer_use_acceptance.py --runs 3` on NIGHTFURY — see the full table in §6 below. Every scenario passed 3/3 after the two fixes above; no retry-until-green was used (the first run, before the `IsDialogMessageW` fix, honestly reported `native_key_tab: 0/3` and was fixed, then re-run cleanly — not hidden).
+
+### 5.5 Tests
+
+New/updated tests:
+
+- `tests/test_phase_eighteen_native_input.py` — new `ExpandedPointerActionTests` (8 tests: right-click element-grounded/denied-for-weak-identity, double-click sends exactly two click pairs, scroll sends a correctly-signed bounded wheel delta up/down, out-of-range steps/invalid direction denied, offscreen-target denial) and `ChordTests` (5 tests: allowed chord succeeds, every unlisted chord in a representative forbidden list is denied, owner-held-modifier fails safely, JARVIS's own modifier is always released, chord is window- not element-grounded). `ArchitectureTests` gained 6 more tests: right-click/double-click/scroll/chord each require approval and execute exactly once through the real `ComputerActionService`; the chord schema contains no paste/arbitrary-hotkey capability; no computer tool's schema contains `drag`/`drop`/`paste` anywhere.
+- `src/jarvis/evaluation/computer_use_v2.py` — 7 new deterministic cases (§5.3 above), `tests/test_phase_eighteen_evaluation_suite.py` unaffected (still passes with the larger case count).
+- `tests/test_phase_eighteen_owned_fixture.py` — updated fake summary shape for the new `non_primary_monitor` field; all existing safety checks (no broad `taskkill`, no owner-app dependency, no full window enumeration, exact-PID cleanup) still pass against the expanded runner.
+
+Results:
+
+```text
+python -m pytest tests -k "evaluation or phase_eighteen" -q
+194 passed, 514 deselected
+
+python -m pytest tests -q
+708 passed, 36 subtests passed
+
+python -m compileall src tests scripts -q
+(clean)
+
+git diff --check
+(clean)
+
+cd ui && npm test -- --run
+14 test files, 75 passed
+
+npm run build
+built in 835ms
+
+npm audit --audit-level=high
+exit 0 (2 pre-existing moderate, unrelated dev-dependency)
+```
+
+### 5.6 Commit
+
+- **Files staged (explicit paths, no `git add .`):** `src/jarvis/computer/native_input.py`, `src/jarvis/computer/service.py`, `src/jarvis/contracts/computer.py`, `src/jarvis/tools/registry.py`, `src/jarvis/authority/permissions/engine.py`, `src/jarvis/evaluation/computer_use_v2.py`, `scripts/phase18/uia_fixture_host.py`, `scripts/phase18/computer_use_acceptance.py`, `tests/test_phase_eighteen_native_input.py`, `tests/test_phase_eighteen_owned_fixture.py`, `tests/test_phase_eighteen_evaluation_suite.py`, `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_03.md`, `docs/source_of_truth/02_JARVIS_CURRENT_STATE.md`, `docs/source_of_truth/03_JARVIS_GAP_REGISTER.md`, `docs/source_of_truth/04_JARVIS_EXECUTION_ROADMAP.md`.
+- **Commit message:** `feat: expand grounded input and computer-use evaluation`
+- **MILESTONE_2_COMMIT:** recorded after push, see final response.
+
+---
+
+<!-- Sections 6 (physical results table), 7 (final tests), 8 (security
+     review), 9 (gap state), 10 (manual dependencies), 11 (incident-safety
+     changes), 12 (recommended next batch) follow after the Milestone 2
+     push and final batch gate. -->
