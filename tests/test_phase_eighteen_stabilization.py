@@ -281,6 +281,64 @@ class PhaseEighteenStabilizationTests(unittest.IsolatedAsyncioTestCase):
         assert result.error_code is not None
         self.assertTrue(result.error_code.startswith("home_assistant_unreachable"))
 
+    # -- Milestone 0: Home Assistant brightness verification must compare the real 0-255
+    #    attributes["brightness"] scale, not the outbound-only "brightness_pct" payload key --
+
+    async def test_home_assistant_brightness_verified_true_within_tolerance(self) -> None:
+        def fake_request(method: str, _url: str, _body: bytes | None, _headers: dict) -> tuple[int, bytes]:
+            if method == "POST":
+                return 200, b"{}"
+            return 200, json.dumps({"state": "on", "attributes": {"brightness": 128}}).encode("utf-8")
+
+        transport = HomeAssistantTransport(request=fake_request)
+        result = await transport.execute(HomeAction("light.office", "set_brightness", {"brightness": 50}, dry_run=False))
+        self.assertEqual(result.status, "succeeded")
+        self.assertTrue(result.verified)
+
+    async def test_home_assistant_brightness_verified_false_when_materially_wrong(self) -> None:
+        def fake_request(method: str, _url: str, _body: bytes | None, _headers: dict) -> tuple[int, bytes]:
+            if method == "POST":
+                return 200, b"{}"
+            return 200, json.dumps({"state": "on", "attributes": {"brightness": 10}}).encode("utf-8")
+
+        transport = HomeAssistantTransport(request=fake_request)
+        result = await transport.execute(HomeAction("light.office", "set_brightness", {"brightness": 50}, dry_run=False))
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.verified)
+
+    async def test_home_assistant_brightness_verified_false_when_attribute_missing(self) -> None:
+        def fake_request(method: str, _url: str, _body: bytes | None, _headers: dict) -> tuple[int, bytes]:
+            if method == "POST":
+                return 200, b"{}"
+            return 200, json.dumps({"state": "on", "attributes": {}}).encode("utf-8")
+
+        transport = HomeAssistantTransport(request=fake_request)
+        result = await transport.execute(HomeAction("light.office", "set_brightness", {"brightness": 50}, dry_run=False))
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.verified)
+
+    async def test_home_assistant_brightness_verified_false_when_attribute_non_numeric(self) -> None:
+        def fake_request(method: str, _url: str, _body: bytes | None, _headers: dict) -> tuple[int, bytes]:
+            if method == "POST":
+                return 200, b"{}"
+            return 200, json.dumps({"state": "on", "attributes": {"brightness": "bright"}}).encode("utf-8")
+
+        transport = HomeAssistantTransport(request=fake_request)
+        result = await transport.execute(HomeAction("light.office", "set_brightness", {"brightness": 50}, dry_run=False))
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.verified)
+
+    async def test_home_assistant_brightness_readback_failure_cannot_produce_verified_true(self) -> None:
+        def fake_request(method: str, _url: str, _body: bytes | None, _headers: dict) -> tuple[int, bytes]:
+            if method == "POST":
+                return 200, b"{}"
+            raise OSError("connection refused")
+
+        transport = HomeAssistantTransport(request=fake_request)
+        result = await transport.execute(HomeAction("light.office", "set_brightness", {"brightness": 50}, dry_run=False))
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.verified)
+
     # -- F18A1-007: stale/missing computer-action approval must fail typed, never raise --
 
     async def test_computer_decide_returns_typed_failure_for_missing_pending_approval(self) -> None:

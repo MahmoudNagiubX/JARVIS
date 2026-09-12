@@ -169,7 +169,16 @@ class HomeAssistantTransport:
         if action.action == "turn_off":
             return state == "off"
         if action.action == "set_brightness":
-            return attributes.get("brightness_pct") == data.get("brightness_pct")
+            desired_pct = data.get("brightness_pct")
+            actual = attributes.get("brightness")
+            if not isinstance(desired_pct, (int, float)) or isinstance(desired_pct, bool):
+                return False
+            if not isinstance(actual, (int, float)) or isinstance(actual, bool):
+                # Home Assistant exposes brightness on the 0-255 scale as attributes["brightness"],
+                # not "brightness_pct" (that key only ever appears in the outbound service-call payload).
+                return False
+            expected_255 = round(desired_pct * 255 / 100)
+            return abs(actual - expected_255) <= 1
         if action.action == "set_temperature":
             return attributes.get("temperature") == data.get("temperature")
         return False

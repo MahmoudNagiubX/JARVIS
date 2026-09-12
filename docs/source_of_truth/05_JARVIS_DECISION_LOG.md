@@ -26,7 +26,7 @@
 | DEC-015 | Security Guardian is deterministic policy first, not LLM authority | `LOCKED` | security decisions must not depend on free-form generation |
 | DEC-016 | Computer Use priority: API/native → UIA → app semantic → visual → native input → PyAutoGUI fallback | `LOCKED_DIRECTION` | reliability before coordinate guessing |
 | DEC-017 | Windows UI Automation is the semantic desktop foundation | `LOCKED_DIRECTION` | stable controls/properties/patterns |
-| DEC-018 | `winapp ui` is a preferred evaluation adapter, not a core dependency | `CANDIDATE` | useful but public preview/replaceable |
+| DEC-018 | `winapp ui` is a preferred evaluation adapter, not a core dependency | `CANDIDATE` (historical context — see DEC-046) | useful but public preview/replaceable; the production backend choice is now locked by DEC-046, which reaches the same "not a core dependency" conclusion with real evaluation evidence |
 | DEC-019 | bounded native SendInput-style layer for low-level mouse/keyboard | `LOCKED_DIRECTION` | real input only after grounding/policy |
 | DEC-020 | PyAutoGUI is compatibility/prototype fallback only | `LOCKED` | do not make coordinate automation the architecture |
 | DEC-021 | Playwright is the preferred primary live browser backend | `LOCKED_DIRECTION` | DOM/accessibility/actionability and isolated contexts |
@@ -54,6 +54,7 @@
 | DEC-043 | historical Mega Phase numbering remains 1–19; new work uses Phase 18 workstreams, not invented mega phases | `LOCKED_PROCESS` | keeps continuity readable |
 | DEC-044 | Phase 18 begins with a baseline audit/stabilization gate before new capability merges | `ACCEPTED_2026-09-12` | catch drift/debt before larger Computer Use work |
 | DEC-045 | the seven-file Source Pack is the default bootstrap; the 2 MB Master is historical archive | `ACCEPTED_2026-09-12` | reduce context confusion/token waste |
+| DEC-046 | Computer Use V2 semantic Windows control uses a product-owned in-process Python UIA adapter based on `uiautomation`/`comtypes`. Microsoft `winapp ui` remains optional developer/evaluation tooling and is not a production runtime dependency. | `ACCEPTED_2026-09-12` | resolves OPEN-001; evidence: A1 real-NIGHTFURY evaluation (`docs/audits/PHASE_18_WORKSTREAM_A1_UIA_BACKEND_EVALUATION.md`) — in-process warm-call latency (~10-50ms vs. `winapp`'s ~250-350ms per call, since `winapp` has no persistent-process mode), `pyproject.toml`-pinnable/reproducible dependency, Python testability/mockability behind a product-owned adapter; `winapp` scored stronger on out-of-the-box staleness/verification ergonomics and app-coverage breadth but is a machine-level, non-pinnable, per-call-billed tool better suited to developer/CI inspection than the production agent loop |
 
 ## 2. Superseded historical decisions/states
 
@@ -86,7 +87,6 @@ These are intentionally **not** locked yet:
 
 | ID | Decision needed | Gate |
 |---|---|---|
-| OPEN-001 | exact production Windows UIA adapter (`winapp ui`, direct `uiautomation`, pywinauto, FlaUI sidecar, or combination) | benchmark inside Computer Use V2 |
 | OPEN-002 | exact OCR/visual grounding model/adapter | evaluate after semantic UIA baseline; must fit hardware/privacy |
 | OPEN-003 | exact live email provider | owner account/provider choice + secure credential path |
 | OPEN-004 | exact calendar provider | owner account/provider choice + secure credential path |

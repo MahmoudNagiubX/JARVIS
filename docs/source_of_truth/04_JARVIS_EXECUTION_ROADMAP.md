@@ -100,6 +100,8 @@ Execute in this order unless new audit evidence changes priority.
 ### Workstream A — Computer Use V2
 **Why first:** this is the largest gap between current JARVIS and the owner's desired general-purpose assistant.
 
+**Status (2026-09-12):** A.1 backend evaluation complete (`docs/audits/PHASE_18_WORKSTREAM_A1_UIA_BACKEND_EVALUATION.md`, backend locked by DEC-046). Semantic UIA implementation is now active — see `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_01.md` for the current milestone batch.
+
 Deliver:
 - product-owned UIA target/inspection/action layer;
 - benchmark `winapp ui` versus direct UIA implementation;

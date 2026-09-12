@@ -172,6 +172,4 @@ Do not:
 
 ## 11. Active work
 
-The immediate work gate is **Phase 18A — Baseline Audit & Stabilization**, defined in `04_JARVIS_EXECUTION_ROADMAP.md` and tracked in `03_JARVIS_GAP_REGISTER.md`.
-
-No new capability wave should be merged before that gate produces a reviewed baseline and gap report.
+Phase 18A.1 (baseline audit), Phase 18A.2 (stabilization), and the Workstream A.1 UIA backend evaluation are complete. The active program is **Phase 18 Workstream A — Computer Use V2**, defined in `04_JARVIS_EXECUTION_ROADMAP.md` and tracked in `03_JARVIS_GAP_REGISTER.md`; current work advances the semantic UIA foundation.
