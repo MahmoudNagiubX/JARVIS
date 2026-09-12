@@ -13,10 +13,12 @@ import unittest
 import unittest.mock
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 
 from jarvis.computer import semantic_uia
 from jarvis.computer.semantic_uia import WindowsUIAutomationAdapter
 from jarvis.contracts import DesktopContextSnapshot, DesktopWindow, VisualRegion
+from jarvis.contracts import PerceptionPrivacyMode
 from jarvis.contracts.semantic_ui import SemanticElementSnapshot
 from jarvis.perception.privacy import PerceptionPrivacyPolicy
 
@@ -109,9 +111,16 @@ class _FakeControl:
 class _FakeWindowProvider:
     """Duck-typed stand-in for WindowsDesktopProvider - no real Windows needed."""
 
-    def __init__(self, hwnd_by_ref: dict[str, int], *, deny_refs: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self,
+        hwnd_by_ref: dict[str, int],
+        *,
+        deny_refs: frozenset[str] = frozenset(),
+        window_meta: dict[str, tuple[str, str]] | None = None,
+    ) -> None:
         self._hwnd_by_ref = hwnd_by_ref
         self._deny_refs = deny_refs
+        self._window_meta = window_meta or {}
         self.privacy_policy = PerceptionPrivacyPolicy()
 
     def validate_input_window(self, window_ref: str) -> int:
@@ -124,7 +133,12 @@ class _FakeWindowProvider:
 
     def desktop_context(self, device_id: str) -> DesktopContextSnapshot:
         windows = tuple(
-            DesktopWindow(ref, f"Window {ref}", "fake.exe", hwnd, "FakeClass", VisualRegion(0, 0, 100, 100), True, False)
+            DesktopWindow(
+                ref,
+                self._window_meta.get(ref, (f"Window {ref}", "fake.exe"))[0],
+                self._window_meta.get(ref, (f"Window {ref}", "fake.exe"))[1],
+                hwnd, "FakeClass", VisualRegion(0, 0, 100, 100), True, False,
+            )
             for ref, hwnd in self._hwnd_by_ref.items()
         )
         return DesktopContextSnapshot("snapshot-fake", device_id, datetime.now(UTC), None, windows, 1920, 1080, "fake", 1.0)
@@ -360,7 +374,7 @@ class SemanticUIAFoundationTests(unittest.IsolatedAsyncioTestCase):
             {
                 "element_ref", "window_ref", "name", "control_type", "automation_id",
                 "enabled", "offscreen", "focused", "focusable", "bounds",
-                "supported_patterns", "text", "observed_at",
+                "supported_patterns", "text", "observed_at", "actionable",
             },
         )
         for value in dataclasses.astuple(snapshot):
@@ -462,8 +476,8 @@ class SemanticUIAFoundationTests(unittest.IsolatedAsyncioTestCase):
         result = await adapter.toggle(ref)
         self.assertEqual(result.status, "succeeded")
         self.assertTrue(result.output["verified"])
-        self.assertEqual(result.output["toggle_state_before"], 0)
-        self.assertEqual(result.output["toggle_state_after"], 1)
+        self.assertEqual(result.output["pre_state"], 0)
+        self.assertEqual(result.output["post_state"], 1)
 
     async def test_toggle_verified_false_when_state_does_not_change(self) -> None:
         pattern = _FakeTogglePattern(initial_state=0, stuck=True)
@@ -503,6 +517,221 @@ class SemanticUIAFoundationTests(unittest.IsolatedAsyncioTestCase):
         result = await adapter.select(ref)
         self.assertEqual(result.status, "succeeded")
         self.assertFalse(result.output["verified"])
+
+    # -- R18B01-002: list_windows privacy filtering --
+
+    async def test_list_windows_filters_sensitive_titles_and_denied_processes(self) -> None:
+        provider = _FakeWindowProvider(
+            {"window-login": 701, "window-lsass": 702, "window-notepad": 703},
+            window_meta={
+                "window-login": ("Sign in to your account", "chrome.exe"),
+                "window-lsass": ("Local Security Authority Process", "lsass.exe"),
+                "window-notepad": ("Untitled - Notepad", "notepad.exe"),
+            },
+        )
+        adapter = _adapter({}, provider)
+        result = await adapter.list_windows("device-1")
+        self.assertEqual(result.status, "succeeded")
+        windows = result.output["windows"]
+        refs = {w.window_ref for w in windows}
+        self.assertEqual(refs, {"window-notepad"})
+        self.assertEqual(result.output["filtered_count"], 2)
+
+    async def test_list_windows_denied_when_privacy_mode_off(self) -> None:
+        provider = _FakeWindowProvider({"window-1": 111})
+        provider.privacy_policy.set_mode(PerceptionPrivacyMode.OFF)
+        adapter = _adapter({111: self.root}, provider)
+        result = await adapter.list_windows("device-1")
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "privacy_policy_denied")
+        self.assertNotIn("windows", result.output)
+
+    # -- R18B01-001: strong vs weak identity --
+
+    async def test_weak_identity_when_runtime_id_missing(self) -> None:
+        weak = _FakeControl("Ghost", "ButtonControl", runtime_id=())
+        root = _FakeControl("Win", "WindowControl", runtime_id=(11,), children=[weak])
+        provider = _FakeWindowProvider({"window-weak": 900})
+        adapter = _adapter({900: root}, provider)
+        found = await adapter.find_elements("window-weak", control_type="ButtonControl")
+        self.assertEqual(len(found.output["matches"]), 1)
+        self.assertFalse(found.output["matches"][0].actionable)
+
+    async def test_weak_identity_when_runtime_id_raises(self) -> None:
+        class _RaisingControl(_FakeControl):
+            def GetRuntimeId(self) -> list[int]:
+                raise OSError("com_error")
+
+        weak = _RaisingControl("Ghost2", "ButtonControl", runtime_id=(1,))
+        root = _FakeControl("Win", "WindowControl", runtime_id=(12,), children=[weak])
+        provider = _FakeWindowProvider({"window-raise": 901})
+        adapter = _adapter({901: root}, provider)
+        found = await adapter.find_elements("window-raise", control_type="ButtonControl")
+        self.assertFalse(found.output["matches"][0].actionable)
+
+    async def test_weak_ref_actuation_denied(self) -> None:
+        weak = _FakeControl(
+            "Ghost3", "ButtonControl", runtime_id=(), patterns={PATTERN_IDS["Invoke"]: _FakeInvokePattern()},
+        )
+        root = _FakeControl("Win", "WindowControl", runtime_id=(13,), children=[weak])
+        provider = _FakeWindowProvider({"window-weakact": 902})
+        adapter = _adapter({902: root}, provider)
+        found = await adapter.find_elements("window-weakact", control_type="ButtonControl")
+        ref = found.output["matches"][0].element_ref
+
+        result = await adapter.invoke(ref)
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "uia_element_identity_weak")
+
+    async def test_weak_composite_ambiguous_when_two_elements_match(self) -> None:
+        weak_a = _FakeControl("Dup", "ButtonControl", automation_id="dupId", runtime_id=())
+        weak_b = _FakeControl("Dup", "ButtonControl", automation_id="dupId", runtime_id=())
+        root = _FakeControl("Win", "WindowControl", runtime_id=(14,), children=[weak_a])
+        provider = _FakeWindowProvider({"window-weakdup": 903})
+        adapter = _adapter({903: root}, provider)
+        found = await adapter.find_elements("window-weakdup", automation_id="dupId")
+        ref = found.output["matches"][0].element_ref
+
+        # A second weak element with the identical bounded composite identity now
+        # exists in the same window - re-resolution must refuse to guess.
+        new_root = _FakeControl("Win", "WindowControl", runtime_id=(14,), children=[weak_a, weak_b])
+        adapter._control_from_handle = lambda hwnd: {903: new_root}.get(hwnd)
+
+        result = await adapter.get_element(ref)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "uia_element_ambiguous")
+
+    async def test_strong_ref_remains_actionable(self) -> None:
+        found = await self.adapter.find_elements("window-1", automation_id="num7Button")
+        self.assertTrue(found.output["matches"][0].actionable)
+
+    # -- R18B01-005: fail closed before actuation --
+
+    async def test_invoke_on_disabled_control_denied(self) -> None:
+        control = _FakeControl(
+            "Off", "ButtonControl", runtime_id=(15, 1), enabled=False,
+            patterns={PATTERN_IDS["Invoke"]: _FakeInvokePattern()},
+        )
+        root = _FakeControl("Win", "WindowControl", runtime_id=(15,), children=[control])
+        provider = _FakeWindowProvider({"window-disabled": 904})
+        adapter = _adapter({904: root}, provider)
+        found = await adapter.find_elements("window-disabled", control_type="ButtonControl")
+        ref = found.output["matches"][0].element_ref
+
+        result = await adapter.invoke(ref)
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "uia_target_not_interactable")
+
+    async def test_invoke_on_offscreen_control_denied(self) -> None:
+        pattern = _FakeInvokePattern()
+        control = _FakeControl(
+            "Hidden", "ButtonControl", runtime_id=(16, 1), offscreen=True,
+            patterns={PATTERN_IDS["Invoke"]: pattern},
+        )
+        root = _FakeControl("Win", "WindowControl", runtime_id=(16,), children=[control])
+        provider = _FakeWindowProvider({"window-offscreen": 905})
+        adapter = _adapter({905: root}, provider)
+        found = await adapter.find_elements("window-offscreen", control_type="ButtonControl")
+        ref = found.output["matches"][0].element_ref
+
+        result = await adapter.invoke(ref)
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "uia_target_not_interactable")
+        self.assertFalse(pattern.invoked)
+
+    # -- R18B01-003: fresh post-action re-observation, never the cached object --
+
+    async def test_invoke_destroyed_target_reports_unverified_not_exception(self) -> None:
+        pattern = _FakeInvokePattern()
+        control = _FakeControl("Closer", "ButtonControl", runtime_id=(17, 1), patterns={PATTERN_IDS["Invoke"]: pattern})
+        root = _FakeControl("Win", "WindowControl", runtime_id=(17,), children=[control])
+        provider = _FakeWindowProvider({"window-closer": 906})
+        adapter = _adapter({906: root}, provider)
+        found = await adapter.find_elements("window-closer", control_type="ButtonControl")
+        ref = found.output["matches"][0].element_ref
+
+        calls = {"count": 0}
+        real_from_handle = adapter._control_from_handle
+
+        def _vanish_after_action(hwnd: int) -> Any:
+            calls["count"] += 1
+            if calls["count"] >= 2:
+                return None
+            return real_from_handle(hwnd)
+
+        adapter._control_from_handle = _vanish_after_action
+        result = await adapter.invoke(ref)
+        self.assertEqual(result.status, "succeeded")
+        self.assertTrue(pattern.invoked)
+        self.assertFalse(result.output["verified"])
+        self.assertEqual(result.output["verification_reason"], "post_observation_unavailable")
+        self.assertIsNone(result.output["element"])
+
+    async def test_toggle_post_action_reads_a_freshly_fetched_pattern_not_the_cached_one(self) -> None:
+        # Each COM TogglePattern handed out here freezes ToggleState at the moment
+        # it was obtained (mirroring a stale/re-marshalled COM wrapper) while
+        # Toggle() still mutates shared ground truth. If the adapter reused the
+        # pre-action `pattern` reference to read the post-action state, it would
+        # observe the FROZEN pre-action value (0) instead of the true value (1) -
+        # this only passes if a genuinely fresh GetPattern() call is made after
+        # the action (R18B01-003).
+        box = {"value": 0}
+
+        class _FreezesAtFetchPattern:
+            def __init__(self, shared: dict[str, int]) -> None:
+                self._shared = shared
+                self._frozen = shared["value"]
+
+            @property
+            def ToggleState(self) -> int:
+                return self._frozen
+
+            def Toggle(self) -> None:
+                self._shared["value"] = 1 if self._shared["value"] == 0 else 0
+
+        class _MintingControl(_FakeControl):
+            def GetPattern(self, pattern_id: int) -> object | None:
+                if pattern_id == PATTERN_IDS["Toggle"]:
+                    return _FreezesAtFetchPattern(box)
+                return None
+
+        control = _MintingControl("Check", "CheckBoxControl", runtime_id=(18, 1))
+        root = _FakeControl("Win", "WindowControl", runtime_id=(18,), children=[control])
+        provider = _FakeWindowProvider({"window-mint": 907})
+        adapter = _adapter({907: root}, provider)
+        found = await adapter.find_elements("window-mint", control_type="CheckBoxControl")
+        ref = found.output["matches"][0].element_ref
+
+        result = await adapter.toggle(ref)
+        self.assertEqual(result.status, "succeeded")
+        self.assertTrue(result.output["verified"])
+        self.assertEqual(result.output["pre_state"], 0)
+        self.assertEqual(result.output["post_state"], 1)
+
+    async def test_toggle_post_observation_unavailable_when_provider_raises_after_action(self) -> None:
+        pattern = _FakeTogglePattern(initial_state=0)
+        control = _FakeControl("Check", "CheckBoxControl", runtime_id=(19, 1), patterns={PATTERN_IDS["Toggle"]: pattern})
+        root = _FakeControl("Win", "WindowControl", runtime_id=(19,), children=[control])
+        provider = _FakeWindowProvider({"window-raise2": 908})
+        adapter = _adapter({908: root}, provider)
+        found = await adapter.find_elements("window-raise2", control_type="CheckBoxControl")
+        ref = found.output["matches"][0].element_ref
+
+        calls = {"count": 0}
+        real_from_handle = adapter._control_from_handle
+
+        def _raise_after_action(hwnd: int) -> Any:
+            calls["count"] += 1
+            if calls["count"] >= 2:
+                raise OSError("provider_unavailable")
+            return real_from_handle(hwnd)
+
+        adapter._control_from_handle = _raise_after_action
+        result = await adapter.toggle(ref)
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.output["verified"])
+        self.assertEqual(result.output["verification_reason"], "post_observation_unavailable")
+        self.assertEqual(result.output["pre_state"], 0)
 
 
 if __name__ == "__main__":

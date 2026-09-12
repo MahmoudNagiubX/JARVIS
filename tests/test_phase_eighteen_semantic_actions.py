@@ -10,10 +10,13 @@ re-resolution) is already covered in test_phase_eighteen_semantic_uia.py.
 
 from __future__ import annotations
 
+import json
 import unittest
+from datetime import UTC, datetime
 
 from jarvis.authority.identity.service import EnrollmentGrant
 from jarvis.bootstrap import create_runtime
+from jarvis.computer.semantic_uia import ELEMENT_REF_TTL_SECONDS
 from jarvis.config import JarvisConfig
 from jarvis.contracts import ComputerAction, ToolContext
 from jarvis.contracts.semantic_ui import SemanticResult
@@ -27,6 +30,10 @@ class _FakeActingAdapter:
         self.invoke_calls: list[str] = []
         self.toggle_calls: list[str] = []
         self.select_calls: list[str] = []
+        # Overrides the name reported by get_element for a given ref, so tests can
+        # simulate the target's observable identity drifting between an
+        # approval request and its decide (R18B01-004).
+        self.names: dict[str, str] = {}
 
     async def list_windows(self, device_id: str) -> SemanticResult:
         return SemanticResult("succeeded", {"windows": ()})
@@ -38,7 +45,15 @@ class _FakeActingAdapter:
         return SemanticResult("succeeded", {"matches": (), "ambiguous": False})
 
     async def get_element(self, element_ref: str) -> SemanticResult:
-        return SemanticResult("failed", error_code="uia_element_not_found")
+        if element_ref == "element-missing":
+            return SemanticResult("failed", error_code="uia_element_not_found")
+        # Mirrors the real adapter: a password/sensitive-value target is
+        # readable (privacy filtering is a list_windows/find_elements
+        # concern) but never `actionable`, so R18B01-004's pre-approval
+        # target preview must refuse it before any approval is created.
+        actionable = element_ref != "element-password"
+        name = self.names.get(element_ref, "Target")
+        return SemanticResult("succeeded", {"element": _fake_snapshot(element_ref, actionable=actionable, name=name)})
 
     async def get_text_or_value(self, element_ref: str) -> SemanticResult:
         return SemanticResult("failed", error_code="uia_element_not_found")
@@ -62,8 +77,8 @@ class _FakeActingAdapter:
             {
                 "element": _fake_snapshot(element_ref),
                 "verified": changed,
-                "toggle_state_before": 0,
-                "toggle_state_after": 1 if changed else 0,
+                "pre_state": 0,
+                "post_state": 1 if changed else 0,
             },
         )
 
@@ -72,12 +87,13 @@ class _FakeActingAdapter:
         return SemanticResult("succeeded", {"element": _fake_snapshot(element_ref), "verified": True})
 
 
-def _fake_snapshot(element_ref: str):
+def _fake_snapshot(element_ref: str, *, actionable: bool = True, name: str = "Target"):
     from jarvis.contracts.semantic_ui import SemanticElementSnapshot
 
     return SemanticElementSnapshot(
-        element_ref, "window-1", "Target", "ButtonControl", "targetButton",
+        element_ref, "window-1", name, "ButtonControl", "targetButton",
         True, False, False, True, None, ("Invoke", "Toggle", "SelectionItem"), None, None,
+        actionable=actionable,
     )
 
 
@@ -177,15 +193,17 @@ class SemanticActionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decided.status, "failed")
         self.assertEqual(decided.error_code, "uia_pattern_unsupported")
 
-    async def test_invoke_on_password_control_denied_after_approval(self) -> None:
+    async def test_invoke_on_password_control_denied_before_approval(self) -> None:
+        # R18B01-004/005: a non-actionable (password/sensitive) target must
+        # never even reach approval creation - the pre-approval target
+        # preview fails closed and no approval record is minted.
         raw = await self.runtime.computer_actions.execute(
             ComputerAction("semantic_invoke", {"element_ref": "element-password"}, False), self.identity, self.device,
         )
-        self.assertEqual(raw.status, "approval_required")
-        assert raw.approval_id is not None
-        decided = await self.runtime.computer_actions.decide(raw.approval_id, True, self.identity.identity_id)
-        self.assertEqual(decided.status, "denied")
-        self.assertEqual(decided.error_code, "uia_sensitive_value_denied")
+        self.assertEqual(raw.status, "denied")
+        self.assertEqual(raw.error_code, "uia_target_not_actionable")
+        self.assertIsNone(raw.approval_id)
+        self.assertEqual(self.fake_adapter.invoke_calls, [])
 
     async def test_toggle_verified_true_end_to_end(self) -> None:
         raw = await self.runtime.computer_actions.execute(
@@ -237,6 +255,77 @@ class SemanticActionsTests(unittest.IsolatedAsyncioTestCase):
 
         approval_events = [row for row in self.runtime.repository.events() if row["event_type"] == "computer.action_completed"]
         self.assertTrue(approval_events)
+
+    # -- R18B01-004: target-aware, time-bounded approval preview/binding --
+
+    async def test_approval_preview_contains_bounded_target_identity_no_secrets(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.semantic.act", {"action": "invoke", "element_ref": "element-1"}, context
+        )
+        assert requested.approval_id is not None
+        row = self.runtime.repository.approval(requested.approval_id)
+        assert row is not None
+        preview = json.loads(row["preview_json"])
+        self.assertEqual(preview["action"], "semantic_invoke")
+        self.assertEqual(preview["element_ref"], "element-1")
+        self.assertEqual(preview["control_type"], "ButtonControl")
+        self.assertEqual(preview["automation_id"], "targetButton")
+        self.assertEqual(preview["name"], "Target")
+        # Never a raw parameter dump, and never a text/value field.
+        self.assertNotIn("text", preview)
+        self.assertNotIn("value", preview)
+        self.assertNotIn("parameters", preview)
+
+    async def test_approval_refused_before_creation_when_target_missing(self) -> None:
+        # get_element fails for this ref (simulating an already-stale/never-
+        # existed target) - R18B01-004 requires refusing approval creation
+        # outright rather than minting an approval that can never legitimately
+        # execute.
+        result = await self.runtime.computer_actions.execute(
+            ComputerAction("semantic_invoke", {"element_ref": "element-missing"}, False), self.identity, self.device,
+        )
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "uia_element_not_found")
+        self.assertIsNone(result.approval_id)
+        self.assertEqual(self.fake_adapter.invoke_calls, [])
+
+    async def test_approval_refused_when_target_materially_changes_before_decide(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.semantic.act", {"action": "invoke", "element_ref": "element-drift"}, context
+        )
+        self.assertEqual(requested.status.value, "approval_required")
+        assert requested.approval_id is not None
+
+        # Between request and decide the target's observable identity changes
+        # (e.g. the control was relabeled/replaced) - the bound preview digest
+        # must no longer match, and the action must never execute.
+        self.fake_adapter.names["element-drift"] = "Totally Different Control"
+        result = await self.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, self.identity.identity_id, context
+        )
+        self.assertEqual(result.status.value, "denied")
+        self.assertEqual(result.error_code, "approval_target_changed")
+        self.assertEqual(self.fake_adapter.invoke_calls, [])
+
+    async def test_semantic_approval_expiry_bounded_by_element_ref_ttl(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.semantic.act", {"action": "invoke", "element_ref": "element-1"}, context
+        )
+        assert requested.approval_id is not None
+        row = self.runtime.repository.approval(requested.approval_id)
+        assert row is not None
+        created_at = datetime.fromisoformat(row["created_at"])
+        expires_at = datetime.fromisoformat(row["expires_at"])
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        # Must be bounded by the (much shorter) element-ref TTL, not the generic
+        # ~10 minute approval deadline.
+        self.assertLessEqual((expires_at - created_at).total_seconds(), ELEMENT_REF_TTL_SECONDS + 1)
 
     async def test_no_filesystem_action_introduced(self) -> None:
         spec = self.runtime.tools.get("computer.semantic.act")

@@ -11,10 +11,21 @@ Stale-target safety by construction: no live `uiautomation` Control object
 is ever held across two calls. Every re-resolution (`get_element`,
 `get_text_or_value`, `revalidate_reference`, and the bounded `invoke`/
 `toggle`/`select` actuation methods) re-walks the bounded tree from the
-containing window and accepts a match only when its live RuntimeId digest
-equals the digest captured at observation time - a same-named element with
-a different identity is never silently substituted, and no stale/ambiguous
-reference is ever acted on.
+containing window - a same-named element with a different identity is
+never silently substituted, and no stale/ambiguous reference is ever
+acted on.
+
+Identity strength (independent review R18B01-001): a live element's
+`GetRuntimeId()` may be missing/empty/erroring. When that happens the
+element only gets a *weak* composite identity (AutomationId + control type
++ name + bounded ancestry) - useful for read-only re-resolution, but never
+usable as an actuation target (`actionable=False`, `invoke`/`toggle`/
+`select` refuse with `uia_element_identity_weak`). A *strong* identity
+(non-empty RuntimeId) is the only kind that may drive a semantic action.
+
+Post-action verification (R18B01-003) always performs a fresh re-resolution
+and reads a fresh pattern object - never the pre-action `Control`/pattern,
+which may be destroyed/replaced by the action itself.
 
 Actuation is intentionally narrow: only `InvokePattern`/`TogglePattern`/
 `SelectionItemPattern`. No `ValuePattern.SetValue`/`set_value`, no mouse/
@@ -63,7 +74,12 @@ _WINDOW_ERROR_TRANSLATION = {
     "window_ref_changed": "uia_window_stale",
 }
 
-_DENIED_ERROR_CODES = {"sensitive_window_denied", "uia_sensitive_value_denied"}
+_DENIED_ERROR_CODES = {
+    "sensitive_window_denied",
+    "uia_sensitive_value_denied",
+    "uia_element_identity_weak",
+    "uia_target_not_interactable",
+}
 
 
 def _status_for_error(error: str) -> str:
@@ -80,6 +96,17 @@ _REVALIDATION_STATE = {
     "uia_provider_unavailable": SemanticReferenceState.PROVIDER_UNAVAILABLE,
 }
 
+# Post-action re-observation outcome -> bounded, honest verification_reason.
+_POST_ACTION_REASON = {
+    "uia_element_stale": "target_disappeared_after_invoke",
+    "uia_window_stale": "target_disappeared_after_invoke",
+    "uia_element_not_found": "target_disappeared_after_invoke",
+    "uia_element_ambiguous": "post_observation_unavailable",
+    "sensitive_window_denied": "post_observation_unavailable",
+    "uia_not_available": "post_observation_unavailable",
+    "uia_provider_unavailable": "post_observation_unavailable",
+}
+
 
 @dataclass(slots=True)
 class _ElementRefEntry:
@@ -90,7 +117,8 @@ class _ElementRefEntry:
     control_type: str
     name_hint: str | None
     ancestry_hint: tuple[str, ...]
-    runtime_id_digest: str
+    runtime_id_digest: str | None
+    identity_strength: str  # "strong" | "weak"
     expires_at: datetime
 
 
@@ -124,13 +152,17 @@ def _safe_bounds(control: Any) -> SemanticBounds | None:
     return SemanticBounds(int(left), int(top), int(width), int(height))
 
 
-def _runtime_id_digest(control: Any) -> str:
+def _runtime_id_identity(control: Any) -> tuple[str | None, bool]:
+    """Returns (digest, is_strong). A missing/empty/erroring RuntimeId is weak
+    identity, never silently hashed into a fake "strong" digest (R18B01-001)."""
     getter = getattr(control, "GetRuntimeId", None)
     try:
         runtime_id = tuple(getter()) if getter is not None else ()
     except Exception:
         runtime_id = ()
-    return hashlib.sha256(repr(runtime_id).encode("utf-8")).hexdigest()
+    if not runtime_id:
+        return None, False
+    return hashlib.sha256(repr(runtime_id).encode("utf-8")).hexdigest(), True
 
 
 class WindowsUIAutomationAdapter:
@@ -179,8 +211,19 @@ class WindowsUIAutomationAdapter:
     async def list_windows(self, device_id: str) -> SemanticResult:
         if not self.available:
             return SemanticResult("failed", error_code="uia_not_available")
+        if not self.privacy_policy.allows_metadata():
+            # Metadata perception disabled entirely (privacy mode OFF) - refuse the
+            # whole operation rather than silently return an empty/partial list.
+            return SemanticResult("denied", error_code="privacy_policy_denied")
         context = self.window_provider.desktop_context(device_id)
-        return SemanticResult("succeeded", {"windows": context.windows})
+        visible = []
+        filtered_count = 0
+        for window in context.windows:
+            if self.privacy_policy.check_window(window.process_name, window.title):
+                filtered_count += 1
+                continue
+            visible.append(window)
+        return SemanticResult("succeeded", {"windows": tuple(visible), "filtered_count": filtered_count})
 
     async def inspect_window(self, window_ref: str, *, depth: int = DEFAULT_INSPECT_DEPTH) -> SemanticResult:
         if not self.available:
@@ -188,7 +231,7 @@ class WindowsUIAutomationAdapter:
         bounded_depth = max(1, min(depth, MAX_INSPECT_DEPTH))
         root, error = self._resolve_window_root(window_ref)
         if root is None:
-            return SemanticResult("failed" if error != "sensitive_window_denied" else "denied", error_code=error)
+            return SemanticResult(_status_for_error(error), error_code=error)
         now = datetime.now(UTC)
         state = {"count": 0, "truncated": False}
 
@@ -227,7 +270,7 @@ class WindowsUIAutomationAdapter:
             return SemanticResult("denied", error_code="uia_find_filter_required")
         root, error = self._resolve_window_root(window_ref)
         if root is None:
-            return SemanticResult("failed" if error != "sensitive_window_denied" else "denied", error_code=error)
+            return SemanticResult(_status_for_error(error), error_code=error)
         now = datetime.now(UTC)
         matches: list[SemanticElementSnapshot] = []
         for control, ancestry, _depth in self._walk(root, MAX_INSPECT_DEPTH, MAX_TREE_ELEMENTS):
@@ -249,7 +292,7 @@ class WindowsUIAutomationAdapter:
             return SemanticResult("failed", error_code="uia_not_available")
         control, entry, ancestry, error = self._reresolve(element_ref)
         if control is None:
-            return SemanticResult("failed" if error != "sensitive_window_denied" else "denied", error_code=error)
+            return SemanticResult(_status_for_error(error), error_code=error)
         now = datetime.now(UTC)
         snapshot, new_entry = self._make_snapshot(control, entry.window_ref, ancestry, now, element_ref=element_ref)
         self._element_refs[element_ref] = new_entry
@@ -260,7 +303,7 @@ class WindowsUIAutomationAdapter:
             return SemanticResult("failed", error_code="uia_not_available")
         control, entry, ancestry, error = self._reresolve(element_ref)
         if control is None:
-            return SemanticResult("failed" if error != "sensitive_window_denied" else "denied", error_code=error)
+            return SemanticResult(_status_for_error(error), error_code=error)
         if bool(getattr(control, "IsPassword", False)):
             return SemanticResult("denied", error_code="uia_sensitive_value_denied")
         now = datetime.now(UTC)
@@ -288,7 +331,7 @@ class WindowsUIAutomationAdapter:
         self._element_refs[element_ref] = new_entry
         return SemanticResult("succeeded", {"state": SemanticReferenceState.VALID.value, "element": snapshot})
 
-    # -- bounded semantic actions (Milestone 3): InvokePattern/TogglePattern/SelectionItemPattern only --
+    # -- bounded semantic actions: InvokePattern/TogglePattern/SelectionItemPattern only --
 
     async def invoke(self, element_ref: str) -> SemanticResult:
         if not self.available:
@@ -304,14 +347,22 @@ class WindowsUIAutomationAdapter:
             pattern.Invoke()
         except Exception as exc:
             return SemanticResult("failed", error_code=f"uia_action_failed:{exc.__class__.__name__}")
+        # Fresh re-observation (R18B01-003): never assume the pre-action `control` is
+        # still valid - Invoke can legitimately close its dialog/destroy itself/
+        # navigate away. Re-resolve from scratch; a disappeared target is reported
+        # as a truthful succeeded-but-unverified receipt, never an uncaught error.
+        fresh_control, fresh_entry, fresh_ancestry, fresh_error = self._reresolve(element_ref)
+        if fresh_control is None:
+            reason = _POST_ACTION_REASON.get(fresh_error, "post_observation_unavailable")
+            return SemanticResult("succeeded", {"element": None, "verified": False, "verification_reason": reason})
         now = datetime.now(UTC)
-        snapshot, new_entry = self._make_snapshot(control, entry.window_ref, ancestry, now, element_ref=element_ref)
+        snapshot, new_entry = self._make_snapshot(fresh_control, fresh_entry.window_ref, fresh_ancestry, now, element_ref=element_ref)
         self._element_refs[element_ref] = new_entry
         # No generic, provider-independent proof that an arbitrary InvokePattern call
         # achieved its semantic intent exists yet - report succeeded but explicitly
         # unverified rather than fabricating confidence (AGENTS.md closed-loop rule).
         # App-specific adapters can supply stronger verification in a later slice.
-        return SemanticResult("succeeded", {"element": snapshot, "verified": False})
+        return SemanticResult("succeeded", {"element": snapshot, "verified": False, "verification_reason": "generic_invoke_no_postcondition"})
 
     async def toggle(self, element_ref: str) -> SemanticResult:
         if not self.available:
@@ -324,18 +375,40 @@ class WindowsUIAutomationAdapter:
         if pattern is None:
             return SemanticResult("failed", error_code="uia_pattern_unsupported")
         try:
-            before_state = pattern.ToggleState
+            pre_state = pattern.ToggleState
             pattern.Toggle()
-            after_state = pattern.ToggleState
         except Exception as exc:
             return SemanticResult("failed", error_code=f"uia_action_failed:{exc.__class__.__name__}")
+        # Fresh re-resolution + a FRESH TogglePattern object for the post-read -
+        # never trust the pre-action pattern object's property after the call
+        # (R18B01-003): a stale COM wrapper can lie or raise.
+        fresh_control, fresh_entry, fresh_ancestry, fresh_error = self._reresolve(element_ref)
+        if fresh_control is None:
+            reason = _POST_ACTION_REASON.get(fresh_error, "post_observation_unavailable")
+            return SemanticResult("succeeded", {"element": None, "verified": False, "verification_reason": reason, "pre_state": pre_state})
         now = datetime.now(UTC)
-        snapshot, new_entry = self._make_snapshot(control, entry.window_ref, ancestry, now, element_ref=element_ref)
+        snapshot, new_entry = self._make_snapshot(fresh_control, fresh_entry.window_ref, fresh_ancestry, now, element_ref=element_ref)
         self._element_refs[element_ref] = new_entry
-        verified = before_state != after_state
+        fresh_pattern = self._get_pattern(fresh_control, pattern_id)
+        post_state = None
+        if fresh_pattern is not None:
+            try:
+                post_state = fresh_pattern.ToggleState
+            except Exception:
+                post_state = None
+        if post_state is None:
+            return SemanticResult(
+                "succeeded",
+                {"element": snapshot, "verified": False, "verification_reason": "post_observation_unavailable", "pre_state": pre_state},
+            )
+        verified = post_state != pre_state
+        reason = "fresh_state_confirmed_change" if verified else "fresh_state_unchanged"
         return SemanticResult(
             "succeeded",
-            {"element": snapshot, "verified": verified, "toggle_state_before": before_state, "toggle_state_after": after_state},
+            {
+                "element": snapshot, "verified": verified, "verification_reason": reason,
+                "pre_state": pre_state, "post_state": post_state,
+            },
         )
 
     async def select(self, element_ref: str) -> SemanticResult:
@@ -350,13 +423,32 @@ class WindowsUIAutomationAdapter:
             return SemanticResult("failed", error_code="uia_pattern_unsupported")
         try:
             pattern.Select()
-            is_selected = bool(pattern.IsSelected)
         except Exception as exc:
             return SemanticResult("failed", error_code=f"uia_action_failed:{exc.__class__.__name__}")
+        # Fresh re-resolution + fresh SelectionItemPattern (R18B01-003).
+        fresh_control, fresh_entry, fresh_ancestry, fresh_error = self._reresolve(element_ref)
+        if fresh_control is None:
+            reason = _POST_ACTION_REASON.get(fresh_error, "post_observation_unavailable")
+            return SemanticResult("succeeded", {"element": None, "verified": False, "verification_reason": reason})
         now = datetime.now(UTC)
-        snapshot, new_entry = self._make_snapshot(control, entry.window_ref, ancestry, now, element_ref=element_ref)
+        snapshot, new_entry = self._make_snapshot(fresh_control, fresh_entry.window_ref, fresh_ancestry, now, element_ref=element_ref)
         self._element_refs[element_ref] = new_entry
-        return SemanticResult("succeeded", {"element": snapshot, "verified": is_selected})
+        fresh_pattern = self._get_pattern(fresh_control, pattern_id)
+        if fresh_pattern is None:
+            return SemanticResult(
+                "succeeded", {"element": snapshot, "verified": False, "verification_reason": "post_observation_unavailable"}
+            )
+        try:
+            post_state = bool(fresh_pattern.IsSelected)
+        except Exception:
+            return SemanticResult(
+                "succeeded", {"element": snapshot, "verified": False, "verification_reason": "post_observation_unavailable"}
+            )
+        reason = "fresh_state_confirmed_selected" if post_state else "fresh_state_not_selected"
+        return SemanticResult(
+            "succeeded",
+            {"element": snapshot, "verified": post_state, "verification_reason": reason, "post_state": post_state},
+        )
 
     # -- internal boundary: nothing below this line returns a raw provider object --
 
@@ -398,6 +490,18 @@ class WindowsUIAutomationAdapter:
 
         yield from rec(root, (), 0)
 
+    def _weak_composite_matches(self, control: Any, ancestry: tuple[str, ...], entry: _ElementRefEntry) -> bool:
+        automation_id = _safe_str(getattr(control, "AutomationId", None))
+        control_type = _safe_str(getattr(control, "ControlTypeName", None)) or "UnknownControl"
+        name = _safe_str(getattr(control, "Name", None))
+        bounded_ancestry = ancestry[-MAX_ANCESTRY_HINTS:] if ancestry else ()
+        return (
+            automation_id == entry.automation_id
+            and control_type == entry.control_type
+            and name == entry.name_hint
+            and bounded_ancestry == entry.ancestry_hint
+        )
+
     def _reresolve(self, element_ref: str) -> tuple[Any, _ElementRefEntry | None, tuple[str, ...], str]:
         entry = self._element_refs.get(element_ref)
         if entry is None:
@@ -410,11 +514,15 @@ class WindowsUIAutomationAdapter:
             return None, entry, (), error or "uia_window_stale"
         candidates: list[tuple[Any, tuple[str, ...]]] = []
         for control, ancestry, _depth in self._walk(root, MAX_INSPECT_DEPTH, MAX_TREE_ELEMENTS):
-            if _runtime_id_digest(control) == entry.runtime_id_digest:
+            if entry.identity_strength == "strong":
+                digest, is_strong = _runtime_id_identity(control)
+                if is_strong and digest == entry.runtime_id_digest:
+                    candidates.append((control, ancestry))
+            elif self._weak_composite_matches(control, ancestry, entry):
                 candidates.append((control, ancestry))
         if not candidates:
-            # A live element with a matching identity digest no longer exists in the
-            # bounded tree. Never substitute a same-named-but-different element.
+            # A live element with a matching identity no longer exists in the bounded
+            # tree. Never substitute a same-named-but-different element.
             self._element_refs.pop(element_ref, None)
             return None, entry, (), "uia_element_stale"
         if len(candidates) > 1:
@@ -423,12 +531,20 @@ class WindowsUIAutomationAdapter:
         return control, entry, ancestry, ""
 
     def _reresolve_actuation_target(self, element_ref: str) -> tuple[Any, _ElementRefEntry | None, tuple[str, ...], str]:
-        """Same stale-safe re-resolution as reads, plus the actuation-only sensitive-control gate."""
+        """Same stale-safe re-resolution as reads, plus the actuation-only gates:
+        strong identity required (R18B01-001), sensitive/disabled/offscreen denied
+        (R18B01-005)."""
         control, entry, ancestry, error = self._reresolve(element_ref)
         if control is None:
             return None, entry, ancestry, error
+        if entry is not None and entry.identity_strength != "strong":
+            return None, entry, ancestry, "uia_element_identity_weak"
         if bool(getattr(control, "IsPassword", False)):
             return None, entry, ancestry, "uia_sensitive_value_denied"
+        if not bool(getattr(control, "IsEnabled", False)):
+            return None, entry, ancestry, "uia_target_not_interactable"
+        if bool(getattr(control, "IsOffscreen", False)):
+            return None, entry, ancestry, "uia_target_not_interactable"
         return control, entry, ancestry, ""
 
     def _make_snapshot(
@@ -448,16 +564,21 @@ class WindowsUIAutomationAdapter:
         offscreen = bool(getattr(control, "IsOffscreen", False))
         focused = bool(getattr(control, "HasKeyboardFocus", False))
         focusable = bool(getattr(control, "IsKeyboardFocusable", False))
+        is_password = bool(getattr(control, "IsPassword", False))
         bounds = _safe_bounds(control)
         patterns = tuple(sorted(pattern_name for pattern_name, pattern_id in self._pattern_ids.items() if self._has_pattern(control, pattern_id)))
+        digest, is_strong = _runtime_id_identity(control)
+        identity_strength = "strong" if is_strong else "weak"
+        actionable = is_strong and enabled and not offscreen and not is_password
         snapshot = SemanticElementSnapshot(
             ref, window_ref, name, control_type, automation_id,
             enabled, offscreen, focused, focusable, bounds, patterns, None, now,
+            actionable=actionable,
         )
         entry = _ElementRefEntry(
             window_ref, automation_id, control_type, name,
             ancestry[-MAX_ANCESTRY_HINTS:] if ancestry else (),
-            _runtime_id_digest(control),
+            digest, identity_strength,
             now + timedelta(seconds=self.element_ref_ttl_seconds),
         )
         return snapshot, entry

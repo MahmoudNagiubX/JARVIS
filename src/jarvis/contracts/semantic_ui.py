@@ -48,6 +48,11 @@ class SemanticElementSnapshot:
     supported_patterns: tuple[str, ...] = ()
     text: str | None = None
     observed_at: datetime | None = None
+    # True only when this reference carries a strong (non-empty RuntimeId) identity
+    # AND is enabled/onscreen/non-password at observation time - the model may rely
+    # on this to know whether invoke/toggle/select would even be attempted; it never
+    # exposes *why* in provider terms (no RuntimeId/digest is ever surfaced).
+    actionable: bool = True
 
 
 @dataclass(frozen=True, slots=True)

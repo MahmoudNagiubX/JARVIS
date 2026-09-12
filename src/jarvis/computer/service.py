@@ -29,7 +29,7 @@ from ..contracts.semantic_ui import SemanticDesktopAdapter, SemanticElementSnaps
 from ..events import Event, EventCategory, EventState
 from ..persistence.repositories import RuntimeRepository
 from ..perception.windows import WindowsDesktopProvider
-from .semantic_uia import WindowsUIAutomationAdapter
+from .semantic_uia import ELEMENT_REF_TTL_SECONDS, WindowsUIAutomationAdapter
 
 
 class WindowsNativeComputerController:
@@ -371,7 +371,11 @@ class WindowsNativeComputerController:
             {"window_ref": w.window_ref, "title": w.title, "process_name": w.process_name, "active": w.active}
             for w in windows
         ]
-        return ComputerResult("succeeded", {"windows": payload}, verified=True)
+        return ComputerResult(
+            "succeeded",
+            {"windows": payload, "filtered_count": result.output.get("filtered_count", 0)},
+            verified=True,
+        )
 
     async def _semantic_inspect_window(self, parameters: Mapping[str, Any]) -> ComputerResult:
         if set(parameters) - {"window_ref", "depth"} or not isinstance(parameters.get("window_ref"), str):
@@ -535,6 +539,15 @@ class ComputerActionService:
         ComputerCapability.SEARCH_FILES.value,
         ComputerCapability.FOCUS_WINDOW.value,
     })
+    # Semantic actuation requires a target-aware, time-bounded approval
+    # (R18B01-004): the preview shown to the approver, and the deadline the
+    # approval can live under, must both be derived from a fresh trusted
+    # observation of the target rather than model-supplied text.
+    _semantic_actuation_actions = frozenset({
+        ComputerCapability.SEMANTIC_INVOKE.value,
+        ComputerCapability.SEMANTIC_TOGGLE.value,
+        ComputerCapability.SEMANTIC_SELECT.value,
+    })
 
     def __init__(
         self,
@@ -551,7 +564,11 @@ class ComputerActionService:
         self.permission = permission
         self.audit = audit
         self.approvals = approvals
-        self._pending: dict[str, tuple[ComputerAction, Identity, DeviceIdentity, DeviceIdentity, str, datetime]] = {}
+        # Trailing element carries the trusted target-identity digest for
+        # semantic actuation approvals (None for every other action) so
+        # `decide()` can detect a target swapped out from under a pending
+        # approval (R18B01-004).
+        self._pending: dict[str, tuple[ComputerAction, Identity, DeviceIdentity, DeviceIdentity, str, datetime, str | None]] = {}
         self.MAX_PENDING = 32
 
     async def execute(
@@ -617,10 +634,38 @@ class ComputerActionService:
                         EventState.FAILED,
                     )
                     return ComputerResult("failed", error_code="computer_pending_store_full")
+                identity_digest: str | None = None
+                preview: dict[str, object]
+                now = datetime.now(UTC)
+                expires_at = now + timedelta(minutes=10)
+                if action.action in self._semantic_actuation_actions:
+                    target_preview, identity_digest, preview_error = await self._semantic_target_preview(
+                        action, identity, target, adapter, session_id, correlation,
+                    )
+                    if target_preview is None:
+                        await self._audit(
+                            identity,
+                            device,
+                            correlation,
+                            "computer.approval_refused",
+                            "denied",
+                            {"action": action.action, "reason": preview_error},
+                        )
+                        await self._emit(
+                            "computer.action_failed",
+                            identity.owner_id,
+                            correlation,
+                            {"action": action.action, "reason": preview_error},
+                            EventState.FAILED,
+                        )
+                        return ComputerResult("denied", error_code=preview_error)
+                    preview = target_preview
+                    expires_at = min(expires_at, now + timedelta(seconds=ELEMENT_REF_TTL_SECONDS))
+                else:
+                    preview = self._approval_preview(action)
                 approval_id = f"approval-{uuid4()}"
-                expires_at = datetime.now(UTC) + timedelta(minutes=10)
-                await self.approvals.request(ApprovalRequest(approval_id, capability, identity.owner_id, device.device_id, "computer action requires approval", datetime.now(UTC), expires_at, self._approval_preview(action)))
-                self._pending[approval_id] = (action, identity, device, target, adapter, expires_at)
+                await self.approvals.request(ApprovalRequest(approval_id, capability, identity.owner_id, device.device_id, "computer action requires approval", now, expires_at, preview))
+                self._pending[approval_id] = (action, identity, device, target, adapter, expires_at, identity_digest)
                 await self._emit(
                     "computer.action_requested",
                     identity.owner_id,
@@ -654,7 +699,7 @@ class ComputerActionService:
             # consumed by a prior decide) must degrade truthfully, matching the
             # Browser/Home approval-path convention, not raise a raw KeyError.
             return ComputerResult("failed", error_code="pending_action_unavailable_after_restart", verified=False, approval_id=approval_id)
-        action, pending_identity, pending_device, target, adapter, _expires_at = pending
+        action, pending_identity, pending_device, target, adapter, _expires_at, identity_digest = pending
         if identity is not None and identity.owner_id != pending_identity.owner_id:
             raise PermissionError("approval_owner_mismatch")
         if device is not None and device.device_id != pending_device.device_id:
@@ -665,7 +710,32 @@ class ComputerActionService:
             return ComputerResult("denied", error_code="approval_expired", approval_id=approval_id)
         if decision.status.value != "approved":
             return ComputerResult("denied", error_code=decision.status.value, approval_id=approval_id)
-        return await self._execute_controller(action, pending_identity, pending_device, target, adapter, "computer", f"computer-{approval_id}", approval_id)
+        correlation = f"computer-{approval_id}"
+        if identity_digest is not None:
+            _preview, fresh_digest, preview_error = await self._semantic_target_preview(
+                action, pending_identity, target, adapter, "computer", correlation,
+            )
+            if fresh_digest is None:
+                await self._audit(
+                    pending_identity,
+                    pending_device,
+                    correlation,
+                    "computer.approval_refused",
+                    "denied",
+                    {"action": action.action, "reason": preview_error},
+                )
+                return ComputerResult("denied", error_code=preview_error, approval_id=approval_id)
+            if fresh_digest != identity_digest:
+                await self._audit(
+                    pending_identity,
+                    pending_device,
+                    correlation,
+                    "computer.approval_refused",
+                    "denied",
+                    {"action": action.action, "reason": "approval_target_changed"},
+                )
+                return ComputerResult("denied", error_code="approval_target_changed", approval_id=approval_id)
+        return await self._execute_controller(action, pending_identity, pending_device, target, adapter, "computer", correlation, approval_id)
 
     def close(self) -> None:
         self._pending.clear()
@@ -673,7 +743,7 @@ class ComputerActionService:
     def _prune_pending(self) -> None:
         now = datetime.now(UTC)
         for approval_id, pending in tuple(self._pending.items()):
-            if pending[-1] <= now:
+            if pending[5] <= now:
                 self._pending.pop(approval_id, None)
 
     @staticmethod
@@ -688,6 +758,55 @@ class ComputerActionService:
             "text_length": len(parameters.get("text", "")) if isinstance(parameters.get("text"), str) else None,
             "parameter_digest": _mapping_digest(parameters),
         }
+
+    async def _semantic_target_preview(
+        self,
+        action: ComputerAction,
+        identity: Identity,
+        target_device: DeviceIdentity,
+        adapter: str,
+        session_id: str,
+        correlation: str,
+    ) -> tuple[dict[str, object] | None, str | None, str | None]:
+        """Fetch a fresh, trusted preview of a semantic actuation target via
+        the canonical read path (never a second adapter access point) and
+        derive a bounded identity digest from it. Returns
+        (preview, identity_digest, error_code) - preview/digest are None and
+        error_code is set whenever the target must not be approved
+        (R18B01-004)."""
+        element_ref = action.parameters.get("element_ref") if isinstance(action.parameters, Mapping) else None
+        if not isinstance(element_ref, str) or not element_ref.startswith("element-"):
+            return None, None, "element_ref_required"
+        metadata = {
+            "request_device_id": target_device.device_id,
+            "target_device_id": target_device.device_id,
+            "execution_adapter": adapter,
+        }
+        get_action = ComputerAction(ComputerCapability.SEMANTIC_GET_ELEMENT.value, {"element_ref": element_ref}, dry_run=False)
+        result = await self.controller.execute(get_action, ToolContext(identity, target_device, session_id, correlation, metadata=metadata))
+        if result.status != "succeeded":
+            return None, None, result.error_code or "uia_target_unavailable"
+        element = result.output.get("element") if isinstance(result.output, Mapping) else None
+        if not isinstance(element, Mapping) or not element.get("actionable", False):
+            return None, None, "uia_target_not_actionable"
+        name = element.get("name")
+        bounded_name = name[:80] if isinstance(name, str) else None
+        preview = {
+            "action": action.action,
+            "control_type": element.get("control_type"),
+            "automation_id": element.get("automation_id"),
+            "name": bounded_name,
+            "window_ref": element.get("window_ref"),
+            "element_ref": element_ref,
+        }
+        identity_digest = _mapping_digest({
+            "element_ref": element_ref,
+            "window_ref": element.get("window_ref"),
+            "control_type": element.get("control_type"),
+            "automation_id": element.get("automation_id"),
+            "name": element.get("name"),
+        })
+        return preview, identity_digest, None
 
     async def _execute_controller(
         self,
@@ -789,6 +908,7 @@ def _semantic_snapshot_dict(snapshot: SemanticElementSnapshot) -> dict[str, obje
         "focusable": snapshot.focusable,
         "bounds": {"x": bounds.x, "y": bounds.y, "width": bounds.width, "height": bounds.height} if bounds else None,
         "supported_patterns": list(snapshot.supported_patterns),
+        "actionable": snapshot.actionable,
     }
 
 
