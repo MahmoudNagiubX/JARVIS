@@ -374,6 +374,39 @@ def register_computer_tools(
             return ToolResult(ToolResultStatus.DENIED, error_code="keyboard_text_invalid")
         return await execute_action("keyboard_action", {"operation": "type_text", "window_ref": window_ref, "text": value}, arguments, context)
 
+    async def semantic_read(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        action = arguments.get("action")
+        window_ref = arguments.get("window_ref")
+        if action == "list_windows":
+            return await execute_action("semantic_list_windows", {}, arguments, context)
+        if action == "inspect_window":
+            if not isinstance(window_ref, str) or not window_ref.startswith("window-"):
+                return ToolResult(ToolResultStatus.DENIED, error_code="window_ref_required")
+            depth = arguments.get("depth", 3)
+            if not isinstance(depth, int) or isinstance(depth, bool) or not 1 <= depth <= 5:
+                return ToolResult(ToolResultStatus.DENIED, error_code="semantic_depth_invalid")
+            return await execute_action("semantic_inspect_window", {"window_ref": window_ref, "depth": depth}, arguments, context)
+        if action == "find_elements":
+            if not isinstance(window_ref, str) or not window_ref.startswith("window-"):
+                return ToolResult(ToolResultStatus.DENIED, error_code="window_ref_required")
+            control_type, name, automation_id = arguments.get("control_type"), arguments.get("name"), arguments.get("automation_id")
+            if control_type is None and name is None and automation_id is None:
+                return ToolResult(ToolResultStatus.DENIED, error_code="semantic_find_filter_required")
+            parameters: dict[str, object] = {"window_ref": window_ref}
+            if control_type is not None:
+                parameters["control_type"] = control_type
+            if name is not None:
+                parameters["name"] = name
+            if automation_id is not None:
+                parameters["automation_id"] = automation_id
+            return await execute_action("semantic_find_elements", parameters, arguments, context)
+        if action in {"get_element", "get_text", "revalidate"}:
+            element_ref = arguments.get("element_ref")
+            if not isinstance(element_ref, str) or not element_ref.startswith("element-"):
+                return ToolResult(ToolResultStatus.DENIED, error_code="element_ref_required")
+            return await execute_action(f"semantic_{action}", {"element_ref": element_ref}, arguments, context)
+        return ToolResult(ToolResultStatus.DENIED, error_code="semantic_action_invalid")
+
     registry.register(ToolSpec(
         "tool-computer-audio-adjust-v1", "computer.audio.adjust", "1", "Adjust local Windows audio by bounded media-key steps.",
         "safe", "tool.request", frozenset({"computer.input"}), 10.0, True, audio,
@@ -402,6 +435,29 @@ def register_computer_tools(
         "safe", "tool.request", frozenset({"computer.input"}), 15.0, False, keyboard_type,
         parameters_schema={"type": "object", "properties": {"window_ref": {"type": "string", "maxLength": 100}, "text": {"type": "string", "maxLength": 2000}, "target_device_id": {"type": "string", "maxLength": 200}}, "required": ["window_ref", "text"], "additionalProperties": False},
         argument_retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-semantic-read-v1", "computer.semantic.read", "1",
+        "Read-only semantic Windows UI Automation inspection: list windows, inspect a bounded element tree, "
+        "find elements by control type/name/AutomationId, read a resolved element's snapshot or text/value, "
+        "or revalidate a previously observed element reference. No actuation.",
+        "read", "tool.request", frozenset({"computer.observe"}), 15.0, True, semantic_read,
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list_windows", "inspect_window", "find_elements", "get_element", "get_text", "revalidate"]},
+                "window_ref": {"type": "string", "maxLength": 100},
+                "element_ref": {"type": "string", "maxLength": 100},
+                "depth": {"type": "integer", "minimum": 1, "maximum": 5},
+                "control_type": {"type": "string", "maxLength": 100},
+                "name": {"type": "string", "maxLength": 300},
+                "automation_id": {"type": "string", "maxLength": 200},
+                "target_device_id": {"type": "string", "maxLength": 200},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        retention=ToolResultRetention.EPHEMERAL,
     ))
 
 

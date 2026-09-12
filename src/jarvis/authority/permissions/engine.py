@@ -31,6 +31,10 @@ class PolicyPermissionEngine:
             PermissionRule("tool.computer.clipboard.read", PermissionEffect.ALLOW, "computer_clipboard_boundary"),
             PermissionRule("tool.computer.clipboard.write", PermissionEffect.ALLOW, "computer_clipboard_boundary"),
             PermissionRule("tool.computer.keyboard.type", PermissionEffect.ALLOW, "computer_keyboard_boundary"),
+            # ComputerActionService owns the inner read/deny decision for semantic
+            # UIA observation (privacy/staleness); the outer tool wrapper only gates
+            # entry to that boundary, matching the browser rule above.
+            PermissionRule("tool.computer.semantic.read", PermissionEffect.ALLOW, "computer_semantic_read_boundary"),
             # BrowserActionService owns the inner read/approval decision. The
             # outer tool wrapper must not create a second approval request.
             PermissionRule("tool.browser.", PermissionEffect.ALLOW, "browser_action_boundary"),
@@ -48,6 +52,12 @@ class PolicyPermissionEngine:
             PermissionRule("computer.inspect_file", PermissionEffect.ALLOW, "safe_file_read"),
             PermissionRule("computer.search_files", PermissionEffect.ALLOW, "safe_file_search"),
             PermissionRule("computer.focus_window", PermissionEffect.ALLOW, "safe_window_focus"),
+            PermissionRule("computer.semantic_list_windows", PermissionEffect.ALLOW, "safe_semantic_read"),
+            PermissionRule("computer.semantic_inspect_window", PermissionEffect.ALLOW, "safe_semantic_read"),
+            PermissionRule("computer.semantic_find_elements", PermissionEffect.ALLOW, "safe_semantic_read"),
+            PermissionRule("computer.semantic_get_element", PermissionEffect.ALLOW, "safe_semantic_read"),
+            PermissionRule("computer.semantic_get_text", PermissionEffect.ALLOW, "safe_semantic_read"),
+            PermissionRule("computer.semantic_revalidate", PermissionEffect.ALLOW, "safe_semantic_read"),
             PermissionRule("computer.screen_snapshot_on_demand", PermissionEffect.ALLOW, "on_demand_screen_read"),
             PermissionRule("browser.open_url", PermissionEffect.ALLOW, "safe_browser_navigation"),
             PermissionRule("browser.navigate", PermissionEffect.ALLOW, "safe_browser_navigation"),

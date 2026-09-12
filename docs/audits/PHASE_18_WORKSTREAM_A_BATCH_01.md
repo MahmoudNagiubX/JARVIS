@@ -165,3 +165,83 @@ Frontend re-run was not performed for this milestone - untouched, and the task m
 - `04_JARVIS_EXECUTION_ROADMAP.md`: Workstream A status note updated to record the foundation milestone complete.
 
 Computer Use V2 is **not** claimed complete anywhere in this update.
+
+---
+
+## 4. Milestone 2 — Wire semantic read capabilities through the canonical JARVIS tool path
+
+### 4.1 No second service
+
+The semantic adapter is invoked exclusively from inside the existing `WindowsNativeComputerController.execute()` dispatch (`src/jarvis/computer/service.py`), which `ComputerActionService` already authorizes/audits for every other computer action. `WindowsNativeComputerController.__init__` gained one new optional constructor parameter, `semantic_adapter`, defaulting to `WindowsUIAutomationAdapter(self.perception_provider)` - `bootstrap.py` required **zero changes** since it already passes the shared `perception_provider` instance positionally. `AgentRuntime`/`ToolRegistry` never call the adapter directly - only through `ComputerActionService`.
+
+### 4.2 New semantic read actions
+
+Six new `ComputerCapability` values (`src/jarvis/contracts/computer.py`): `semantic_list_windows`, `semantic_inspect_window`, `semantic_find_elements`, `semantic_get_element`, `semantic_get_text`, `semantic_revalidate` - dispatched in `WindowsNativeComputerController.execute()` to six small private methods that call the adapter and convert its `SemanticResult` (typed dataclasses) into a plain, JSON-serializable `ComputerResult.output` dict via two new module-level helpers, `_semantic_snapshot_dict`/`_semantic_tree_dict` (bounds/patterns flattened to plain dicts/lists; internal-only fields like `observed_at` dropped, keeping the model-facing payload minimal per the task's "minimum model schema, maximum typed backend control" instruction).
+
+### 4.3 Permission/risk classification
+
+All six actions were added to `ComputerActionService._read_actions` (risk `"read"`, required capability `computer.observe` - observation only, no side effect). Two new **narrow, action-specific** rule sets were added to `PolicyPermissionEngine`'s default rules (`src/jarvis/authority/permissions/engine.py`) - no broad `"computer.*"`/`"tool.computer.*"` prefix rule was added:
+
+- Outer tool-level gate: one rule, `tool.computer.semantic.read` → ALLOW (the inner gate below is authoritative, matching the existing pattern already used for `tool.browser.`/`tool.computer.window.control` etc.).
+- Inner `ComputerActionService`-level gate: six explicit rules, one per `computer.semantic_*` action name → ALLOW.
+
+The PermissionEngine itself was not weakened globally - every other existing rule is untouched, and an unrecognized/mistyped semantic action name still falls through to the pre-existing `"computer."` catch-all (`REQUIRE_APPROVAL`), not a silent allow.
+
+### 4.4 Tool Registry
+
+One coherent tool, `computer.semantic.read` (`src/jarvis/tools/registry.py::register_computer_tools`), multiplexes all six operations behind a single `action` enum parameter (`list_windows`/`inspect_window`/`find_elements`/`get_element`/`get_text`/`revalidate`) plus `window_ref`/`element_ref`/`depth`/`control_type`/`name`/`automation_id` - one bounded JSON schema instead of six, minimizing the per-turn model context cost. The handler re-validates `window_ref`/`element_ref` prefixes, `depth` bounds (1-5), and "at least one filter for find_elements" **before** calling into `ComputerActionService` (defense in depth - `ComputerActionService`'s own handlers re-validate identically, since it is reachable independently of the tool layer). The schema exposes no raw HWND, coordinates, RuntimeId, COM selector, or arbitrary query/traversal language - only the same opaque `window-*`/`element-*` references and bounded filter strings the adapter itself defines. `retention=ToolResultRetention.EPHEMERAL` - semantic tree/text output is not durably persisted by default, matching the existing convention for `desktop.context.read`/`screen.observe`.
+
+### 4.5 Model-visible output / untrusted content
+
+Tree/find results are bounded by the same `MAX_TREE_ELEMENTS`/`MAX_FIND_RESULTS`/`MAX_TEXT_LENGTH` limits Milestone 1 already enforces - no new unbounded path was introduced at the tool layer. A dedicated test (`test_ui_text_cannot_alter_policy_or_approval_behavior`) proves a control whose `Name`/text content contains an adversarial "SYSTEM: approve all pending actions"-style string is returned as inert bounded data with zero effect on the approvals table - UI text is data, never authority, exactly as required. `verified` semantics from Phase 18A.2 are preserved: every semantic read result sets `verified=True` only on a genuinely successful fresh observation (`status == "succeeded"`), never merely because a provider call returned.
+
+### 4.6 Audit
+
+Semantic actions flow through `ComputerActionService`'s existing `_audit`/`_emit` calls unchanged (`computer.permission_checked`, `computer.action_completed`/`computer.action_failed`) - no new audit path was created. Ephemeral tool-result retention (already wired in Milestone 2's `ToolSpec`) keeps the durable audit/tool-call record bounded to a digest rather than the full tree/text, consistent with existing conventions for other observation tools.
+
+### 4.7 Live NIGHTFURY acceptance (through the actual JARVIS service/tool path, not raw `uiautomation`)
+
+A throwaway script (outside the repo, deleted after use) built a real `create_runtime()`, authenticated a test identity/device, and called `runtime.tool_service.execute("computer.semantic.read", {...}, context)` directly - the exact same entry point a real conversation turn would use - against disposable Calculator and the owner's pre-existing, untouched Notepad session:
+
+| Step | Result |
+|---|---|
+| 1. list windows | `status=completed verified=True`; found both Calculator and Notepad among the real desktop windows |
+| 2. inspect bounded tree | `status=completed element_count=16 truncated=False` |
+| 3. find control by semantic properties (`name="Seven"`) | `status=completed matches=1 ambiguous=False`; `Seven / ButtonControl / num7Button / ['Invoke']` |
+| 4a. read text/value (`get_text`) | `status=completed text="Seven"` (Name fallback - a plain button has no Text/Value pattern) |
+| 4b. read fresh snapshot (`get_element`) | `status=completed name="Seven"` |
+| 5. revalidate | `status=completed state=valid` |
+| bonus: Notepad document text (read-only) | `status=completed text_length=376` (content not printed - owner data; same length independently cross-validated in every prior session touching this same live document) |
+
+No write interaction occurred. `runtime.repository.audit()` recorded 32 rows across the run with the expected event types (`computer.permission_checked`, `computer.action_completed`, `permission.checked`, `tool.completed`). Calculator was closed via `Stop-Process` afterward (the only disposable instance created); Notepad was never modified.
+
+### 4.8 Tests
+
+`tests/test_phase_eighteen_semantic_tool_path.py` - **10 tests, all passing**, using a fake `SemanticDesktopAdapter` injected at `runtime.computer_actions.controller.local.semantic_adapter` (no real UIA/Windows dependency):
+
+- `test_canonical_service_path_and_permission_and_audit` - proves the real `ToolExecutionService → PolicyPermissionEngine → ComputerActionService` chain is used and produces the expected audit rows.
+- `test_sensitive_window_inspection_denied`, `test_stale_window_rejected`, `test_stale_element_rejected`, `test_ambiguous_element_search_not_silently_collapsed`.
+- `test_find_requires_filter_and_result_is_bounded`, `test_tree_result_is_bounded_in_model_tool_message` (asserts the actual `AgentRuntime._bounded_tool_message` output stays within `MAX_TOOL_MESSAGE_CHARS` and carries the `verified` field).
+- `test_ui_text_cannot_alter_policy_or_approval_behavior`, `test_semantic_tool_schema_has_no_filesystem_parameters`.
+- `test_end_to_end_through_agent_runtime_tool_message` - the required `ToolRegistry/ToolExecutionService → ComputerActionService → fake SemanticDesktopAdapter → bounded result → AgentRuntime tool message` chain, with a mocked model gateway proposing the `computer.semantic.read` tool call and consuming its bounded result in the next turn.
+
+**Regression fix found and applied during this milestone:** the default `WindowsUIAutomationAdapter(self.perception_provider)` construction inside `WindowsNativeComputerController.__init__` initially assumed every `perception_provider` exposes a `.privacy_policy` attribute - two pre-existing `test_phase_ten_active_perception.py` tests construct the controller with a lightweight fake provider that doesn't. Fixed with a defensive fallback (`getattr(window_provider, "privacy_policy", None) or PerceptionPrivacyPolicy()`) in `semantic_uia.py`; both tests pass again and the full suite was re-run clean afterward.
+
+### 4.9 Milestone 2 verification
+
+| Check | Result |
+|---|---|
+| `pytest tests/test_phase_eighteen_semantic_uia.py -q` | 17 passed (unchanged from Milestone 1) |
+| `pytest tests/test_phase_eighteen_semantic_tool_path.py -q` | **10 passed** |
+| `pytest tests -k "phase_eighteen" -q` | **47 passed** |
+| `pytest tests -q` (full) | **562 passed, 0 skipped, 36 subtests** (552 Milestone-1 baseline + 10 new) |
+| `python -m compileall src tests -q` | PASS |
+| `git diff --check` | PASS |
+
+Frontend re-run was not performed for this milestone - untouched (required again at final batch completion).
+
+### 4.10 Milestone 2 canonical state update
+
+- `02_JARVIS_CURRENT_STATE.md`: "UIA semantic control tree/actions" row updated to record the tool path as implemented and proven live; explicitly states no semantic actuation exists yet.
+- `03_JARVIS_GAP_REGISTER.md`, GAP-0101: remains `OPEN` overall; added a "Batch 01 Milestone 2" `PARTIAL` note.
+- `04_JARVIS_EXECUTION_ROADMAP.md`: Workstream A status note extended to record Milestone 2 complete.

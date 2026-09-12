@@ -141,7 +141,7 @@ class WindowsUIAutomationAdapter:
         pattern_ids: dict[str, int] | None = None,
     ) -> None:
         self.window_provider = window_provider
-        self.privacy_policy = privacy_policy or window_provider.privacy_policy
+        self.privacy_policy = privacy_policy or getattr(window_provider, "privacy_policy", None) or PerceptionPrivacyPolicy()
         self.element_ref_ttl_seconds = max(15, min(60, element_ref_ttl_seconds))
         self._element_refs: dict[str, _ElementRefEntry] = {}
         # Both are injectable so unit tests can exercise the real tree-walk/staleness

@@ -37,6 +37,12 @@ class ComputerCapability(StrEnum):
     CLIPBOARD_READ = "clipboard_read"
     CLIPBOARD_WRITE = "clipboard_write"
     SCREEN_SNAPSHOT_ON_DEMAND = "screen_snapshot_on_demand"
+    SEMANTIC_LIST_WINDOWS = "semantic_list_windows"
+    SEMANTIC_INSPECT_WINDOW = "semantic_inspect_window"
+    SEMANTIC_FIND_ELEMENTS = "semantic_find_elements"
+    SEMANTIC_GET_ELEMENT = "semantic_get_element"
+    SEMANTIC_GET_TEXT = "semantic_get_text"
+    SEMANTIC_REVALIDATE = "semantic_revalidate"
 
 
 @dataclass(frozen=True, slots=True)

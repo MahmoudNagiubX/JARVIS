@@ -25,9 +25,11 @@ from ..authority.approvals.service import DurableApprovalEngine
 from ..authority.permissions.engine import PolicyPermissionEngine
 from ..bus import InMemoryEventBus
 from ..contracts import ApprovalRequest, AuditRecord, ComputerAction, ComputerCapability, ComputerController, ComputerResult, DeviceIdentity, Identity, ToolContext
+from ..contracts.semantic_ui import SemanticDesktopAdapter, SemanticElementSnapshot, SemanticTreeNode
 from ..events import Event, EventCategory, EventState
 from ..persistence.repositories import RuntimeRepository
 from ..perception.windows import WindowsDesktopProvider
+from .semantic_uia import WindowsUIAutomationAdapter
 
 
 class WindowsNativeComputerController:
@@ -47,8 +49,17 @@ class WindowsNativeComputerController:
     MAX_KEYBOARD_CHUNK_UNITS = 64
     MEDIA_KEYS = {"up": 0xAF, "down": 0xAE}
 
-    def __init__(self, *, perception_provider: WindowsDesktopProvider | None = None) -> None:
+    MAX_SEMANTIC_DEPTH = 5
+    DEFAULT_SEMANTIC_DEPTH = 3
+
+    def __init__(
+        self,
+        *,
+        perception_provider: WindowsDesktopProvider | None = None,
+        semantic_adapter: SemanticDesktopAdapter | None = None,
+    ) -> None:
         self.perception_provider = perception_provider or WindowsDesktopProvider()
+        self.semantic_adapter = semantic_adapter or WindowsUIAutomationAdapter(self.perception_provider)
         self._user32 = None
         self._kernel32 = None
         if platform.system().casefold() == "windows":
@@ -96,6 +107,18 @@ class WindowsNativeComputerController:
                 return await asyncio.to_thread(self._clipboard_write, action.parameters)
             if capability is ComputerCapability.KEYBOARD_ACTION:
                 return await asyncio.to_thread(self._keyboard_action, action.parameters)
+            if capability is ComputerCapability.SEMANTIC_LIST_WINDOWS:
+                return await self._semantic_list_windows(context)
+            if capability is ComputerCapability.SEMANTIC_INSPECT_WINDOW:
+                return await self._semantic_inspect_window(action.parameters)
+            if capability is ComputerCapability.SEMANTIC_FIND_ELEMENTS:
+                return await self._semantic_find_elements(action.parameters)
+            if capability is ComputerCapability.SEMANTIC_GET_ELEMENT:
+                return await self._semantic_get_element(action.parameters)
+            if capability is ComputerCapability.SEMANTIC_GET_TEXT:
+                return await self._semantic_get_text(action.parameters)
+            if capability is ComputerCapability.SEMANTIC_REVALIDATE:
+                return await self._semantic_revalidate(action.parameters)
             return ComputerResult("failed", error_code="native_action_not_configured")
         except (OSError, ValueError) as exc:
             return ComputerResult("failed", error_code=str(exc) or exc.__class__.__name__)
@@ -332,6 +355,107 @@ class WindowsNativeComputerController:
         except ValueError as exc:
             return ComputerResult("failed", error_code=str(exc))
 
+    async def _semantic_list_windows(self, context: ToolContext) -> ComputerResult:
+        device_id = context.device.device_id if context.device else ""
+        result = await self.semantic_adapter.list_windows(device_id)
+        if result.status != "succeeded":
+            return ComputerResult(result.status, {}, result.error_code, False)
+        windows = result.output.get("windows", ())
+        payload = [
+            {"window_ref": w.window_ref, "title": w.title, "process_name": w.process_name, "active": w.active}
+            for w in windows
+        ]
+        return ComputerResult("succeeded", {"windows": payload}, verified=True)
+
+    async def _semantic_inspect_window(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        if set(parameters) - {"window_ref", "depth"} or not isinstance(parameters.get("window_ref"), str):
+            return ComputerResult("denied", error_code="window_ref_required")
+        window_ref = str(parameters["window_ref"])
+        if not window_ref.startswith("window-"):
+            return ComputerResult("denied", error_code="window_ref_required")
+        depth = parameters.get("depth", self.DEFAULT_SEMANTIC_DEPTH)
+        if not isinstance(depth, int) or isinstance(depth, bool) or not 1 <= depth <= self.MAX_SEMANTIC_DEPTH:
+            return ComputerResult("denied", error_code="semantic_depth_invalid")
+        result = await self.semantic_adapter.inspect_window(window_ref, depth=depth)
+        if result.status != "succeeded":
+            return ComputerResult(result.status, {}, result.error_code, False)
+        tree = result.output.get("tree")
+        payload = {
+            "tree": _semantic_tree_dict(tree) if tree is not None else None,
+            "element_count": result.output.get("element_count", 0),
+            "truncated": bool(result.output.get("truncated", False)),
+        }
+        return ComputerResult("succeeded", payload, verified=True)
+
+    async def _semantic_find_elements(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        allowed_keys = {"window_ref", "control_type", "name", "automation_id"}
+        if set(parameters) - allowed_keys or not isinstance(parameters.get("window_ref"), str):
+            return ComputerResult("denied", error_code="window_ref_required")
+        window_ref = str(parameters["window_ref"])
+        if not window_ref.startswith("window-"):
+            return ComputerResult("denied", error_code="window_ref_required")
+        control_type = parameters.get("control_type")
+        name = parameters.get("name")
+        automation_id = parameters.get("automation_id")
+        if control_type is None and name is None and automation_id is None:
+            return ComputerResult("denied", error_code="semantic_find_filter_required")
+        result = await self.semantic_adapter.find_elements(
+            window_ref,
+            control_type=control_type if isinstance(control_type, str) else None,
+            name=name if isinstance(name, str) else None,
+            automation_id=automation_id if isinstance(automation_id, str) else None,
+        )
+        if result.status != "succeeded":
+            return ComputerResult(result.status, {}, result.error_code, False)
+        matches = result.output.get("matches", ())
+        payload = {
+            "matches": [_semantic_snapshot_dict(item) for item in matches],
+            "ambiguous": bool(result.output.get("ambiguous", False)),
+        }
+        return ComputerResult("succeeded", payload, verified=True)
+
+    async def _semantic_get_element(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        element_ref = self._require_element_ref(parameters)
+        if element_ref is None:
+            return ComputerResult("denied", error_code="element_ref_required")
+        result = await self.semantic_adapter.get_element(element_ref)
+        if result.status != "succeeded":
+            return ComputerResult(result.status, {}, result.error_code, False)
+        return ComputerResult("succeeded", {"element": _semantic_snapshot_dict(result.output["element"])}, verified=True)
+
+    async def _semantic_get_text(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        element_ref = self._require_element_ref(parameters)
+        if element_ref is None:
+            return ComputerResult("denied", error_code="element_ref_required")
+        result = await self.semantic_adapter.get_text_or_value(element_ref)
+        if result.status != "succeeded":
+            return ComputerResult(result.status, {}, result.error_code, False)
+        return ComputerResult(
+            "succeeded",
+            {"text": result.output.get("text"), "truncated": bool(result.output.get("truncated", False))},
+            verified=True,
+        )
+
+    async def _semantic_revalidate(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        element_ref = self._require_element_ref(parameters)
+        if element_ref is None:
+            return ComputerResult("denied", error_code="element_ref_required")
+        result = await self.semantic_adapter.revalidate_reference(element_ref)
+        payload: dict[str, Any] = {"state": result.output.get("state") if isinstance(result.output, Mapping) else None}
+        element = result.output.get("element") if isinstance(result.output, Mapping) else None
+        if element is not None:
+            payload["element"] = _semantic_snapshot_dict(element)
+        return ComputerResult(result.status, payload, result.error_code, verified=result.status == "succeeded")
+
+    @staticmethod
+    def _require_element_ref(parameters: Mapping[str, Any]) -> str | None:
+        if set(parameters) != {"element_ref"}:
+            return None
+        element_ref = parameters.get("element_ref")
+        if not isinstance(element_ref, str) or not element_ref.startswith("element-"):
+            return None
+        return element_ref
+
     def _load_input_libraries(self) -> None:
         self._user32 = ctypes.WinDLL("user32.dll", use_last_error=True)
         self._kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
@@ -371,6 +495,12 @@ class ComputerActionService:
         ComputerCapability.SEARCH_FILES.value,
         ComputerCapability.SCREEN_SNAPSHOT_ON_DEMAND.value,
         ComputerCapability.CLIPBOARD_READ.value,
+        ComputerCapability.SEMANTIC_LIST_WINDOWS.value,
+        ComputerCapability.SEMANTIC_INSPECT_WINDOW.value,
+        ComputerCapability.SEMANTIC_FIND_ELEMENTS.value,
+        ComputerCapability.SEMANTIC_GET_ELEMENT.value,
+        ComputerCapability.SEMANTIC_GET_TEXT.value,
+        ComputerCapability.SEMANTIC_REVALIDATE.value,
     })
     _safe_actions = frozenset({
         ComputerCapability.OPEN_APPLICATION.value,
@@ -621,6 +751,29 @@ def _chars_from_units(units: list[int]) -> int:
     for unit in units:
         encoded.extend((unit & 0xFF, unit >> 8))
     return len(bytes(encoded).decode("utf-16-le", errors="surrogatepass"))
+
+
+def _semantic_snapshot_dict(snapshot: SemanticElementSnapshot) -> dict[str, object]:
+    bounds = snapshot.bounds
+    return {
+        "element_ref": snapshot.element_ref,
+        "window_ref": snapshot.window_ref,
+        "name": snapshot.name,
+        "control_type": snapshot.control_type,
+        "automation_id": snapshot.automation_id,
+        "enabled": snapshot.enabled,
+        "offscreen": snapshot.offscreen,
+        "focused": snapshot.focused,
+        "focusable": snapshot.focusable,
+        "bounds": {"x": bounds.x, "y": bounds.y, "width": bounds.width, "height": bounds.height} if bounds else None,
+        "supported_patterns": list(snapshot.supported_patterns),
+    }
+
+
+def _semantic_tree_dict(node: SemanticTreeNode) -> dict[str, object]:
+    payload = _semantic_snapshot_dict(node.snapshot)
+    payload["children"] = [_semantic_tree_dict(child) for child in node.children]
+    return payload
 
 
 def _text_digest(value: str) -> str:
