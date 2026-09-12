@@ -14,6 +14,14 @@ from .communication import (
     CommunicationThread,
 )
 from .capabilities import CapabilityDescriptor
+from .semantic_ui import (
+    SemanticBounds,
+    SemanticDesktopAdapter,
+    SemanticElementSnapshot,
+    SemanticReferenceState,
+    SemanticResult,
+    SemanticTreeNode,
+)
 from .clients import ALLOWED_CLIENT_TOPICS, ClientSession
 from .autonomy import AutonomyDecision, AutonomyLevel, AutonomyRule
 from .computer import ComputerAction, ComputerCapability, ComputerController, ComputerResult
@@ -177,6 +185,12 @@ __all__ = [
     "ComputerCapability",
     "ComputerController",
     "ComputerResult",
+    "SemanticBounds",
+    "SemanticDesktopAdapter",
+    "SemanticElementSnapshot",
+    "SemanticReferenceState",
+    "SemanticResult",
+    "SemanticTreeNode",
     "DeveloperWorkerAdapter",
     "DeveloperWorkerProvider",
     "DeviceEnrollmentRequest",

@@ -59,7 +59,8 @@
 ### GAP-0101 — No general Windows semantic UI control
 **Status:** `OPEN`  
 Current grounded control is intentionally narrow. Add product-owned UIA inspection/target/action contracts behind `ComputerActionService`.  
-**Backend-selection subproblem:** `RESOLVED` — the A1 evaluation (`docs/audits/PHASE_18_WORKSTREAM_A1_UIA_BACKEND_EVALUATION.md`) is complete and DEC-046 locks the production backend (in-process `uiautomation`/`comtypes` adapter; `winapp ui` optional dev/eval tool only). Semantic UIA implementation work is now active under Phase 18 Workstream A, Batch 01. This gap remains `OPEN` overall until the semantic capability itself (not just the backend choice) is implemented and accepted — do not close it merely because the backend decision exists.
+**Backend-selection subproblem:** `RESOLVED` — the A1 evaluation (`docs/audits/PHASE_18_WORKSTREAM_A1_UIA_BACKEND_EVALUATION.md`) is complete and DEC-046 locks the production backend (in-process `uiautomation`/`comtypes` adapter; `winapp ui` optional dev/eval tool only). Semantic UIA implementation work is now active under Phase 18 Workstream A, Batch 01. This gap remains `OPEN` overall until the semantic capability itself (not just the backend choice) is implemented and accepted — do not close it merely because the backend decision exists.  
+**Batch 01 Milestone 1 (read-only foundation):** `PARTIAL` — `WindowsUIAutomationAdapter` (`src/jarvis/computer/semantic_uia.py`) implements bounded inspect/search/read/revalidate with stale-safe element references, behind the optional `computer-uia` dependency; proven live on NIGHTFURY (Calculator + Notepad). Not yet wired into `ComputerActionService`/`ToolRegistry` (Milestone 2) and no actuation exists yet (Milestone 3) — the gap stays `OPEN` overall.
 
 ### GAP-0102 — Mouse and rich keyboard input are incomplete
 **Status:** `OPEN`  

@@ -9,6 +9,9 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "tzdata>=2024.1"]
+computer-uia = [
+    "uiautomation==2.0.29",
+]
 voice = [
     "sounddevice==0.5.6",
     "onnxruntime==1.29.0",

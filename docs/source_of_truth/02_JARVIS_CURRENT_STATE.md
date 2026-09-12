@@ -107,7 +107,7 @@ Phase 18A.1 baseline audit and Phase 18A.2 targeted stabilization ran against th
 | General mouse control | `PLANNED` | current controller does not support it |
 | Arbitrary keyboard shortcuts/keys | `PLANNED` | current controller only supports bounded literal text plus media keys |
 | Paste/drag/drop | `PLANNED` | not supported by current grounded desktop path |
-| UIA semantic control tree/actions | `PLANNED` | accepted Computer Use V2 direction |
+| UIA semantic control tree/actions | `PARTIAL` | read-only foundation implemented (`src/jarvis/computer/semantic_uia.py::WindowsUIAutomationAdapter`, behind the optional `computer-uia` dependency, DEC-046); not yet reachable from any canonical JARVIS tool path (Batch 01 Milestone 1 of Phase 18 Workstream A) |
 | On-demand screen capture | `IMPLEMENTED` bounded | native Windows GDI transient capture exists |
 | OCR/local visual grounding | `PLANNED` | provider architecture exists; not active production capability |
 | Camera | `PLANNED/OPTIONAL` | architecture-only; continuous camera capture is off |
