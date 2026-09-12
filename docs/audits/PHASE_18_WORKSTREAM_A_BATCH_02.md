@@ -289,11 +289,119 @@ npm audit --audit-level=high
 
 - **Files staged (explicit paths, no `git add .`):** `src/jarvis/evaluation/computer_use_v2.py`, `src/jarvis/evaluation/semantic_uia_fixtures.py`, `src/jarvis/bootstrap.py`, `scripts/phase18/computer_use_acceptance.py`, `tests/test_phase_eighteen_evaluation_suite.py`, `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_02.md`, `docs/source_of_truth/02_JARVIS_CURRENT_STATE.md`, `docs/source_of_truth/03_JARVIS_GAP_REGISTER.md`, `docs/source_of_truth/04_JARVIS_EXECUTION_ROADMAP.md`.
 - **Commit message:** `test: add computer-use evaluation suite`
-- **MILESTONE_2_COMMIT:** recorded after push, see final response.
+- **MILESTONE_2_COMMIT:** `0f554178965bcae8783e5e581c7054622c5ddf0c`
 
 ---
 
-<!-- Sections 6 (final regression), 7 (security review), 8 (gap status),
-     9 (manual dependencies), 10 (restrictions remaining), and 11
-     (recommended Batch 03) follow after the Milestone 2 push and final
-     batch gate. -->
+## 6. Final regression
+
+At final branch HEAD (`0f554178965bcae8783e5e581c7054622c5ddf0c`):
+
+```text
+git status -sb
+## feature/phase-18-computer-use-v2...origin/feature/phase-18-computer-use-v2  (clean except this report's own SHA fill-ins)
+
+git log --oneline --decorate -12
+0f55417 (HEAD -> feature/phase-18-computer-use-v2, origin/feature/phase-18-computer-use-v2) test: add computer-use evaluation suite
+b903de9 feat: add grounded native input fallback
+f365d14 fix: harden semantic computer-use targets
+2390ddc feat: add bounded semantic UI actions
+357bfe0 feat: expose semantic desktop read tools
+cd66ca3 feat: add semantic UIA foundation
+... (Batch 01 / 18A history)
+54b67ba (origin/main, origin/HEAD, main) fix: close phase 17 real network readiness
+
+git diff main...HEAD --stat
+43 files changed, 14581 insertions(+), 28 deletions(-)   # includes Batch 01's already-reviewed diff; no divergence/conflicts from main
+
+python -m pytest tests -q
+647 passed, 36 subtests passed
+
+python -m compileall src tests scripts -q
+(clean)
+
+git diff --check
+(clean)
+
+cd ui && npm test -- --run
+14 test files, 75 passed
+
+npm run build
+built in 870ms
+
+npm audit --audit-level=high
+exit 0 (2 pre-existing moderate vitest/mocker advisories, unrelated dev-dependency, no high/critical)
+```
+
+No unexplained regressions anywhere in the batch. Branch is a clean linear history off `main` with exactly the three expected new commits.
+
+## 7. Security review
+
+Explicit checklist (Section 10 of the task file), each verified directly against the final diff/code rather than assumed:
+
+| Property | Status | Evidence |
+| --- | --- | --- |
+| No `shell=True` | ✅ | grepped across all new/changed computer/evaluation/scripts files — zero matches |
+| No `os.system` | ✅ | same grep — zero matches |
+| No direct model→UIA/native-input path | ✅ | every action routes `AgentRuntime → ToolExecutionService → PermissionEngine → ApprovalEngine → ComputerActionService → WindowsNativeComputerController → adapter`; no tool handler touches `uiautomation`/`ctypes.SendInput` directly |
+| No raw COM in public contracts | ✅ | `SemanticElementSnapshot`/`SemanticResult` unchanged in this regard; existing `test_no_raw_hwnd_or_com_object_in_public_snapshot` still green |
+| No raw HWND in model schema | ✅ | `computer.pointer.act`/`computer.keyboard.key`/`computer.semantic.*` schemas contain no `hwnd` property (checked programmatically) |
+| No raw x/y in model schema | ✅ | same check — no `x`/`y` property on any new/existing computer tool |
+| No raw VK/scan code in model schema | ✅ | `computer.keyboard.key`'s `key` property is a closed string enum of the 14-name allowlist; no `vk`/`code`/`scan_code` property anywhere |
+| No weak-identity actuation | ✅ | `_reresolve_actuation_target` (R18B01-005) denies `uia_element_identity_weak` before any pattern/native-input call; `resolve_actionable_target` (Milestone 1) reuses the same check |
+| No stale target actuation | ✅ | `_reresolve` purges/refuses stale refs before every read and actuation; unit-tested |
+| No sensitive list-window leakage | ✅ | `list_windows` denies entirely when privacy is OFF, filters every window failing `check_window` (R18B01-002) |
+| No opaque semantic approval preview | ✅ | R18B01-004's bounded, fresh-observation-derived preview (action/control_type/automation_id/bounded name/window_ref/element_ref) replaces the old `element-<uuid>`-only preview |
+| Semantic approval expiry bounded by reference life | ✅ | `expires_at = min(10min, now + ELEMENT_REF_TTL_SECONDS)` for the three semantic actuation actions |
+| No same-object-only post-action verification | ✅ | R18B01-003: fresh `_reresolve` + fresh `GetPattern()` after every action; proven by the "freezes at fetch" fixture test in both the unit suite and the evaluation suite |
+| No auto-retry after uncertain action | ✅ | grepped invoke/toggle/select/native mouse/native key — no retry loop exists anywhere; a failed/unverified action is returned once, honestly |
+| No UIAccess/elevation request | ✅ | no code path requests UIAccess or elevates; documented explicitly in `native_input.py`'s module docstring |
+| No GAP-0503 bypass | ✅ | no new code touches file dialogs, Explorer path entry, or widens file-root authority; native input's own action set is limited to `move_to_element`/`left_click_element`/named-key press, nothing file-system-adjacent |
+| No file-dialog path entry | ✅ | not implemented anywhere in this batch |
+| No `ValuePattern` write | ✅ | `SetValue`/`set_value` grepped — only appears in a doc-comment stating it is *not* implemented |
+| No drag/drop/right click | ✅ | grepped for drag/right-click/double-click/scroll constants — zero matches; only `move_to_element`/`left_click_element` exist |
+| No raw owner browser profile use | ✅ | Edge fixture always launched `--guest`, never the owner's default profile |
+| No owner document mutation in physical testing | ⚠️ **incident, disclosed** | the Milestone 0 Notepad probe unintentionally interacted with the owner's real, already-open Notepad window (read-only UIA inspection only, no actuation) and very likely caused loss of one unsaved tab's content as a side effect of Windows 11 Notepad's single-instance/tab-reuse behavior; fully disclosed to the owner immediately, confirmed no material harm by the owner, and the physical acceptance strategy was changed for the rest of the batch to use only pre-verified-not-already-running disposable instances (Calculator) and the runner script now refuses to touch Calculator if one is already running. No further owner-app interaction occurred after this incident. |
+| No secrets in repo/logs/reports | ✅ | grepped every file changed across all three commits for common secret patterns — zero matches; no API key/credential was requested or used anywhere in this batch |
+
+## 8. Gap status (final, this batch)
+
+| Gap | Status | Note |
+| --- | --- | --- |
+| GAP-0101 (general Windows semantic UI control) | `OPEN`/`PARTIAL` | independent-review hardening closed, strong identity enforced, sensitive-window leak closed, fresh post-action observation exists, approvals are target-aware, invoke/toggle/select code paths green — but toggle/select physical proof remains unavailable (Chromium depth limitation), so this is deliberately **not** marked `RESOLVED` |
+| GAP-0102 (mouse/keyboard) | `PARTIAL` | grounded native `move_to_element`/`left_click_element`/named-key press implemented and physically proven; raw coordinate move/click, right click, double click, drag/drop, scroll, paste, richer hotkeys remain absent |
+| GAP-0103 (OCR/visual) | `OPEN` | untouched this batch |
+| GAP-0104 (multi-app recovery) | `PARTIAL` | fresh re-observation/stale/ambiguous refusal/typed receipts proven; no autonomous multi-app replanning loop |
+| GAP-0105 (evaluation suite) | `PARTIAL` | genuine 17-case deterministic foundation plus a 3x-run opt-in physical runner; does not yet cover the full app/failure-mode breadth named in the original gap |
+| GAP-0106 (DPI/multi-monitor/secure-desktop) | `PARTIAL` | real 2-monitor topology recorded and matches unit-tested coordinate math; no live click on the non-primary monitor yet; DPI stays partial (no non-100% monitor available); secure-desktop/UIPI policy evidence exists, no elevation anywhere |
+| GAP-0503 (file-root confinement) | `OPEN` | untouched, hard restriction carried forward unchanged |
+
+## 9. Manual dependencies
+
+`NONE`. No API key, account, or token was needed anywhere in this batch. GitHub push auth was already configured (all three milestone pushes succeeded without any credential prompt or failure).
+
+`OPTIONAL_PHYSICAL_MULTI_MONITOR_STEP` — recorded per Section 12 of the task file: physically re-running the Calculator native-click scenario with the window explicitly positioned on NIGHTFURY's non-primary (negative-X) monitor is optional owner-assisted follow-up work, not a blocker for this batch. The unit-level coordinate math already covers this geometry; only the *live* demonstration on that specific monitor is pending.
+
+## 10. Restrictions remaining (unchanged/carried forward)
+
+- **GAP-0503 remains a hard restriction** — no mouse/keyboard/UIA action of any kind may be used to work around file-access policy; no automated Open/Save dialog path entry, file-picker confirmation, or arbitrary Explorer path access.
+- No `ValuePattern`/generic text-value write.
+- No raw coordinate move/click, right click, double click, drag/drop, wheel scroll.
+- No arbitrary hotkey string; only the 14-key named allowlist plus `shift+tab`.
+- No OCR/visual/local-vision fallback.
+- No autonomous multi-application recovery/replanning loop.
+- No cloud computer-use API, no UAC bypass, no UIAccess privilege, no admin requirement.
+- Toggle/select semantic actions remain **code/test-proven only** — no physical demonstration exists yet for either pattern.
+- Live click physically executed on NIGHTFURY's non-primary monitor remains pending (`MULTI_MONITOR_PHYSICAL_PENDING`).
+- Non-100%-DPI physical proof remains pending (no such monitor available on NIGHTFURY).
+
+## 11. Recommended Batch 03
+
+In priority order:
+
+1. **Close the toggle/select physical-evidence gap (GAP-0101).** The Chromium depth limitation is now well-documented across two batches; a Batch 03 candidate is either (a) sourcing/bundling a small, disposable, product-owned native Win32/WinUI test harness with a real checkbox and list/combo control reachable within the existing bounded inspect depth (no product code change needed), or (b) a deliberate, reviewed decision about whether `MAX_INSPECT_DEPTH` should be selectively deepened for browser-hosted content specifically — the latter is an architecture decision, not a drive-by fix, and should go through the same review rigor as R18B01-001..005.
+2. **GAP-0503 (file-root confinement) design** — still the longest-standing hard restriction; unblocks safer file-dialog-adjacent workflows in the future without weakening today's boundary.
+3. **Broaden the evaluation suite (GAP-0105)** toward its originally named scope (Notepad, Explorer, Settings, VS Code, terminal, dialogs, clipboard, multi-window) — carefully, and only with disposable/owner-safe fixtures, informed directly by the Milestone 0 Notepad incident in this batch.
+4. **Right click, double click, drag/drop, wheel scroll, paste, richer hotkeys** (GAP-0102 remainder) — each individually bounded and approval-gated, following the same grounding pattern established in Milestone 1.
+5. **Live non-primary-monitor and non-100%-DPI physical demonstrations** (GAP-0106 remainder) when a safe window-placement capability and/or suitable hardware become available.
+6. **OCR/visual fallback (GAP-0103)** only after semantic grounding's remaining gaps above are addressed, per the existing roadmap ordering.
