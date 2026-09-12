@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from datetime import UTC, datetime, timedelta
 
 from jarvis.agents.runtime.runtime import AgentRuntime
 from jarvis.authority.identity.service import EnrollmentGrant
@@ -19,6 +20,26 @@ class _ToolController:
         self.actions = []
 
     async def execute(self, action, context):
+        # Internal-only target-descriptor resolution (R18B02-001/003) is a
+        # read-only pre-check ComputerActionService performs before/around
+        # every element- or window-targeted approval - not itself the
+        # "action executed" tests here assert an exact count for.
+        if action.action == "resolve_window_target":
+            return ToolResult(ToolResultStatus.SUCCEEDED, {
+                "window_ref": action.parameters.get("window_ref"),
+                "title": "Recording Fixture Window",
+                "process_name": "python.exe",
+                "expires_at": datetime.now(UTC) + timedelta(minutes=10),
+                "identity_digest": f"digest-{action.parameters.get('window_ref')}",
+            }, verified=True)
+        if action.action == "resolve_element_target":
+            return ToolResult(ToolResultStatus.SUCCEEDED, {
+                "element": {
+                    "element_ref": action.parameters.get("element_ref"), "window_ref": "window-good",
+                    "name": "Target", "control_type": "ButtonControl", "automation_id": None, "actionable": True,
+                },
+                "reference_expires_at": datetime.now(UTC) + timedelta(minutes=10),
+            }, verified=True)
         self.actions.append((action, context))
         if action.action == "clipboard_read":
             return ToolResult(ToolResultStatus.SUCCEEDED, {"text": CLIPBOARD_SENTINEL, "length": len(CLIPBOARD_SENTINEL), "digest": "digest", "format": "CF_UNICODETEXT"}, verified=True)

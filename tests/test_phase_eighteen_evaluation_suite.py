@@ -90,7 +90,14 @@ class ComputerUseV2SuiteTests(unittest.IsolatedAsyncioTestCase):
 
 class PhysicalRunnerScriptTests(unittest.TestCase):
     """Import and unit-test the opt-in physical acceptance runner's pure/safe
-    helpers directly - never actually launches Calculator/Edge here."""
+    helpers directly - never actually launches the fixture here.
+
+    Batch 03 rewrote this runner around a JARVIS-owned Win32 fixture (never
+    Calculator/Edge/Notepad/any owner app - see the Batch 02 Notepad
+    incident); the runner's window-matching/collision/cleanup-safety
+    properties now have dedicated coverage in
+    `tests/test_phase_eighteen_owned_fixture.py`. Only the platform gate is
+    re-asserted here, close to the suite it was originally paired with."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -108,27 +115,6 @@ class PhysicalRunnerScriptTests(unittest.TestCase):
         with unittest.mock.patch.object(platform, "system", return_value="Linux"):
             exit_code = asyncio.run(self.module._main(1))
         self.assertEqual(exit_code, 1)
-
-    def test_summary_never_includes_full_window_enumeration(self) -> None:
-        fake_runs = [
-            {
-                "calculator": {"fixture": "calculator", "attempted": True, "semantic_invoke": {"status": "completed", "independent_display_readback_matched_seven": True}, "native_left_click": {"pointer_target_verified": True}, "native_key_tab": {"independent_focus_moved": True}},
-                "edge_guest": {"fixture": "edge_guest_local_html", "attempted": True, "invoke": {"status": "not_found"}, "toggle": {"status": "not_found"}, "select": {"status": "not_found"}},
-            }
-        ]
-        summary = self.module._summarize(fake_runs)
-        blob = json.dumps(summary)
-        self.assertNotIn("window_ref", blob)
-        self.assertNotIn("windows", blob)
-
-    def test_fixture_html_is_local_and_inert(self) -> None:
-        html = self.module.FIXTURE_HTML
-        self.assertNotIn("http://", html)
-        self.assertNotIn("https://", html)
-
-    def test_edge_path_lookup_returns_none_when_absent(self) -> None:
-        with unittest.mock.patch.object(self.module.Path, "exists", return_value=False):
-            self.assertIsNone(self.module._edge_path())
 
 
 if __name__ == "__main__":

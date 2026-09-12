@@ -67,8 +67,14 @@ class PhaseFourIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(observed.status, "succeeded")
         self.assertTrue(observed.verified)
 
+        # clipboard_write is consequential but neither element- nor
+        # window-targeted, so this generic approval-gate test stays
+        # decoupled from R18B02-003's window-target validation (which
+        # keyboard_action now requires and this synthetic {"keys": [...]}
+        # shape - predating the current handler's real parameter contract -
+        # was never meant to satisfy).
         pending = await self.runtime.computer_actions.execute(
-            ComputerAction("keyboard_action", {"keys": ["CTRL", "L"]}, dry_run=True), self.identity, self.device
+            ComputerAction("clipboard_write", {"text": "ctrl-l-equivalent"}, dry_run=True), self.identity, self.device
         )
         self.assertEqual(pending.status, "approval_required")
         self.assertIsNotNone(pending.approval_id)

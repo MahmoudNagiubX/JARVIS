@@ -40,6 +40,27 @@ class _RecordingController:
         self.actions: list[tuple[ComputerAction, ToolContext]] = []
 
     async def execute(self, action: ComputerAction, context: ToolContext) -> ComputerResult:
+        # Internal-only target-descriptor resolution (R18B02-001/003) is a
+        # read-only pre-check ComputerActionService performs before/around
+        # every element- or window-targeted approval - it is not itself the
+        # "action executed" this fake's callers assert an exact count for,
+        # so it is answered here without being recorded as one.
+        if action.action == "resolve_window_target":
+            return ComputerResult("succeeded", {
+                "window_ref": action.parameters.get("window_ref"),
+                "title": "Recording Fixture Window",
+                "process_name": "python.exe",
+                "expires_at": datetime.now(UTC) + timedelta(minutes=10),
+                "identity_digest": f"digest-{action.parameters.get('window_ref')}",
+            }, verified=True)
+        if action.action == "resolve_element_target":
+            return ComputerResult("succeeded", {
+                "element": {
+                    "element_ref": action.parameters.get("element_ref"), "window_ref": "window-good",
+                    "name": "Target", "control_type": "ButtonControl", "automation_id": None, "actionable": True,
+                },
+                "reference_expires_at": datetime.now(UTC) + timedelta(minutes=10),
+            }, verified=True)
         self.actions.append((action, context))
         return ComputerResult("succeeded", {"accepted": True, "action": action.action}, verified=True)
 

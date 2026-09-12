@@ -348,8 +348,13 @@ class PhaseEighteenStabilizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error_code, "pending_action_unavailable_after_restart")
 
     async def test_computer_decide_returns_typed_failure_on_repeated_decide_after_consumed(self) -> None:
+        # clipboard_write is consequential but neither element- nor
+        # window-targeted, so this approval-lifecycle test (F18A1-007) stays
+        # decoupled from R18B02-003's window-target validation, which
+        # `keyboard_action` now requires and which a fake "window-good" ref
+        # cannot satisfy against the real WindowsDesktopProvider.
         pending = await self.runtime.computer_actions.execute(
-            ComputerAction("keyboard_action", {"operation": "type_text", "window_ref": "window-good", "text": "hi"}),
+            ComputerAction("clipboard_write", {"text": "hi"}),
             self.identity,
             self.device,
         )

@@ -347,7 +347,12 @@ class WindowsUIAutomationAdapter:
         now = datetime.now(UTC)
         snapshot, new_entry = self._make_snapshot(control, entry.window_ref, ancestry, now, element_ref=element_ref)
         self._element_refs[element_ref] = new_entry
-        return SemanticResult("succeeded", {"element": snapshot})
+        # `reference_expires_at` is the actual, per-adapter-configured expiry
+        # (element_ref_ttl_seconds, clamped 15-60s) - never a hardcoded
+        # constant (R18B02-002). It is for internal approval-binding math
+        # only (ComputerActionService); it is never surfaced through the
+        # model-facing get_element/find_elements payloads.
+        return SemanticResult("succeeded", {"element": snapshot, "reference_expires_at": new_entry.expires_at})
 
     # -- bounded semantic actions: InvokePattern/TogglePattern/SelectionItemPattern only --
 

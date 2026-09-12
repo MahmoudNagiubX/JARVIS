@@ -10,7 +10,9 @@ proven deterministically in CI.
 
 from __future__ import annotations
 
+import json
 import unittest
+from datetime import UTC, datetime, timedelta
 
 from jarvis.authority.identity.service import EnrollmentGrant
 from jarvis.bootstrap import create_runtime
@@ -98,9 +100,9 @@ class _FakeWindowProvider:
         return True
 
 
-def _snapshot(element_ref: str, window_ref: str, *, bounds: SemanticBounds | None) -> SemanticElementSnapshot:
+def _snapshot(element_ref: str, window_ref: str, *, bounds: SemanticBounds | None, name: str = "Target") -> SemanticElementSnapshot:
     return SemanticElementSnapshot(
-        element_ref, window_ref, "Target", "ButtonControl", "targetButton",
+        element_ref, window_ref, name, "ButtonControl", "targetButton",
         True, False, False, True, bounds, ("Invoke",), None, None, actionable=True,
     )
 
@@ -374,6 +376,43 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.fake_native = _FakeNativeInputAdapter()
         self.runtime.computer_actions.controller.local.native_input_adapter = self.fake_native
 
+        class _FakeSemanticAdapterForApproval:
+            """Element-targeted pointer actions (R18B02-001) now build their
+            approval preview through resolve_actionable_target - substitute
+            a trivially-actionable fake rather than depend on real UIA."""
+
+            async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+                return SemanticResult("succeeded", {
+                    "element": _snapshot(element_ref, "window-1", bounds=SemanticBounds(0, 0, 20, 20)),
+                    "reference_expires_at": datetime.now(UTC) + timedelta(seconds=45),
+                })
+
+        self.runtime.computer_actions.controller.local.semantic_adapter = _FakeSemanticAdapterForApproval()
+
+        class _FakeWindowDescribeProvider:
+            """keyboard_key is now window-targeted (R18B02-003) and needs a
+            resolvable window; delegate everything else to the real
+            provider so is_foreground/focus_window/validate_input_window
+            (used by press_key itself) keep working unchanged."""
+
+            def __init__(self, real_provider: object) -> None:
+                self._real = real_provider
+
+            def describe_window(self, window_ref: str) -> dict[str, object]:
+                return {
+                    "window_ref": window_ref,
+                    "title": "Fixture Window",
+                    "process_name": "python.exe",
+                    "expires_at": datetime.now(UTC) + timedelta(seconds=45),
+                    "identity_digest": f"digest-{window_ref}",
+                }
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self._real, name)
+
+        real_provider = self.runtime.computer_actions.controller.local.perception_provider
+        self.runtime.computer_actions.controller.local.perception_provider = _FakeWindowDescribeProvider(real_provider)
+
     async def asyncTearDown(self) -> None:
         await self.runtime.shutdown()
 
@@ -450,6 +489,207 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
             assert spec is not None
             properties = set(spec.parameters_schema.get("properties", {}))
             self.assertFalse(properties & {"path", "root", "pattern", "file", "folder", "value", "text"})
+
+
+class ApprovalHardeningTests(unittest.IsolatedAsyncioTestCase):
+    """Milestone 0 (Phase 18 Workstream A, Batch 03): R18B02-001/002/003 -
+    element- and window-targeted actions get a trusted, target-bound,
+    actual-reference-expiry-bounded approval, generalized beyond the
+    original semantic-only special case."""
+
+    async def asyncSetUp(self) -> None:
+        self.runtime = create_runtime(JarvisConfig(environment="test", database_path=":memory:"))
+        await self.runtime.start()
+        self.identity = await self.runtime.identity.bootstrap_owner("Approval Hardening Owner")
+        enrollment = await self.runtime.identity.create_enrollment(
+            EnrollmentGrant(
+                self.identity.owner_id, "Approval Hardening Device", "desktop", "windows",
+                ("tool.request",), ("computer.observe", "computer.input"),
+            )
+        )
+        issued = await self.runtime.identity.redeem_enrollment(enrollment.code)
+        self.device = await self.runtime.identity.authenticate(issued.raw, issued.device_id)
+        assert self.device is not None
+
+        class _FakeSemantic:
+            def __init__(self) -> None:
+                self.names: dict[str, str] = {}
+                self.ttl_seconds = 45
+
+            async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+                name = self.names.get(element_ref, "Target")
+                return SemanticResult("succeeded", {
+                    "element": _snapshot(element_ref, "window-1", name=name, bounds=SemanticBounds(0, 0, 20, 20)),
+                    "reference_expires_at": datetime.now(UTC) + timedelta(seconds=self.ttl_seconds),
+                })
+
+        self.fake_semantic = _FakeSemantic()
+        self.runtime.computer_actions.controller.local.semantic_adapter = self.fake_semantic
+
+        class _FakeNative:
+            def __init__(self) -> None:
+                self.click_calls: list[str] = []
+                self.key_calls: list[str] = []
+
+            async def left_click_element(self, element_ref: str):
+                from jarvis.computer.native_input import NativeInputResult
+                self.click_calls.append(element_ref)
+                return NativeInputResult("succeeded", {}, verified=False)
+
+            async def move_to_element(self, element_ref: str):
+                from jarvis.computer.native_input import NativeInputResult
+                return NativeInputResult("succeeded", {}, verified=True)
+
+            async def press_key(self, window_ref: str, key: str, modifiers: tuple[str, ...] = ()):
+                from jarvis.computer.native_input import NativeInputResult
+                self.key_calls.append(window_ref)
+                return NativeInputResult("succeeded", {}, verified=False)
+
+        self.fake_native = _FakeNative()
+        self.runtime.computer_actions.controller.local.native_input_adapter = self.fake_native
+
+        class _FakeWindowProvider:
+            def __init__(self) -> None:
+                self.windows: dict[str, dict[str, object]] = {
+                    "window-1": {
+                        "title": "Fixture Window", "process_name": "python.exe",
+                        "expires_at": datetime.now(UTC) + timedelta(seconds=45),
+                    }
+                }
+
+            def describe_window(self, window_ref: str) -> dict[str, object]:
+                data = self.windows.get(window_ref)
+                if data is None or data["expires_at"] <= datetime.now(UTC):
+                    raise ValueError("window_ref_expired")
+                return {
+                    "window_ref": window_ref,
+                    "title": data["title"],
+                    "process_name": data["process_name"],
+                    "expires_at": data["expires_at"],
+                    "identity_digest": f"digest-{window_ref}-{data['title']}-{data['process_name']}",
+                }
+
+        self.fake_window_provider = _FakeWindowProvider()
+        self.runtime.computer_actions.controller.local.perception_provider = self.fake_window_provider
+        self.session = self.runtime.repository.create_session(self.identity.owner_id, self.device.device_id)
+
+    async def asyncTearDown(self) -> None:
+        await self.runtime.shutdown()
+
+    def _context(self) -> ToolContext:
+        return ToolContext(self.identity, self.device, self.session.id, "correlation-approval-hardening")
+
+    async def test_pointer_click_receives_trusted_element_preview(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.pointer.act", {"action": "left_click_element", "element_ref": "element-1"}, context
+        )
+        assert requested.approval_id is not None
+        row = self.runtime.repository.approval(requested.approval_id)
+        preview = json.loads(row["preview_json"])
+        self.assertEqual(preview["action"], "pointer_left_click_element")
+        self.assertEqual(preview["control_type"], "ButtonControl")
+        self.assertEqual(preview["name"], "Target")
+        self.assertNotIn("parameters", preview)
+
+    async def test_pointer_approval_is_identity_bound(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.pointer.act", {"action": "left_click_element", "element_ref": "element-1"}, context
+        )
+        assert requested.approval_id is not None
+        decided = await self.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, self.identity.identity_id, context
+        )
+        self.assertEqual(decided.status.value, "completed")
+        self.assertEqual(self.fake_native.click_calls, ["element-1"])
+
+    async def test_pointer_approval_target_change_refuses_execution(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.pointer.act", {"action": "left_click_element", "element_ref": "element-1"}, context
+        )
+        assert requested.approval_id is not None
+        self.fake_semantic.names["element-1"] = "Different Control"
+        decided = await self.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, self.identity.identity_id, context
+        )
+        self.assertEqual(decided.status.value, "denied")
+        self.assertEqual(decided.error_code, "approval_target_changed")
+        self.assertEqual(self.fake_native.click_calls, [])
+
+    async def test_pointer_approval_bounded_by_actual_fifteen_second_ttl(self) -> None:
+        self.fake_semantic.ttl_seconds = 15
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.pointer.act", {"action": "move_to_element", "element_ref": "element-1"}, context
+        )
+        assert requested.approval_id is not None
+        row = self.runtime.repository.approval(requested.approval_id)
+        created = _parse_utc(row["created_at"])
+        expires = _parse_utc(row["expires_at"])
+        self.assertLessEqual((expires - created).total_seconds(), 16)
+
+    async def test_polling_preview_does_not_extend_pending_approval(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.pointer.act", {"action": "move_to_element", "element_ref": "element-1"}, context
+        )
+        assert requested.approval_id is not None
+        row_before = self.runtime.repository.approval(requested.approval_id)
+        # An unrelated later read of the same target (e.g. a UI "polling" the
+        # element again) must not retroactively extend an already-created
+        # approval's stored deadline.
+        await self.fake_semantic.resolve_actionable_target("element-1")
+        await self.fake_semantic.resolve_actionable_target("element-1")
+        row_after = self.runtime.repository.approval(requested.approval_id)
+        self.assertEqual(row_before["expires_at"], row_after["expires_at"])
+
+    async def test_keyboard_key_approval_includes_trusted_window_title_and_process(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.keyboard.key", {"window_ref": "window-1", "key": "tab"}, context
+        )
+        assert requested.approval_id is not None
+        row = self.runtime.repository.approval(requested.approval_id)
+        preview = json.loads(row["preview_json"])
+        self.assertEqual(preview["window_title"], "Fixture Window")
+        self.assertEqual(preview["process_name"], "python.exe")
+        self.assertEqual(preview["key"], "tab")
+        self.assertNotIn("parameters", preview)
+
+    async def test_keyboard_key_approval_refuses_when_window_becomes_stale(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.keyboard.key", {"window_ref": "window-1", "key": "tab"}, context
+        )
+        assert requested.approval_id is not None
+        self.fake_window_provider.windows.pop("window-1")
+        decided = await self.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, self.identity.identity_id, context
+        )
+        self.assertEqual(decided.status.value, "denied")
+        self.assertEqual(self.fake_native.key_calls, [])
+
+    async def test_literal_typing_preview_has_trusted_window_and_digest_not_raw_text(self) -> None:
+        context = self._context()
+        secret = "super-secret-literal-text"
+        requested = await self.runtime.tool_service.execute(
+            "computer.keyboard.type", {"window_ref": "window-1", "text": secret}, context
+        )
+        assert requested.approval_id is not None
+        row = self.runtime.repository.approval(requested.approval_id)
+        preview = json.loads(row["preview_json"])
+        self.assertEqual(preview["window_title"], "Fixture Window")
+        self.assertEqual(preview["process_name"], "python.exe")
+        self.assertEqual(preview["text_length"], len(secret))
+        self.assertIn("text_digest", preview)
+        self.assertNotIn(secret, json.dumps(preview))
+
+
+def _parse_utc(value: str):
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 if __name__ == "__main__":

@@ -147,6 +147,58 @@ class WindowsDesktopProvider:
             raise ValueError("window_ref_required")
         return self._resolve_window_ref(window_ref)
 
+    def describe_window(self, window_ref: str) -> dict[str, object]:
+        """Fresh, trusted, bounded window descriptor for window-targeted
+        approval preview/binding (R18B02-003) - re-reads the live title/
+        process/class rather than trusting the stored fingerprint alone,
+        denies privacy-sensitive windows, and detects identity drift
+        (the window recycled to a different process/class since the ref was
+        issued) by comparing against the stored reference. Reuses the
+        existing `_window_refs` store - no second window-reference store.
+        Raises `ValueError` with a typed reason on stale/sensitive/changed
+        windows, matching `validate_input_window`'s convention."""
+        if not self.available:
+            raise ValueError("windows_desktop_unavailable")
+        entry = self._window_refs.get(window_ref)
+        if entry is None:
+            raise ValueError("window_ref_expired")
+        now = datetime.now(UTC)
+        if entry.expires_at <= now:
+            self._window_refs.pop(window_ref, None)
+            raise ValueError("window_ref_expired")
+        if not self._user32.IsWindow(entry.hwnd):
+            self._window_refs.pop(window_ref, None)
+            raise ValueError("window_ref_expired")
+        title_length = min(300, max(0, int(self._user32.GetWindowTextLengthW(entry.hwnd))))
+        title_buffer = ctypes.create_unicode_buffer(title_length + 1)
+        self._user32.GetWindowTextW(entry.hwnd, title_buffer, len(title_buffer))
+        title = title_buffer.value[:300] or None
+        class_buffer = ctypes.create_unicode_buffer(257)
+        self._user32.GetClassNameW(entry.hwnd, class_buffer, len(class_buffer))
+        window_class = class_buffer.value[:200] or None
+        process_id = wintypes.DWORD()
+        self._user32.GetWindowThreadProcessId(entry.hwnd, ctypes.byref(process_id))
+        process_name = self._process_name(int(process_id.value))
+        if self.privacy_policy.check_window(process_name, title):
+            raise ValueError("sensitive_window_denied")
+        fresh_fingerprint = _fingerprint(title)
+        if (
+            fresh_fingerprint != entry.title_fingerprint
+            or window_class != entry.window_class
+            or int(process_id.value) != entry.process_id
+        ):
+            raise ValueError("window_ref_changed")
+        identity_digest = hashlib.sha256(
+            f"{entry.process_id}:{entry.title_fingerprint}:{entry.window_class}".encode("utf-8")
+        ).hexdigest()
+        return {
+            "window_ref": window_ref,
+            "title": title,
+            "process_name": process_name,
+            "expires_at": entry.expires_at,
+            "identity_digest": identity_digest,
+        }
+
     def validate_region(self, region: VisualRegion, *, width: int, height: int) -> None:
         if region.x < 0 or region.y < 0 or region.width <= 0 or region.height <= 0:
             raise ValueError("invalid_capture_region")

@@ -17,6 +17,7 @@ reason strings, never raw UI text/content (Section 8.8).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -69,7 +70,11 @@ class _FakeSemanticAdapter:
                 "uia_element_identity_weak", "uia_target_not_interactable", "uia_sensitive_value_denied",
             } else "failed"
             return SemanticResult(status, error_code=error)
-        return SemanticResult("succeeded", {"element": _snapshot(element_ref)})
+        name = self.element_name.get(element_ref, "Target")
+        return SemanticResult("succeeded", {
+            "element": _snapshot(element_ref, name=name),
+            "reference_expires_at": datetime.now(UTC) + timedelta(seconds=45),
+        })
 
     async def invoke(self, element_ref: str) -> SemanticResult:
         self.invoke_calls.append(element_ref)

@@ -49,6 +49,12 @@ class ComputerCapability(StrEnum):
     POINTER_MOVE_TO_ELEMENT = "pointer_move_to_element"
     POINTER_LEFT_CLICK_ELEMENT = "pointer_left_click_element"
     KEYBOARD_KEY = "keyboard_key"
+    # Internal-only capabilities: never registered in any ToolSpec, so the
+    # model can never request them directly. ComputerActionService uses
+    # these to build a fresh, trusted target preview/binding before creating
+    # an approval for an element- or window-targeted action (R18B02-001/003).
+    RESOLVE_ELEMENT_TARGET = "resolve_element_target"
+    RESOLVE_WINDOW_TARGET = "resolve_window_target"
 
 
 @dataclass(frozen=True, slots=True)

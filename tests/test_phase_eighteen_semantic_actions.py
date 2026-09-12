@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from jarvis.authority.identity.service import EnrollmentGrant
 from jarvis.bootstrap import create_runtime
@@ -34,6 +34,10 @@ class _FakeActingAdapter:
         # simulate the target's observable identity drifting between an
         # approval request and its decide (R18B01-004).
         self.names: dict[str, str] = {}
+        # Overridable per-test so R18B02-002's "approval bounded by the
+        # *actual* configured reference TTL, not a hardcoded constant" can
+        # be exercised with a non-default (e.g. 15s) value.
+        self.reference_ttl_seconds = 45
 
     async def list_windows(self, device_id: str) -> SemanticResult:
         return SemanticResult("succeeded", {"windows": ()})
@@ -54,6 +58,19 @@ class _FakeActingAdapter:
         actionable = element_ref != "element-password"
         name = self.names.get(element_ref, "Target")
         return SemanticResult("succeeded", {"element": _fake_snapshot(element_ref, actionable=actionable, name=name)})
+
+    async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+        if element_ref == "element-missing":
+            return SemanticResult("failed", error_code="uia_element_not_found")
+        actionable = element_ref != "element-password"
+        name = self.names.get(element_ref, "Target")
+        return SemanticResult(
+            "succeeded",
+            {
+                "element": _fake_snapshot(element_ref, actionable=actionable, name=name),
+                "reference_expires_at": datetime.now(UTC) + timedelta(seconds=self.reference_ttl_seconds),
+            },
+        )
 
     async def get_text_or_value(self, element_ref: str) -> SemanticResult:
         return SemanticResult("failed", error_code="uia_element_not_found")
