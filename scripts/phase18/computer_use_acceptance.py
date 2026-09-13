@@ -57,6 +57,7 @@ if str(REPO_SRC) not in sys.path:
 
 FIXTURE_HOST_SCRIPT = Path(__file__).resolve().with_name("uia_fixture_host.py")
 TEXT_FIXTURE_HOST_SCRIPT = Path(__file__).resolve().with_name("uia_text_fixture_host.py")
+RECOVERY_FIXTURE_HOST_SCRIPT = Path(__file__).resolve().with_name("uia_recovery_fixture_host.py")
 
 _KNOWN_STATUS_VALUES = {"idle", "invoked", "toggle:on", "toggle:off", "selected:Alpha", "selected:Beta", "selected:Gamma"}
 _KNOWN_TEXT_FIXTURE_STATUS_VALUES = {"idle", "drag:accepted", "drag:rejected"}
@@ -505,6 +506,155 @@ async def _run_text_drag_fixture_scenarios() -> dict:
         await runtime.shutdown()
 
 
+async def _run_recovery_fixture_scenarios() -> dict:
+    """Batch 06 Milestone 2 (GAP-0104) - physical bounded-recovery
+    acceptance against a third owned fixture that accepts a small,
+    deterministic MOVE/REPLACE command channel over its own stdin (see
+    `uia_recovery_fixture_host.py`'s own docstring for the full safety
+    rationale). Every command's effect is confirmed independently via a
+    real `computer.semantic.read` call before the runner proceeds to the
+    actual JARVIS action under test - no uncontrolled process racing, and
+    the fixture's own status label is never treated as proof of what
+    JARVIS itself did, only of what the fixture itself changed.
+
+    Two scenarios only, deliberately - both fully sequential, zero-race:
+    a successful recovery cycle and a budget-exhaustion cycle both require
+    landing a JARVIS action's *internal* grounding calls inside a
+    millisecond-scale window relative to a fixture-side state change,
+    which cannot be done deterministically from an external process; those
+    contracts remain proven by the deterministic `RecoveryTests`/
+    `RecoveryBudgetScopeTests` suites (Batch 05/06 Milestone 0) and the
+    `computer_use_v2` evaluation-suite cases instead, per the task's own
+    allowance to retain deterministic injection for scenarios that are
+    unsafe or impossible to produce physically without ambiguity."""
+    scenario: dict = {"fixture": "owned_win32_recovery_fixture", "attempted": True}
+    if not RECOVERY_FIXTURE_HOST_SCRIPT.exists():
+        scenario["attempted"] = False
+        scenario["skip_reason"] = "recovery_fixture_host_script_missing"
+        return scenario
+
+    nonce = str(uuid.uuid4())
+    title = f"JARVIS-CUV2-RECOVERY-FIXTURE-{nonce}"
+    runtime, identity, device, context = await _new_harness()
+    proc: subprocess.Popen | None = None
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, str(RECOVERY_FIXTURE_HOST_SCRIPT), "--nonce", nonce],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True, text=True,
+        )
+        window_ref, error = await _find_exact_fixture_window(runtime, context, title)
+        if window_ref is None:
+            scenario["error"] = error
+            return scenario
+
+        async def _find_target_ref() -> str | None:
+            found = await runtime.tool_service.execute(
+                "computer.semantic.read",
+                {"action": "find_elements", "window_ref": window_ref, "control_type": "ButtonControl", "name": "Recovery Target"},
+                context,
+            )
+            if found.status.value != "completed" or not found.output.get("matches"):
+                return None
+            return found.output["matches"][0]["element_ref"]
+
+        async def _read_status() -> str | None:
+            found = await runtime.tool_service.execute(
+                "computer.semantic.read", {"action": "find_elements", "window_ref": window_ref, "control_type": "TextControl"}, context,
+            )
+            if found.status.value != "completed":
+                return None
+            for match in found.output.get("matches", []):
+                name = match.get("name")
+                if isinstance(name, str) and (name.startswith("ready:") or name.startswith("clicked:")):
+                    return name
+            return None
+
+        def _send(command: str) -> None:
+            assert proc is not None and proc.stdin is not None
+            proc.stdin.write(command + "\n")
+            proc.stdin.flush()
+
+        # -- scenario A: relocation before input - same identity preserved,
+        # fresh bounds used before execution, one action delivery maximum --
+        ref_a = await _find_target_ref()
+        if ref_a is None:
+            scenario["relocation_before_input"] = {"status": "target_not_found"}
+        else:
+            before = await runtime.tool_service.execute("computer.semantic.read", {"action": "get_element", "element_ref": ref_a}, context)
+            bounds_before = (before.output or {}).get("element", {}).get("bounds") if before.status.value == "completed" else None
+            _send("MOVE")
+            bounds_after, same_ref_valid = bounds_before, False
+            for _ in range(10):
+                await asyncio.sleep(0.3)
+                after = await runtime.tool_service.execute("computer.semantic.read", {"action": "get_element", "element_ref": ref_a}, context)
+                same_ref_valid = after.status.value == "completed"
+                bounds_after = (after.output or {}).get("element", {}).get("bounds") if same_ref_valid else None
+                if bounds_after is not None and bounds_after != bounds_before:
+                    break
+            status, _verified, _output = await _approve_and_run(
+                runtime, identity, context, "computer.pointer.act", {"action": "left_click_element", "element_ref": ref_a}
+            )
+            status_after = await _read_status()
+            scenario["relocation_before_input"] = {
+                "status": status,
+                "same_ref_still_valid_after_move": same_ref_valid,
+                "bounds_changed": bounds_after != bounds_before,
+                "independent_status_readback": status_after,
+                "click_landed_on_same_generation": status_after == "clicked:gen0",
+            }
+
+        # -- scenario B: approval identity change - target replaced with a
+        # different strong identity (destroy+recreate -> new RuntimeId)
+        # after the approval request but before decide; the existing
+        # approval must be refused, zero input delivered, no recovery
+        # leniency at the approval layer --
+        ref_b = await _find_target_ref()
+        if ref_b is None:
+            scenario["approval_identity_change"] = {"status": "target_not_found"}
+        else:
+            requested = await runtime.tool_service.execute(
+                "computer.pointer.act", {"action": "left_click_element", "element_ref": ref_b}, context
+            )
+            if requested.status.value != "approval_required" or requested.approval_id is None:
+                scenario["approval_identity_change"] = {"status": "unexpected_request_status", "detail": requested.status.value}
+            else:
+                _send("REPLACE")
+                stale_confirmed = False
+                for _ in range(10):
+                    await asyncio.sleep(0.3)
+                    check = await runtime.tool_service.execute("computer.semantic.read", {"action": "get_element", "element_ref": ref_b}, context)
+                    if check.status.value == "failed" and check.error_code == "uia_element_stale":
+                        stale_confirmed = True
+                        break
+                decided = await runtime.tool_service.decide_and_resume(requested.approval_id, True, identity.identity_id, context)
+                status_after = await _read_status()
+                scenario["approval_identity_change"] = {
+                    "old_ref_confirmed_stale_before_decide": stale_confirmed,
+                    "decide_status": decided.status.value,
+                    "decide_error_code": decided.error_code,
+                    "refused_before_any_input": decided.status.value == "denied",
+                    "independent_status_readback": status_after,
+                    "zero_input_delivered": status_after is not None and not status_after.startswith("clicked:"),
+                }
+
+        return scenario
+    finally:
+        if proc is not None:
+            if proc.stdin is not None:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+            scenario["fixture_child_confirmed_exited"] = proc.poll() is not None
+        await runtime.shutdown()
+
+
 def _virtual_desktop_metrics() -> tuple[int, int, int, int, int]:
     import ctypes
     user32 = ctypes.WinDLL("user32.dll")
@@ -586,6 +736,7 @@ async def _run_once() -> dict:
     return {
         "owned_fixture": await _run_owned_fixture_scenarios(),
         "text_drag_fixture": await _run_text_drag_fixture_scenarios(),
+        "recovery_fixture": await _run_recovery_fixture_scenarios(),
         "non_primary_monitor": await _run_non_primary_monitor_scenario(),
     }
 
@@ -608,6 +759,9 @@ def _summarize(runs: list[dict]) -> dict:
 
     def text_attempted(run: dict) -> bool:
         return bool(run["text_drag_fixture"].get("attempted"))
+
+    def recovery_attempted(run: dict) -> bool:
+        return bool(run["recovery_fixture"].get("attempted"))
 
     return {
         "runs": len(runs),
@@ -635,6 +789,11 @@ def _summarize(runs: list[dict]) -> dict:
             "pass_count": sum(1 for r in runs if r["non_primary_monitor"].get("result") == "NON_PRIMARY_MONITOR_PHYSICAL_PASS"),
             "geometry": runs[0]["non_primary_monitor"].get("virtual_desktop_geometry") if runs else None,
         },
+        "recovery_relocation_click_succeeds": rate(lambda r: r["recovery_fixture"].get("relocation_before_input", {}).get("click_landed_on_same_generation") if recovery_attempted(r) else None),
+        "recovery_relocation_fresh_bounds_used": rate(lambda r: r["recovery_fixture"].get("relocation_before_input", {}).get("bounds_changed") if recovery_attempted(r) else None),
+        "recovery_approval_identity_change_refused": rate(lambda r: r["recovery_fixture"].get("approval_identity_change", {}).get("refused_before_any_input") if recovery_attempted(r) else None),
+        "recovery_approval_identity_change_zero_input_delivered": rate(lambda r: r["recovery_fixture"].get("approval_identity_change", {}).get("zero_input_delivered") if recovery_attempted(r) else None),
+        "recovery_fixture_child_confirmed_exited": rate(lambda r: r["recovery_fixture"].get("fixture_child_confirmed_exited") if recovery_attempted(r) else None),
     }
 
 

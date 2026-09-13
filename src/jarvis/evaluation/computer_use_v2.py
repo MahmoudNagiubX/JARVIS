@@ -1292,6 +1292,71 @@ async def _case_recovery_budget_exhausted_clean_typed_failure(_context: Any) -> 
     return result.status == "failed" and result.error_code == "uia_element_stale" and semantic.calls == 2
 
 
+# -- 46. one recovery budget per drag action, shared across pre-focus/post-focus grounding (R18B05-003) --
+
+async def _case_drag_recovery_budget_shared_across_both_grounding_calls(_context: Any) -> bool:
+    from ..computer.native_input import WindowsNativeInputAdapter
+
+    class _ScriptedDragGroundingSemantic:
+        """Scripts a non-monotonic fail/succeed/fail sequence for the drag
+        source only - the pre-focus grounding call needs and consumes the
+        one bounded recovery attempt, and the post-focus grounding call's
+        own transient failure must get no second recovery (Batch 06,
+        R18B05-003: a single drag action owns exactly one recovery cycle
+        shared across both of its grounding calls, not one each)."""
+
+        def __init__(self) -> None:
+            self.src_calls = 0
+
+        async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+            if element_ref != "element-drag-src-budget":
+                return SemanticResult("succeeded", {"element": _snapshot(element_ref, "window-1", bounds=SemanticBounds(200, 200, 20, 20))})
+            self.src_calls += 1
+            # call 1 (pre-focus attempt): fails: call 2 (pre-focus recovery):
+            # succeeds; call 3 (post-focus attempt): fails again, with no
+            # budget left for a call 4.
+            if self.src_calls in (1, 3):
+                return SemanticResult("failed", error_code="uia_element_stale")
+            return SemanticResult("succeeded", {"element": _snapshot(element_ref, "window-1", bounds=SemanticBounds(0, 0, 20, 20))})
+
+    class _Provider:
+        def validate_input_window(self, window_ref: str) -> int:
+            return 1
+
+        def focus_window(self, window_ref: str) -> bool:
+            return True
+
+        def is_foreground(self, hwnd: int) -> bool:
+            return True
+
+    ctx = await _new_runtime_context()
+    try:
+        ctx.semantic.element_name["element-drag-src-budget"] = "Drag Source"
+        ctx.semantic.element_name["element-drag-dst-budget"] = "Drop Target"
+        scripted = _ScriptedDragGroundingSemantic()
+        ctx.runtime.computer_actions.controller.local.native_input_adapter = WindowsNativeInputAdapter(
+            _Provider(), scripted,  # type: ignore[arg-type]
+            metrics_provider=lambda: (0, 0, 1920, 1080), send_input=lambda inputs: len(inputs), get_cursor_pos=lambda: (0, 0),
+        )
+        requested = await ctx.runtime.tool_service.execute(
+            "computer.pointer.act",
+            {"action": "drag_element_to_element", "source_element_ref": "element-drag-src-budget", "target_element_ref": "element-drag-dst-budget"},
+            ctx.context,
+        )
+        if requested.approval_id is None:
+            return False
+        decided = await ctx.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, ctx.identity.identity_id, ctx.context
+        )
+        # The drag ultimately fails (post-focus grounding's transient
+        # failure got no second recovery), and the source was resolved
+        # exactly 3 times: pre-focus fail, pre-focus recovery success,
+        # post-focus fail with no further retry.
+        return decided.status.value == "failed" and decided.error_code == "uia_element_stale" and scripted.src_calls == 3
+    finally:
+        await ctx.runtime.shutdown()
+
+
 def build_suite() -> RegressionSuite:
     cases = (
         EvaluationCase("cuv2-01", "semantic read uses canonical authority", "computer_use_v2", _case_semantic_read_canonical),
@@ -1339,6 +1404,7 @@ def build_suite() -> RegressionSuite:
         EvaluationCase("cuv2-43", "click accepted by SendInput but unverified is never retried", "computer_use_v2", _case_recovery_never_retries_unverified_click_outcome),
         EvaluationCase("cuv2-44", "semantic invoke followed by disappearance is never re-invoked", "computer_use_v2", _case_recovery_never_retries_invoke_after_disappearance),
         EvaluationCase("cuv2-45", "exhausted recovery budget produces a clean typed failure", "computer_use_v2", _case_recovery_budget_exhausted_clean_typed_failure),
+        EvaluationCase("cuv2-46", "one drag recovery budget shared across pre-focus/post-focus grounding", "computer_use_v2", _case_drag_recovery_budget_shared_across_both_grounding_calls),
     )
     return RegressionSuite(
         SUITE_NAME, cases,

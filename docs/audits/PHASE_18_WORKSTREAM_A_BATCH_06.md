@@ -3,7 +3,7 @@
 
 **Task:** `tasks/PHASE_18_WORKSTREAM_A_BATCH_06_MASTER_TASK.md` (pasted in full by the requester)
 **Branch:** `feature/phase-18-computer-use-v2`
-**Status:** IN PROGRESS — Milestones 0 and 1 complete and pushed, Milestone 2 not yet started.
+**Status:** Milestones 0, 1, and 2 complete and pushed.
 
 Batch 05's independent verdict was `BATCH05_NEEDS_FIX` (R18B05-001/002/003). Batch 05's implementation was **not** rolled back - it remains the working base this batch hardens.
 
@@ -138,4 +138,57 @@ Run against the real, disposable-isolated-venv-provisioned model directory (via 
 
 GAP-0103 remains `PARTIAL` (still read-only, no visual actuation) - the previously-flagged missing unified live-GUI Arabic physical evidence gap is now closed. DEC-048 is unchanged (EasyOCR 1.7.2 remains accepted); its evidence entry is hardened with the offline/reproducibility/physical-Arabic details above.
 
-**Commit:** `7474d03742693b46d316adfde7b952bcf2e92bce`
+**Commit:** `ddfc5b6b2dba4db3e220cb29817b6fd9301873ad`
+**Push:** `feature/phase-18-computer-use-v2` (`04904b3..ddfc5b6`) — pushed.
+
+---
+
+## 4. Milestone 2 — physical bounded-recovery acceptance
+
+### 4.1 Fourth owned fixture and its command channel
+
+`scripts/phase18/uia_recovery_fixture_host.py` (new) - a JARVIS-owned, standalone Win32 process with one target BUTTON ("Recovery Target") and one status STATIC label. Unlike the first three fixtures, it accepts a small, explicit, deterministic command channel over its **own stdin** - the exact pipe the runner's own `subprocess.Popen(..., stdin=subprocess.PIPE)` created for this exact child process, never a network socket, named pipe, or any channel reaching an unrelated process:
+
+- `MOVE` - relocates the target button by a fixed offset via `SetWindowPos`, keeping the same HWND (same UIA `RuntimeId`/identity).
+- `REPLACE` - `DestroyWindow`s the current target button and creates a brand new one at the same position with the same visible name, but a genuinely different HWND/`RuntimeId`.
+
+Both commands are handled by posting a custom `WM_APP_*` message onto the main window's own queue from a background stdin-reading thread - every actual UI mutation still happens on the GUI thread, same as any ordinary Win32 app. The runner never trusts the fixture's own status label as proof of what JARVIS did - only of what the fixture itself changed - and always independently confirms each command's effect via a real `computer.semantic.read` call before issuing the actual JARVIS action under test, so there is no uncontrolled process racing anywhere in either scenario below.
+
+### 4.2 Physical scenarios (in `scripts/phase18/computer_use_acceptance.py`'s new `_run_recovery_fixture_scenarios`)
+
+**Scenario A - relocation before input (stable identity, fresh bounds used):** get the target's `element_ref`, independently read its bounds, send `MOVE`, independently confirm (via `get_element` on the *same* `element_ref`) that it still resolves successfully and its bounds changed, then request+approve+execute a native `left_click_element` on that same ref. **3/3 runs:** the click completed, landed on the current (post-move) generation (`independent_status_readback == "clicked:gen0"` every time - the fixture only reports "clicked" when its *actual, currently-live* button receives a real `WM_COMMAND`, so this is physical proof the click was delivered to the relocated control, not a stale cached position).
+
+**Scenario B - approval identity change (target replaced after request, before decide):** get the target's `element_ref`, request approval for a `left_click_element` on it (do not decide yet), send `REPLACE`, independently confirm the *old* `element_ref` now fails re-resolution, then decide (approve) the still-pending approval. **3/3 runs:** `decide()`'s own existing fresh re-check (`_element_target_preview`, unmodified by this batch) refused the approval outright (`decide_status == "denied"`, error code `uia_element_not_found` or `uia_element_stale` depending on exact timing - both are the raw resolution failure, not a recovery-leniency code) with the independent status label still reading `"ready:gen1"` (never `"clicked:..."`) - zero input delivered, no recovery leniency at the approval layer, confirmed live rather than only in fakes.
+
+Both scenarios ran cleanly on the **first** attempt with no flakiness across 3 iterations - each is fully sequential (send command → poll-confirm its effect independently → only then issue the JARVIS action), so neither depends on winning a timing race.
+
+### 4.3 What was deliberately left to deterministic evidence, and why
+
+Per the task's own instruction ("retain deterministic injection for side-effect-failure cases that are unsafe or impossible to produce physically without ambiguity"):
+
+- **A genuinely successful bounded-recovery cycle** (first grounding attempt fails for a transient reason against the *same* identity, the recovery attempt then succeeds) requires landing a live action's *internal* grounding calls inside a millisecond-scale window relative to an external fixture-side state change. Neither `MOVE` (never invalidates identity, so recovery is never even needed) nor `REPLACE` (permanently invalidates identity, so recovery can never succeed) can produce this physically without an uncontrolled race against a live UI. This exact contract is already proven deterministically and precisely (`RecoveryTests.test_stale_ref_recovers_via_one_bounded_retry`, `test_focus_race_recovers_via_one_bounded_retry`, Batch 05/06) with exact resolve-call counts.
+- **Recovery-budget exhaustion for a drag** (two sequential transient failures within one action, only one recoverable) has the same millisecond-timing problem, doubled (it needs precise control over *both* the pre-focus and post-focus grounding calls). Already proven deterministically by Milestone 0's `RecoveryBudgetScopeTests` (3 tests) and `computer_use_v2` case `cuv2-46` (new this milestone, §4.4).
+- **Consequential uncertainty** (a controlled partial/injection failure after `SendInput` has already begun) - the task explicitly names the existing deterministic injected-adapter harness as the right tool for this, since physically forcing a real mid-drag `SendInput` failure would require corrupting real OS input delivery, unsafe and unrepresentative. Already proven by `RecoveryTests.test_recovery_never_fires_after_sendinput_has_begun` and `test_drag_partial_injection_failure_after_recovered_grounding_still_never_retries`.
+
+### 4.4 Evaluation suite
+
+One new `computer_use_v2` case (46 total): `cuv2-46` proves the action-scoped recovery-budget contract (R18B05-003) through the real tool/service path (`computer.pointer.act` → approval → `decide_and_resume` → `_execute_controller`) using a scripted semantic fake that fails the drag source's pre-focus resolve, succeeds on the recovery attempt, then fails again on the post-focus resolve - the drag ends in a clean typed failure after exactly 3 resolve calls (never a 4th), proving the shared budget spans both grounding calls rather than resetting between them.
+
+### 4.5 Tests
+
+- `tests/test_phase_eighteen_owned_fixture.py`'s new `RecoveryFixtureSourceSafetyTests` class (8 tests): no owner-application dependency; no network/clipboard calls (docstring-stripped, matching the existing pattern); the command channel is scoped to the fixture's own stdin only (no named pipe, no `CreateFile`-based IPC); only `MOVE`/`REPLACE` are recognized; never imported by production bootstrap or anywhere under `src/`; parses as a standalone script; the runner's recovery-scenario function itself uses exact-PID cleanup.
+- An existing test (`OwnedFixtureRunnerLogicTests.test_summary_never_includes_full_window_enumeration_or_owner_titles`) was updated to include a `recovery_fixture` entry in its fake run data, matching `_summarize`'s new required key - still passes, still proves no window enumeration/owner title ever reaches the persisted summary.
+- `src/jarvis/evaluation/computer_use_v2.py`: 1 new case (`cuv2-46`, 46 total).
+
+### 4.6 Verification
+
+- `python -m pytest tests/test_phase_eighteen_owned_fixture.py -q` → **38 passed** (30 pre-existing + 8 new).
+- `python -m pytest tests/test_phase_eighteen_evaluation_suite.py -q` → **7 passed** (all 46 `computer_use_v2` cases pass).
+- `python -m pytest tests -k "file_access or phase_eighteen or ocr" -q` → **299 passed, 3 skipped, 515 deselected**.
+- `python -m pytest tests -q` (full regression) → **814 passed, 3 skipped, 36 subtests passed** in 232.87s (806 + 8 new fixture-source-safety tests).
+- `python -m compileall src tests scripts -q` → clean, no errors.
+- `git diff --check` → clean, no whitespace errors.
+
+GAP-0104 advances (remains `PARTIAL`, narrowly deepened further): the action-scoped recovery budget fix and its physical proof are complete; no autonomous multi-app replanning loop and no second planner/authority exist - full GAP-0104 closure remains out of scope. GAP-0105 grows from 45 to 46 evaluation cases and from 3 to 4 owned fixtures; still not the broad real-app matrix named in its original scope.
+
+**Commit:** see the final commit-chain table in this report's closing section for the exact pushed SHA.

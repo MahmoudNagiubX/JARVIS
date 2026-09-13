@@ -28,6 +28,7 @@ OCR_BENCHMARK_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "ocr_backend_benchmar
 OCR_FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_ocr_fixture_host.py"
 OCR_ACCEPTANCE_RUNNER_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "ocr_visual_acceptance.py"
 PROVISION_SCRIPT = REPO_ROOT / "scripts" / "setup" / "provision_easyocr_models.py"
+RECOVERY_FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_recovery_fixture_host.py"
 
 
 def _load_module(path: Path, name: str):
@@ -270,6 +271,12 @@ class OwnedFixtureRunnerLogicTests(unittest.IsolatedAsyncioTestCase):
                 "fixture_child_confirmed_exited": True,
             },
             "non_primary_monitor": {"attempted": False, "skip_reason": "MULTI_MONITOR_PHYSICAL_PENDING"},
+            "recovery_fixture": {
+                "attempted": True,
+                "relocation_before_input": {"click_landed_on_same_generation": True, "bounds_changed": True},
+                "approval_identity_change": {"refused_before_any_input": True, "zero_input_delivered": True},
+                "fixture_child_confirmed_exited": True,
+            },
         }]
         summary = self.module._summarize(fake_runs)
         import json
@@ -368,6 +375,72 @@ class OcrFixtureSourceSafetyTests(unittest.TestCase):
         source = OCR_ACCEPTANCE_RUNNER_SCRIPT.read_text(encoding="utf-8").casefold()
         for forbidden in ("msedge", "notepad.exe", "calc.exe", "chrome.exe", "explorer.exe"):
             self.assertNotIn(forbidden, source)
+
+
+class RecoveryFixtureSourceSafetyTests(unittest.TestCase):
+    """Batch 06 Milestone 2 (GAP-0104): the fourth owned fixture (bounded
+    pre-input recovery acceptance) accepts a small deterministic MOVE/
+    REPLACE command channel over its own stdin - the same safety discipline
+    as the other three fixtures otherwise applies unchanged: JARVIS-owned
+    child process only, no owner app/network/clipboard, exact-PID cleanup,
+    never imported by production."""
+
+    def test_fixture_host_has_no_owner_application_dependency(self) -> None:
+        source = RECOVERY_FIXTURE_SCRIPT.read_text(encoding="utf-8").casefold()
+        for forbidden in ("msedge", "notepad.exe", "calc.exe", "chrome.exe"):
+            self.assertNotIn(forbidden, source)
+
+    def test_fixture_host_has_no_network_or_clipboard_calls(self) -> None:
+        tree = ast.parse(RECOVERY_FIXTURE_SCRIPT.read_text(encoding="utf-8"))
+        module_docstring = ast.get_docstring(tree) or ""
+        source_without_docstring = RECOVERY_FIXTURE_SCRIPT.read_text(encoding="utf-8").replace(module_docstring, "").casefold()
+        for forbidden in ("socket", "urllib", "http", "getopenfilename", "getsavefilename", "clipboard", "openclipboard"):
+            self.assertNotIn(forbidden, source_without_docstring)
+
+    def test_fixture_command_channel_is_scoped_to_its_own_stdin_only(self) -> None:
+        # The only inter-process channel this fixture accepts is the stdin
+        # pipe of the exact child process a runner itself created via
+        # subprocess.Popen(..., stdin=subprocess.PIPE) - never a network
+        # socket, named pipe, or shared file reaching an unrelated process.
+        source = RECOVERY_FIXTURE_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("sys.stdin", source)
+        self.assertNotIn("CreateNamedPipe", source)
+        self.assertNotIn("CreateFile", source)
+
+    def test_fixture_commands_are_bounded_to_the_documented_set(self) -> None:
+        module = _load_module(RECOVERY_FIXTURE_SCRIPT, "jarvis_test_recovery_fixture_host")
+        # Only MOVE/REPLACE are recognized - any other stdin line is a no-op
+        # (silently ignored, matching the fixture's own `elif` chain).
+        source = RECOVERY_FIXTURE_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('command == "MOVE"', source)
+        self.assertIn('command == "REPLACE"', source)
+        self.assertEqual(module.TARGET_LABEL, "Recovery Target")
+
+    def test_fixture_not_imported_by_production_bootstrap(self) -> None:
+        bootstrap_source = (REPO_ROOT / "src" / "jarvis" / "bootstrap.py").read_text(encoding="utf-8")
+        self.assertNotIn("uia_recovery_fixture_host", bootstrap_source)
+
+    def test_fixture_not_imported_anywhere_under_src(self) -> None:
+        for path in (REPO_ROOT / "src").rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("uia_recovery_fixture_host", source, f"unexpected reference in {path}")
+
+    def test_fixture_is_syntactically_standalone(self) -> None:
+        tree = ast.parse(RECOVERY_FIXTURE_SCRIPT.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level and node.level > 0:
+                self.fail(f"{RECOVERY_FIXTURE_SCRIPT.name} uses a relative import, unexpected for a standalone dev script")
+
+    def test_runner_recovery_scenario_uses_exact_pid_cleanup(self) -> None:
+        source = RUNNER_SCRIPT.read_text(encoding="utf-8")
+        # The recovery scenario function itself, not just the runner file in
+        # general, must close its own stdin pipe and confirm exact-PID exit.
+        start = source.index("async def _run_recovery_fixture_scenarios")
+        end = source.index("\n\n\n", start)
+        scenario_source = source[start:end]
+        self.assertIn("proc.terminate()", scenario_source)
+        self.assertIn("proc.wait(", scenario_source)
+        self.assertIn("fixture_child_confirmed_exited", scenario_source)
 
 
 if __name__ == "__main__":
