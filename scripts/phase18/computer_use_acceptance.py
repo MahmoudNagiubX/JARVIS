@@ -56,8 +56,13 @@ if str(REPO_SRC) not in sys.path:
     sys.path.insert(0, str(REPO_SRC))
 
 FIXTURE_HOST_SCRIPT = Path(__file__).resolve().with_name("uia_fixture_host.py")
+TEXT_FIXTURE_HOST_SCRIPT = Path(__file__).resolve().with_name("uia_text_fixture_host.py")
 
 _KNOWN_STATUS_VALUES = {"idle", "invoked", "toggle:on", "toggle:off", "selected:Alpha", "selected:Beta", "selected:Gamma"}
+_KNOWN_TEXT_FIXTURE_STATUS_VALUES = {"idle", "drag:accepted", "drag:rejected"}
+ARABIC_FIXTURE_PHRASE = "مرحبا يا جارفيس"
+ENGLISH_FIXTURE_PHRASE = "JARVIS COMPUTER USE"
+CLIPBOARD_SENTINEL = "jarvis-fixture-clipboard-sentinel"
 
 
 async def _new_harness():
@@ -101,15 +106,36 @@ async def _find_exact_fixture_window(runtime, context, title: str) -> tuple[str 
     return None, "fixture_window_not_found"
 
 
+# Windows' SetForegroundWindow foreground-activation gate is time/input-
+# history sensitive: a background process (this runner) can be denied
+# foreground activation for a freshly created window depending on exactly
+# when the OS considers the calling process/thread to hold "recent input"
+# standing - a well-documented OS-level race, not a JARVIS or fixture
+# defect. This retries only the mechanical foreground precondition (never
+# the semantic outcome of the action itself) a bounded few times with a
+# short delay - never disguising a real functional failure, since the FINAL
+# reported status/attempt count is always the true last outcome.
+_FOREGROUND_RETRY_ATTEMPTS = 4
+_FOREGROUND_RETRY_DELAY_SECONDS = 0.75
+
+
 async def _approve_and_run(runtime, identity, context, tool_name: str, arguments: dict) -> tuple[str, bool, dict]:
-    requested = await runtime.tool_service.execute(tool_name, arguments, context)
-    if requested.status.value != "approval_required":
-        return requested.status.value, False, {}
-    decided = await runtime.tool_service.decide_and_resume(requested.approval_id, True, identity.identity_id, context)
-    return decided.status.value, bool(decided.verified), dict(decided.output or {})
+    last_status, last_verified, last_output = "denied", False, {}
+    for attempt in range(_FOREGROUND_RETRY_ATTEMPTS):
+        requested = await runtime.tool_service.execute(tool_name, arguments, context)
+        if requested.status.value != "approval_required":
+            return requested.status.value, False, {}
+        decided = await runtime.tool_service.decide_and_resume(requested.approval_id, True, identity.identity_id, context)
+        last_status, last_verified, last_output = decided.status.value, bool(decided.verified), dict(decided.output or {})
+        if decided.error_code != "window_focus_not_verified":
+            return last_status, last_verified, last_output
+        if attempt + 1 < _FOREGROUND_RETRY_ATTEMPTS:
+            print(f"   (foreground activation denied, retrying {tool_name} {arguments.get('action') or arguments.get('key') or arguments.get('chord') or ''} - attempt {attempt + 2}/{_FOREGROUND_RETRY_ATTEMPTS})", file=sys.stderr)
+            await asyncio.sleep(_FOREGROUND_RETRY_DELAY_SECONDS)
+    return last_status, last_verified, last_output
 
 
-async def _read_status(runtime, context, window_ref: str) -> str | None:
+async def _read_status(runtime, context, window_ref: str, known_values: set[str] = _KNOWN_STATUS_VALUES) -> str | None:
     """Independent read-back of the fixture's own status label - never the
     acting tool call's own self-report."""
     found = await runtime.tool_service.execute(
@@ -119,7 +145,7 @@ async def _read_status(runtime, context, window_ref: str) -> str | None:
         return None
     for match in found.output.get("matches", []):
         name = match.get("name")
-        if isinstance(name, str) and (name in _KNOWN_STATUS_VALUES or name.startswith(("toggle:", "selected:"))):
+        if isinstance(name, str) and (name in known_values or name.startswith(("toggle:", "selected:", "drag:"))):
             return name
     return None
 
@@ -292,6 +318,193 @@ async def _run_owned_fixture_scenarios() -> dict:
         await runtime.shutdown()
 
 
+async def _run_text_drag_fixture_scenarios() -> dict:
+    """Second owned fixture (Batch 04 Milestone 1) - grounded drag and
+    literal-typing (English + Arabic Unicode) physical acceptance. Same
+    safety discipline as `_run_owned_fixture_scenarios`: exact-nonce-title
+    matching, exact-PID cleanup, real tool calls with normal approval, no
+    IPC with the fixture process, no owner clipboard content ever read or
+    logged - a known sentinel is written first, then restored at the end."""
+    scenario: dict = {"fixture": "owned_win32_text_drag_fixture", "attempted": True}
+    if not TEXT_FIXTURE_HOST_SCRIPT.exists():
+        scenario["attempted"] = False
+        scenario["skip_reason"] = "text_fixture_host_script_missing"
+        return scenario
+
+    nonce = str(uuid.uuid4())
+    title = f"JARVIS-CUV2-TEXT-FIXTURE-{nonce}"
+    runtime, identity, device, context = await _new_harness()
+    proc: subprocess.Popen | None = None
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, str(TEXT_FIXTURE_HOST_SCRIPT), "--nonce", nonce],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
+        )
+        window_ref, error = await _find_exact_fixture_window(runtime, context, title)
+        if window_ref is None:
+            scenario["error"] = error
+            return scenario
+
+        async def _edit_ref() -> str | None:
+            found = await runtime.tool_service.execute(
+                "computer.semantic.read", {"action": "find_elements", "window_ref": window_ref, "control_type": "EditControl"}, context
+            )
+            if found.status.value != "completed" or not found.output.get("matches"):
+                return None
+            return found.output["matches"][0]["element_ref"]
+
+        async def _read_edit_text() -> str | None:
+            ref = await _edit_ref()
+            if ref is None:
+                return None
+            read = await runtime.tool_service.execute("computer.semantic.read", {"action": "get_text", "element_ref": ref}, context)
+            return read.output.get("text") if read.status.value == "completed" else None
+
+        # -- drag: source -> target, independent status read-back --
+        source_ref = await _find_one(runtime, context, window_ref, "ButtonControl", "Drag Source")
+        target_ref = await _find_one(runtime, context, window_ref, "ButtonControl", "Drop Target")
+        if source_ref is None or target_ref is None:
+            scenario["drag"] = {"status": "not_found"}
+        else:
+            status, verified, output = await _approve_and_run(
+                runtime, identity, context, "computer.pointer.act",
+                {"action": "drag_element_to_element", "source_element_ref": source_ref, "target_element_ref": target_ref},
+            )
+            status_after = await _read_status(runtime, context, window_ref, _KNOWN_TEXT_FIXTURE_STATUS_VALUES)
+            scenario["drag"] = {
+                "status": status, "verified": verified,
+                "pointer_target_verified": output.get("pointer_target_verified"),
+                "independent_status_readback": status_after,
+                "independent_status_matches_expected": status_after == "drag:accepted",
+            }
+
+        # -- literal English typing (select-all then type replaces content) --
+        status, _verified, _output = await _approve_and_run(
+            runtime, identity, context, "computer.keyboard.chord", {"window_ref": window_ref, "chord": "ctrl+a"}
+        )
+        english_ref = await _edit_ref()
+        if english_ref is not None:
+            status, _verified, output = await _approve_and_run(
+                runtime, identity, context, "computer.keyboard.type", {"window_ref": window_ref, "text": ENGLISH_FIXTURE_PHRASE}
+            )
+            text_after = await _read_edit_text()
+            scenario["literal_typing_english"] = {
+                "status": status, "chars_sent": output.get("chars_sent"),
+                "independent_text_readback_matches_expected": text_after == ENGLISH_FIXTURE_PHRASE,
+            }
+        else:
+            scenario["literal_typing_english"] = {"status": "not_found"}
+
+        # -- literal Arabic Unicode typing (select-all then type replaces
+        # content again) - existing literal typing path is not modified for
+        # this, only exercised with non-ASCII text --
+        await _approve_and_run(runtime, identity, context, "computer.keyboard.chord", {"window_ref": window_ref, "chord": "ctrl+a"})
+        status, _verified, output = await _approve_and_run(
+            runtime, identity, context, "computer.keyboard.type", {"window_ref": window_ref, "text": ARABIC_FIXTURE_PHRASE}
+        )
+        text_after = await _read_edit_text()
+        scenario["literal_typing_arabic"] = {
+            "status": status, "chars_sent": output.get("chars_sent"),
+            "independent_text_readback_matches_expected": text_after == ARABIC_FIXTURE_PHRASE,
+            "independent_text_readback": text_after,
+        }
+
+        # -- Home/End: prove cursor movement via prepend/append markers
+        # around the Arabic phrase currently in the field --
+        await _approve_and_run(runtime, identity, context, "computer.keyboard.key", {"window_ref": window_ref, "key": "home"})
+        await _approve_and_run(runtime, identity, context, "computer.keyboard.type", {"window_ref": window_ref, "text": "H"})
+        after_home = await _read_edit_text()
+        await _approve_and_run(runtime, identity, context, "computer.keyboard.key", {"window_ref": window_ref, "key": "end"})
+        await _approve_and_run(runtime, identity, context, "computer.keyboard.type", {"window_ref": window_ref, "text": "E"})
+        after_end = await _read_edit_text()
+        expected_after_home = "H" + ARABIC_FIXTURE_PHRASE
+        scenario["native_key_home_end"] = {
+            "home_marker_prepended": after_home == expected_after_home,
+            "end_marker_appended": after_end == (expected_after_home + "E") if after_home == expected_after_home else False,
+            "independent_text_readback": after_end,
+        }
+
+        # -- Backspace: one character shorter after one press at the end --
+        before_len = len(after_end) if isinstance(after_end, str) else None
+        await _approve_and_run(runtime, identity, context, "computer.keyboard.key", {"window_ref": window_ref, "key": "backspace"})
+        after_backspace = await _read_edit_text()
+        scenario["native_key_backspace"] = {
+            "one_character_shorter": (
+                isinstance(after_backspace, str) and before_len is not None and len(after_backspace) == before_len - 1
+            ),
+            "independent_text_readback": after_backspace,
+        }
+
+        # -- ctrl+a / ctrl+c clipboard round-trip: write a known sentinel
+        # FIRST (never inspect whatever the owner's clipboard already held),
+        # select the fixture's own known text, copy it, then independently
+        # read back the clipboard and confirm it now holds the fixture text
+        # rather than the sentinel - proving ctrl+c actually changed it. --
+        await _approve_and_run(runtime, identity, context, "computer.clipboard.write", {"text": CLIPBOARD_SENTINEL})
+        known_text = await _read_edit_text()
+        await _approve_and_run(runtime, identity, context, "computer.keyboard.chord", {"window_ref": window_ref, "chord": "ctrl+a"})
+        status, _verified, _output = await _approve_and_run(
+            runtime, identity, context, "computer.keyboard.chord", {"window_ref": window_ref, "chord": "ctrl+c"}
+        )
+        clip_read = await runtime.tool_service.execute("computer.clipboard.read", {}, context)
+        clip_text = clip_read.output.get("text") if clip_read.status.value == "completed" else None
+        scenario["native_chord_ctrl_c"] = {
+            "status": status,
+            "clipboard_now_holds_fixture_text": bool(known_text is not None and clip_text == known_text),
+        }
+        # Restore fixture-created clipboard content to the harmless sentinel
+        # rather than leaving the fixture's text sitting in the owner's
+        # clipboard.
+        await _approve_and_run(runtime, identity, context, "computer.clipboard.write", {"text": CLIPBOARD_SENTINEL})
+
+        # -- ctrl+z: undo the most recent edit (Backspace above) --
+        before_undo = after_backspace
+        status, _verified, _output = await _approve_and_run(
+            runtime, identity, context, "computer.keyboard.chord", {"window_ref": window_ref, "chord": "ctrl+z"}
+        )
+        after_undo = await _read_edit_text()
+        scenario["native_chord_ctrl_z"] = {
+            "status": status,
+            "independent_text_changed_from_pre_undo_state": after_undo != before_undo,
+            "independent_text_readback": after_undo,
+        }
+
+        # -- Tab: focus moves from the Edit control to Drag Source. Runs
+        # LAST among the text-fixture keyboard scenarios - it deliberately
+        # moves focus away from the Edit control, which would otherwise
+        # break every later Edit-control-targeted test that follows it
+        # (found during physical dogfooding: with Tab run earlier, the
+        # ctrl+a/ctrl+c/ctrl+z chords that came after it landed on the
+        # "Drag Source" button instead of the Edit control and did
+        # nothing). --
+        status, _verified, _output = await _approve_and_run(
+            runtime, identity, context, "computer.keyboard.key", {"window_ref": window_ref, "key": "tab"}
+        )
+        source_focus_check = await runtime.tool_service.execute(
+            "computer.semantic.read",
+            {"action": "find_elements", "window_ref": window_ref, "control_type": "ButtonControl", "name": "Drag Source"},
+            context,
+        )
+        source_focused = bool(
+            source_focus_check.status.value == "completed"
+            and source_focus_check.output.get("matches")
+            and source_focus_check.output["matches"][0].get("focused")
+        )
+        scenario["native_key_tab"] = {"status": status, "independent_focus_moved": source_focused}
+
+        return scenario
+    finally:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+            scenario["fixture_child_confirmed_exited"] = proc.poll() is not None
+        await runtime.shutdown()
+
+
 def _virtual_desktop_metrics() -> tuple[int, int, int, int, int]:
     import ctypes
     user32 = ctypes.WinDLL("user32.dll")
@@ -372,6 +585,7 @@ async def _run_non_primary_monitor_scenario() -> dict:
 async def _run_once() -> dict:
     return {
         "owned_fixture": await _run_owned_fixture_scenarios(),
+        "text_drag_fixture": await _run_text_drag_fixture_scenarios(),
         "non_primary_monitor": await _run_non_primary_monitor_scenario(),
     }
 
@@ -392,6 +606,9 @@ def _summarize(runs: list[dict]) -> dict:
     def attempted(run: dict) -> bool:
         return bool(run["owned_fixture"].get("attempted"))
 
+    def text_attempted(run: dict) -> bool:
+        return bool(run["text_drag_fixture"].get("attempted"))
+
     return {
         "runs": len(runs),
         "semantic_invoke": rate(lambda r: r["owned_fixture"].get("invoke", {}).get("independent_status_matches_expected") if attempted(r) else None),
@@ -404,6 +621,15 @@ def _summarize(runs: list[dict]) -> dict:
         "native_key_tab": rate(lambda r: r["owned_fixture"].get("native_key_tab", {}).get("independent_focus_moved") if attempted(r) else None),
         "native_chord_completed": rate(lambda r: r["owned_fixture"].get("native_chord", {}).get("status") == "completed" if attempted(r) else None),
         "fixture_child_confirmed_exited": rate(lambda r: r["owned_fixture"].get("fixture_child_confirmed_exited") if attempted(r) else None),
+        "native_drag": rate(lambda r: r["text_drag_fixture"].get("drag", {}).get("independent_status_matches_expected") if text_attempted(r) else None),
+        "literal_typing_english": rate(lambda r: r["text_drag_fixture"].get("literal_typing_english", {}).get("independent_text_readback_matches_expected") if text_attempted(r) else None),
+        "literal_typing_arabic": rate(lambda r: r["text_drag_fixture"].get("literal_typing_arabic", {}).get("independent_text_readback_matches_expected") if text_attempted(r) else None),
+        "native_key_home_end": rate(lambda r: (r["text_drag_fixture"].get("native_key_home_end", {}).get("home_marker_prepended") and r["text_drag_fixture"].get("native_key_home_end", {}).get("end_marker_appended")) if text_attempted(r) else None),
+        "native_key_backspace": rate(lambda r: r["text_drag_fixture"].get("native_key_backspace", {}).get("one_character_shorter") if text_attempted(r) else None),
+        "native_key_tab_text_fixture": rate(lambda r: r["text_drag_fixture"].get("native_key_tab", {}).get("independent_focus_moved") if text_attempted(r) else None),
+        "native_chord_ctrl_c_clipboard_proven": rate(lambda r: r["text_drag_fixture"].get("native_chord_ctrl_c", {}).get("clipboard_now_holds_fixture_text") if text_attempted(r) else None),
+        "native_chord_ctrl_z_changed_state": rate(lambda r: r["text_drag_fixture"].get("native_chord_ctrl_z", {}).get("independent_text_changed_from_pre_undo_state") if text_attempted(r) else None),
+        "text_fixture_child_confirmed_exited": rate(lambda r: r["text_drag_fixture"].get("fixture_child_confirmed_exited") if text_attempted(r) else None),
         "non_primary_monitor": {
             "attempted": any(r["non_primary_monitor"].get("attempted") for r in runs),
             "pass_count": sum(1 for r in runs if r["non_primary_monitor"].get("result") == "NON_PRIMARY_MONITOR_PHYSICAL_PASS"),

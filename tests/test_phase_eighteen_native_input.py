@@ -336,6 +336,183 @@ class ExpandedPointerActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error_code, "uia_target_not_interactable")
 
 
+class _FakeDragSemanticAdapter:
+    """Per-element-configurable stand-in - unlike `_FakeSemanticAdapter`
+    above, source and target can have independent bounds/window_ref/error,
+    needed to exercise same-window vs cross-window drag grounding."""
+
+    def __init__(self) -> None:
+        self.bounds: dict[str, SemanticBounds | None] = {}
+        self.window_ref: dict[str, str] = {}
+        self.error_code: dict[str, str] = {}
+        self.resolve_calls: list[str] = []
+
+    async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+        self.resolve_calls.append(element_ref)
+        error = self.error_code.get(element_ref)
+        if error is not None:
+            status = "denied" if error in {
+                "uia_element_identity_weak", "uia_target_not_interactable", "uia_sensitive_value_denied",
+            } else "failed"
+            return SemanticResult(status, error_code=error)
+        bounds = self.bounds.get(element_ref, SemanticBounds(0, 0, 20, 20))
+        window_ref = self.window_ref.get(element_ref, "window-1")
+        return SemanticResult("succeeded", {"element": _snapshot(element_ref, window_ref, bounds=bounds)})
+
+
+class DragTests(unittest.IsolatedAsyncioTestCase):
+    """Batch 04 Milestone 1: grounded left-button `drag_element_to_element`
+    (GAP-0102/GAP-0105) - both endpoints resolved through the same trusted
+    `resolve_actionable_target` machinery every other native input action
+    uses, same-window-only, bounded internal interpolation, guaranteed
+    left-button release on any partial injection failure."""
+
+    def _semantic(self) -> _FakeDragSemanticAdapter:
+        semantic = _FakeDragSemanticAdapter()
+        semantic.bounds["element-src"] = SemanticBounds(0, 0, 20, 20)
+        semantic.bounds["element-dst"] = SemanticBounds(200, 200, 20, 20)
+        return semantic
+
+    async def test_drag_delivers_move_down_bounded_interpolation_up(self) -> None:
+        sent_flags: list[int] = []
+
+        def record_send(inputs: object) -> int:
+            for item in inputs:
+                sent_flags.append(item.mi.dwFlags)
+            return len(inputs)
+
+        from jarvis.computer.native_input import (
+            DRAG_INTERPOLATION_STEPS,
+            MOUSEEVENTF_LEFTDOWN,
+            MOUSEEVENTF_LEFTUP,
+            MOUSEEVENTF_MOVE,
+        )
+
+        semantic = self._semantic()
+        adapter = _adapter(semantic, _FakeWindowProvider(), send_input=record_send, get_cursor_pos=lambda: (210, 210))
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.verified)  # generic drag: delivery is never proof of app effect
+        self.assertTrue(result.output["input_batch_accepted"])
+        self.assertTrue(result.output["pointer_target_verified"])
+        self.assertEqual(sent_flags.count(MOUSEEVENTF_LEFTDOWN), 1)
+        self.assertEqual(sent_flags.count(MOUSEEVENTF_LEFTUP), 1)
+        move_flag = MOUSEEVENTF_MOVE | 0x8000 | 0x4000  # ABSOLUTE | VIRTUALDESK
+        # move-to-source + DRAG_INTERPOLATION_STEPS bounded interior moves.
+        self.assertEqual(sent_flags.count(move_flag), 1 + DRAG_INTERPOLATION_STEPS)
+        self.assertLessEqual(DRAG_INTERPOLATION_STEPS, 12)
+        self.assertGreaterEqual(DRAG_INTERPOLATION_STEPS, 4)
+
+    async def test_drag_revalidates_both_endpoints_after_focus(self) -> None:
+        semantic = self._semantic()
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "succeeded")
+        # Each endpoint resolved twice: once before focus, once after
+        # (focus can change layout) - matches the single-target `_ground()`
+        # pattern exactly.
+        self.assertEqual(semantic.resolve_calls.count("element-src"), 2)
+        self.assertEqual(semantic.resolve_calls.count("element-dst"), 2)
+
+    async def test_drag_cross_window_refused_before_any_input(self) -> None:
+        sent = {"count": 0}
+
+        def counting_send(inputs: object) -> int:
+            sent["count"] += 1
+            return len(inputs)
+
+        semantic = self._semantic()
+        semantic.window_ref["element-dst"] = "window-2"
+        adapter = _adapter(semantic, _FakeWindowProvider(), send_input=counting_send)
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "drag_cross_window_not_supported")
+        self.assertEqual(sent["count"], 0)
+
+    async def test_drag_weak_source_denied_before_any_input(self) -> None:
+        sent = {"count": 0}
+
+        def counting_send(inputs: object) -> int:
+            sent["count"] += 1
+            return len(inputs)
+
+        semantic = self._semantic()
+        semantic.error_code["element-src"] = "uia_element_identity_weak"
+        adapter = _adapter(semantic, _FakeWindowProvider(), send_input=counting_send)
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "uia_element_identity_weak")
+        self.assertEqual(sent["count"], 0)
+
+    async def test_drag_weak_target_denied_before_any_input(self) -> None:
+        sent = {"count": 0}
+
+        def counting_send(inputs: object) -> int:
+            sent["count"] += 1
+            return len(inputs)
+
+        semantic = self._semantic()
+        semantic.error_code["element-dst"] = "uia_element_identity_weak"
+        adapter = _adapter(semantic, _FakeWindowProvider(), send_input=counting_send)
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "uia_element_identity_weak")
+        self.assertEqual(sent["count"], 0)
+
+    async def test_drag_partial_failure_releases_left_button(self) -> None:
+        from jarvis.computer.native_input import MOUSEEVENTF_LEFTUP
+
+        sent_flags: list[tuple[int, ...]] = []
+        call_count = {"n": 0}
+
+        def flaky_send(inputs: object) -> int:
+            call_count["n"] += 1
+            sent_flags.append(tuple(item.mi.dwFlags for item in inputs))
+            if call_count["n"] == 3:  # first bounded interpolation move fails
+                return 0
+            return len(inputs)
+
+        semantic = self._semantic()
+        adapter = _adapter(semantic, _FakeWindowProvider(), send_input=flaky_send)
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "native_input_injection_failed")
+        # The cleanup LEFTUP is the very next (final) SendInput call after
+        # the failure - the JARVIS-pressed left button is never left held.
+        self.assertIn(MOUSEEVENTF_LEFTUP, sent_flags[-1])
+
+    async def test_drag_failure_on_left_down_needs_no_cleanup_release(self) -> None:
+        from jarvis.computer.native_input import MOUSEEVENTF_LEFTUP
+
+        call_count = {"n": 0}
+        release_calls = {"n": 0}
+
+        def flaky_send(inputs: object) -> int:
+            call_count["n"] += 1
+            for item in inputs:
+                if item.mi.dwFlags == MOUSEEVENTF_LEFTUP:
+                    release_calls["n"] += 1
+            if call_count["n"] == 2:  # the LEFTDOWN batch itself fails
+                return 0
+            return len(inputs)
+
+        semantic = self._semantic()
+        adapter = _adapter(semantic, _FakeWindowProvider(), send_input=flaky_send)
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "native_input_injection_failed")
+        # The button was never reported down, so no extra release is sent.
+        self.assertEqual(release_calls["n"], 0)
+
+    async def test_drag_target_outside_virtual_desktop_denied(self) -> None:
+        semantic = self._semantic()
+        semantic.bounds["element-dst"] = SemanticBounds(9000, 9000, 20, 20)
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "native_input_injection_failed")
+
+
 class KeyboardTests(unittest.IsolatedAsyncioTestCase):
     async def test_key_allowlist_enforced_unsupported_key_denied(self) -> None:
         semantic = _FakeSemanticAdapter(bounds=None)
@@ -693,14 +870,34 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
         for forbidden in ("ctrl+v", "ctrl+s", "alt+f4", "win+d", "ctrl+alt+delete"):
             self.assertNotIn(forbidden, chord_enum)
 
-    def test_no_drag_drop_action_exists_anywhere_in_computer_tools(self) -> None:
+    def test_no_paste_or_file_drop_action_exists_anywhere_in_computer_tools(self) -> None:
+        # Batch 04 Milestone 1 deliberately adds a reviewed, bounded
+        # element-to-element `drag_element_to_element` action to
+        # `computer.pointer.act` (source_element_ref/target_element_ref
+        # only, same-window-only, left-button-only) - "drag" itself is no
+        # longer forbidden everywhere, but paste and file drag/drop remain
+        # absent from every computer tool schema.
         for tool_name in ("computer.pointer.act", "computer.keyboard.key", "computer.keyboard.chord", "computer.keyboard.type"):
             spec = self.runtime.tools.get(tool_name)
             assert spec is not None
             blob = str(spec.parameters_schema).casefold()
-            self.assertNotIn("drag", blob)
-            self.assertNotIn("drop", blob)
             self.assertNotIn("paste", blob)
+            self.assertNotIn("drop", blob)
+        for tool_name in ("computer.keyboard.key", "computer.keyboard.chord", "computer.keyboard.type"):
+            spec = self.runtime.tools.get(tool_name)
+            assert spec is not None
+            self.assertNotIn("drag", str(spec.parameters_schema).casefold())
+
+    def test_pointer_drag_action_is_element_grounded_only(self) -> None:
+        spec = self.runtime.tools.get("computer.pointer.act")
+        assert spec is not None
+        properties = set(spec.parameters_schema.get("properties", {}))
+        self.assertIn("drag_element_to_element", spec.parameters_schema["properties"]["action"]["enum"])
+        self.assertIn("source_element_ref", properties)
+        self.assertIn("target_element_ref", properties)
+        # No raw coordinate, path, trajectory, or duration field anywhere in
+        # the drag surface.
+        self.assertFalse(properties & {"x", "y", "dx", "dy", "hwnd", "path", "duration", "points"})
 
     async def test_audit_and_permission_events_recorded(self) -> None:
         context = self._context()
@@ -720,8 +917,13 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
         properties = set(spec.parameters_schema.get("properties", {}))
         self.assertFalse(properties & {"x", "y", "hwnd", "path", "root", "pattern", "file", "folder", "vk", "flags"})
         # direction/steps are bounded enum/range fields for scroll_element
-        # only (Milestone 2) - never a raw coordinate/delta.
-        self.assertEqual(properties, {"action", "element_ref", "direction", "steps", "target_device_id"})
+        # only (Milestone 2); source_element_ref/target_element_ref are for
+        # drag_element_to_element only (Batch 04 Milestone 1) - never a raw
+        # coordinate/delta/path/duration.
+        self.assertEqual(
+            properties,
+            {"action", "element_ref", "direction", "steps", "source_element_ref", "target_element_ref", "target_device_id"},
+        )
 
     def test_keyboard_key_tool_schema_has_no_raw_vk_or_filesystem_fields(self) -> None:
         spec = self.runtime.tools.get("computer.keyboard.key")
@@ -764,12 +966,14 @@ class ApprovalHardeningTests(unittest.IsolatedAsyncioTestCase):
         class _FakeSemantic:
             def __init__(self) -> None:
                 self.names: dict[str, str] = {}
+                self.windows: dict[str, str] = {}
                 self.ttl_seconds = 45
 
             async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
                 name = self.names.get(element_ref, "Target")
+                window_ref = self.windows.get(element_ref, "window-1")
                 return SemanticResult("succeeded", {
-                    "element": _snapshot(element_ref, "window-1", name=name, bounds=SemanticBounds(0, 0, 20, 20)),
+                    "element": _snapshot(element_ref, window_ref, name=name, bounds=SemanticBounds(0, 0, 20, 20)),
                     "reference_expires_at": datetime.now(UTC) + timedelta(seconds=self.ttl_seconds),
                 })
 
@@ -780,10 +984,16 @@ class ApprovalHardeningTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self) -> None:
                 self.click_calls: list[str] = []
                 self.key_calls: list[str] = []
+                self.drag_calls: list[tuple[str, str]] = []
 
             async def left_click_element(self, element_ref: str):
                 from jarvis.computer.native_input import NativeInputResult
                 self.click_calls.append(element_ref)
+                return NativeInputResult("succeeded", {}, verified=False)
+
+            async def drag_element_to_element(self, source_element_ref: str, target_element_ref: str):
+                from jarvis.computer.native_input import NativeInputResult
+                self.drag_calls.append((source_element_ref, target_element_ref))
                 return NativeInputResult("succeeded", {}, verified=False)
 
             async def move_to_element(self, element_ref: str):
@@ -920,6 +1130,81 @@ class ApprovalHardeningTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(decided.status.value, "denied")
         self.assertEqual(self.fake_native.key_calls, [])
+
+    async def test_drag_approval_preview_describes_both_source_and_target(self) -> None:
+        context = self._context()
+        self.fake_semantic.names["element-src"] = "Drag Source"
+        self.fake_semantic.names["element-dst"] = "Drop Target"
+        requested = await self.runtime.tool_service.execute(
+            "computer.pointer.act",
+            {"action": "drag_element_to_element", "source_element_ref": "element-src", "target_element_ref": "element-dst"},
+            context,
+        )
+        assert requested.approval_id is not None
+        row = self.runtime.repository.approval(requested.approval_id)
+        preview = json.loads(row["preview_json"])
+        self.assertEqual(preview["action"], "pointer_drag_element_to_element")
+        self.assertEqual(preview["source"]["name"], "Drag Source")
+        self.assertEqual(preview["target"]["name"], "Drop Target")
+        self.assertNotIn("parameters", preview)
+
+    async def test_drag_approval_executes_with_both_refs_on_approve(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.pointer.act",
+            {"action": "drag_element_to_element", "source_element_ref": "element-src", "target_element_ref": "element-dst"},
+            context,
+        )
+        assert requested.approval_id is not None
+        decided = await self.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, self.identity.identity_id, context
+        )
+        self.assertEqual(decided.status.value, "completed")
+        self.assertEqual(self.fake_native.drag_calls, [("element-src", "element-dst")])
+
+    async def test_drag_source_change_after_approval_refuses_execution(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.pointer.act",
+            {"action": "drag_element_to_element", "source_element_ref": "element-src", "target_element_ref": "element-dst"},
+            context,
+        )
+        assert requested.approval_id is not None
+        self.fake_semantic.names["element-src"] = "Different Source"
+        decided = await self.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, self.identity.identity_id, context
+        )
+        self.assertEqual(decided.status.value, "denied")
+        self.assertEqual(decided.error_code, "drag_source_changed")
+        self.assertEqual(self.fake_native.drag_calls, [])
+
+    async def test_drag_target_change_after_approval_refuses_execution(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.pointer.act",
+            {"action": "drag_element_to_element", "source_element_ref": "element-src", "target_element_ref": "element-dst"},
+            context,
+        )
+        assert requested.approval_id is not None
+        self.fake_semantic.names["element-dst"] = "Different Target"
+        decided = await self.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, self.identity.identity_id, context
+        )
+        self.assertEqual(decided.status.value, "denied")
+        self.assertEqual(decided.error_code, "drag_target_changed")
+        self.assertEqual(self.fake_native.drag_calls, [])
+
+    async def test_drag_cross_window_refused_at_request_time(self) -> None:
+        context = self._context()
+        self.fake_semantic.windows["element-dst"] = "window-2"
+        requested = await self.runtime.tool_service.execute(
+            "computer.pointer.act",
+            {"action": "drag_element_to_element", "source_element_ref": "element-src", "target_element_ref": "element-dst"},
+            context,
+        )
+        self.assertEqual(requested.status.value, "denied")
+        self.assertEqual(requested.error_code, "drag_cross_window_not_supported")
+        self.assertEqual(self.fake_native.drag_calls, [])
 
     async def test_literal_typing_preview_has_trusted_window_and_digest_not_raw_text(self) -> None:
         context = self._context()

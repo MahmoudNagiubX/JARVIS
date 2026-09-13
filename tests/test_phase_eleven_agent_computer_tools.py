@@ -76,16 +76,18 @@ class PhaseElevenAgentComputerToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.tools.get("computer.keyboard.type").argument_retention, ToolResultRetention.EPHEMERAL)
         self.assertNotIn("computer.mouse.click", actual)
 
-    async def test_clipboard_read_is_one_approval_and_ephemeral_to_agent(self) -> None:
-        pending = await self.runtime.tool_service.execute("computer.clipboard.read", {}, self.context)
-        self.assertEqual(pending.status, ToolExecutionStatus.APPROVAL_REQUIRED)
-        completed = await self.runtime.tool_service.decide_and_resume(
-            str(pending.approval_id), True, self.identity.identity_id, self.context
-        )
+    async def test_clipboard_read_is_direct_and_ephemeral_to_agent(self) -> None:
+        # clipboard_read is classified as a read action
+        # (ComputerActionService._read_actions) and completes directly - no
+        # approval step (Batch 04 Milestone 1 dogfooding fix: the permission
+        # engine's inner check was missing its ALLOW rule and silently
+        # required approval for every read, unlike its sibling read
+        # actions).
+        completed = await self.runtime.tool_service.execute("computer.clipboard.read", {}, self.context)
         self.assertEqual(completed.status, ToolExecutionStatus.COMPLETED)
         self.assertEqual(completed.retention, ToolResultRetention.EPHEMERAL)
         self.assertEqual(completed.output["text"], CLIPBOARD_SENTINEL)
-        row = self.runtime.repository.tool_call(pending.tool_call_id)
+        row = self.runtime.repository.tool_call(completed.tool_call_id)
         assert row is not None
         self.assertNotIn(CLIPBOARD_SENTINEL, str(row["output_json"]))
         events = self.runtime.repository.database.connection.execute("SELECT payload_json FROM events").fetchall()

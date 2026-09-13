@@ -62,6 +62,12 @@ MOUSEEVENTF_ABSOLUTE = 0x8000
 MOUSEEVENTF_VIRTUALDESK = 0x4000
 WHEEL_DELTA = 120
 MAX_SCROLL_STEPS = 5
+# Bounded internal pointer-move interpolation for a grounded drag (Batch 04
+# Milestone 1) - fixed count within the recommended 4-12 range, no random
+# jitter, no "human simulation" timing; the goal is robust input delivery,
+# not behavioral imitation. Intermediate points are never exposed to the
+# model.
+DRAG_INTERPOLATION_STEPS = 8
 
 VK_SHIFT = 0x10
 VK_CONTROL = 0x11
@@ -201,7 +207,22 @@ _DENIED_ERROR_CODES = frozenset({
     "uia_sensitive_value_denied",
     "uia_element_identity_weak",
     "uia_target_not_interactable",
+    "drag_cross_window_not_supported",
 })
+
+
+def _drag_interpolation_steps(start: tuple[int, int], end: tuple[int, int]) -> list[tuple[int, int]]:
+    """Fixed, deterministic linear interpolation from `start` to `end` in
+    `DRAG_INTERPOLATION_STEPS` bounded points (last point lands exactly on
+    `end`). No randomness, no timing exposed - callers only see the final
+    delivery evidence, never the intermediate points."""
+    steps: list[tuple[int, int]] = []
+    for index in range(1, DRAG_INTERPOLATION_STEPS + 1):
+        fraction = index / DRAG_INTERPOLATION_STEPS
+        x = round(start[0] + (end[0] - start[0]) * fraction)
+        y = round(start[1] + (end[1] - start[1]) * fraction)
+        steps.append((x, y))
+    return steps
 
 
 class WindowsNativeInputAdapter:
@@ -401,6 +422,100 @@ class WindowsNativeInputAdapter:
         # Delivery evidence only - never a generic "content changed" claim
         # (9.4).
         return NativeInputResult("succeeded", evidence, verified=False)
+
+    async def drag_element_to_element(self, source_element_ref: str, target_element_ref: str) -> NativeInputResult:
+        """Grounded left-button drag from one previously observed element to
+        another (Batch 04 Milestone 1, GAP-0102/GAP-0105). Both endpoints are
+        resolved through the same trusted `resolve_actionable_target`
+        machinery `_ground()` uses; the two elements must belong to the same
+        trusted window - cross-window drag is deliberately deferred
+        (`drag_cross_window_not_supported`) as a more consequential,
+        harder-to-verify, file-transfer-adjacent scenario reserved for a
+        later, separately reviewed batch."""
+        if not self.available:
+            return NativeInputResult("failed", {}, "native_input_unavailable")
+        source, target, error = await self._ground_drag_pair(source_element_ref, target_element_ref)
+        if error is not None:
+            return NativeInputResult(_status_for(error), {}, error)
+        assert source is not None and target is not None
+        if not self.window_provider.focus_window(source.window_ref):
+            return NativeInputResult("failed", {}, "window_focus_not_verified")
+        if not self.window_provider.is_foreground(source.hwnd):
+            return NativeInputResult("failed", {}, "window_focus_not_verified")
+        # Focus can change layout - re-resolve BOTH endpoints again after
+        # focus, never reuse the pre-focus observation (matches the single-
+        # target `_ground()` pattern above).
+        source, target, error = await self._ground_drag_pair(source_element_ref, target_element_ref)
+        if error is not None:
+            return NativeInputResult(_status_for(error), {}, error)
+        assert source is not None and target is not None
+        if not self.window_provider.is_foreground(source.hwnd):
+            return NativeInputResult("failed", {}, "window_focus_not_verified")
+        return self._execute_drag(source, target)
+
+    async def _ground_drag_pair(
+        self, source_element_ref: str, target_element_ref: str,
+    ) -> tuple[_GroundedTarget | None, _GroundedTarget | None, str | None]:
+        source_raw, source_error = await self._resolve_grounded(source_element_ref)
+        if source_raw is None:
+            return None, None, source_error
+        target_raw, target_error = await self._resolve_grounded(target_element_ref)
+        if target_raw is None:
+            return None, None, target_error
+        if source_raw.window_ref != target_raw.window_ref:
+            return None, None, "drag_cross_window_not_supported"
+        try:
+            hwnd = self.window_provider.validate_input_window(source_raw.window_ref)
+        except ValueError as exc:
+            return None, None, str(exc) or "uia_window_stale"
+        source = _GroundedTarget(hwnd, source_raw.window_ref, source_raw.center_x, source_raw.center_y)
+        target = _GroundedTarget(hwnd, target_raw.window_ref, target_raw.center_x, target_raw.center_y)
+        return source, target, None
+
+    def _execute_drag(self, source: _GroundedTarget, target: _GroundedTarget) -> NativeInputResult:
+        vleft, vtop, vwidth, vheight = self._metrics_provider()
+        source_norm = normalize_virtual_desktop_point(source.center_x, source.center_y, vleft=vleft, vtop=vtop, vwidth=vwidth, vheight=vheight)
+        target_norm = normalize_virtual_desktop_point(target.center_x, target.center_y, vleft=vleft, vtop=vtop, vwidth=vwidth, vheight=vheight)
+        if source_norm is None or target_norm is None:
+            return NativeInputResult("failed", {"reason": "target_outside_virtual_desktop"}, "native_input_injection_failed", verified=False)
+        left_button_down = False
+        try:
+            move_to_source = (_mouse_input(source_norm[0], source_norm[1], MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK),)
+            if self._send_input(move_to_source) != len(move_to_source):
+                return NativeInputResult("failed", {"stage": "move_to_source"}, "native_input_injection_failed", verified=False)
+            down_inputs = (_mouse_input(0, 0, MOUSEEVENTF_LEFTDOWN),)
+            if self._send_input(down_inputs) != len(down_inputs):
+                return NativeInputResult("failed", {"stage": "left_down"}, "native_input_injection_failed", verified=False)
+            left_button_down = True
+            for step_x, step_y in _drag_interpolation_steps(source_norm, target_norm):
+                step_inputs = (_mouse_input(step_x, step_y, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK),)
+                if self._send_input(step_inputs) != len(step_inputs):
+                    return NativeInputResult("failed", {"stage": "drag_move"}, "native_input_injection_failed", verified=False)
+            up_inputs = (_mouse_input(0, 0, MOUSEEVENTF_LEFTUP),)
+            if self._send_input(up_inputs) != len(up_inputs):
+                return NativeInputResult("failed", {"stage": "left_up"}, "native_input_injection_failed", verified=False)
+            left_button_down = False
+            cursor_x, cursor_y = self._get_cursor_pos()
+            pointer_target_verified = (
+                abs(cursor_x - target.center_x) <= MOVE_TOLERANCE_PIXELS
+                and abs(cursor_y - target.center_y) <= MOVE_TOLERANCE_PIXELS
+            )
+            evidence = {
+                "input_batch_accepted": True,
+                "pointer_target_verified": pointer_target_verified,
+                "target_window_foreground": self.window_provider.is_foreground(source.hwnd),
+            }
+            # Generic drag: SendInput delivery alone never proves the target
+            # application performed the intended drag-drop (same honesty
+            # rule as the existing generic click/scroll) - always unverified
+            # here; only a separate owned-fixture evaluator observing a real
+            # postcondition may independently prove a scenario.
+            return NativeInputResult("succeeded", evidence, verified=False)
+        finally:
+            if left_button_down:
+                # Guaranteed cleanup on any partial injection failure - never
+                # leave the JARVIS-pressed left button physically held.
+                self._send_input((_mouse_input(0, 0, MOUSEEVENTF_LEFTUP),))
 
     def _move_pointer(self, target: _GroundedTarget) -> tuple[bool, bool, dict[str, object]]:
         vleft, vtop, vwidth, vheight = self._metrics_provider()

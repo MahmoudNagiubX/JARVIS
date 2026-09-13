@@ -65,6 +65,16 @@ class PolicyPermissionEngine:
             PermissionRule("computer.inspect_file", PermissionEffect.ALLOW, "safe_file_read"),
             PermissionRule("computer.search_files", PermissionEffect.ALLOW, "safe_file_search"),
             PermissionRule("computer.focus_window", PermissionEffect.ALLOW, "safe_window_focus"),
+            # Batch 04 Milestone 1 dogfooding finding: CLIPBOARD_READ was
+            # already in ComputerActionService._read_actions (risk_level
+            # "read"), but had no matching inner ALLOW rule here, so it fell
+            # through to the generic "computer." REQUIRE_APPROVAL catch-all
+            # and silently required owner approval for every read - unlike
+            # every other read action, which all have an explicit rule.
+            # clipboard_write is correctly NOT listed here: it is not in
+            # _read_actions/_safe_actions, so it is legitimately
+            # consequential and must keep requiring approval.
+            PermissionRule("computer.clipboard_read", PermissionEffect.ALLOW, "safe_clipboard_read"),
             PermissionRule("computer.semantic_list_windows", PermissionEffect.ALLOW, "safe_semantic_read"),
             PermissionRule("computer.semantic_inspect_window", PermissionEffect.ALLOW, "safe_semantic_read"),
             PermissionRule("computer.semantic_find_elements", PermissionEffect.ALLOW, "safe_semantic_read"),

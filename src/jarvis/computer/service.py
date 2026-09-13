@@ -143,6 +143,8 @@ class WindowsNativeComputerController:
                 return await self._pointer_act("double_click_element", action.parameters)
             if capability is ComputerCapability.POINTER_SCROLL_ELEMENT:
                 return await self._pointer_scroll(action.parameters)
+            if capability is ComputerCapability.POINTER_DRAG_ELEMENT_TO_ELEMENT:
+                return await self._pointer_drag(action.parameters)
             if capability is ComputerCapability.KEYBOARD_KEY:
                 return await self._keyboard_key(action.parameters)
             if capability is ComputerCapability.KEYBOARD_CHORD:
@@ -525,6 +527,18 @@ class WindowsNativeComputerController:
         result: NativeInputResult = await self.native_input_adapter.scroll_element(element_ref, direction, steps)
         return ComputerResult(result.status, dict(result.output), result.error_code, result.verified)
 
+    async def _pointer_drag(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        if set(parameters) != {"source_element_ref", "target_element_ref"}:
+            return ComputerResult("denied", error_code="drag_parameters_invalid")
+        source_ref = parameters.get("source_element_ref")
+        target_ref = parameters.get("target_element_ref")
+        if not isinstance(source_ref, str) or not source_ref.startswith("element-"):
+            return ComputerResult("denied", error_code="element_ref_required")
+        if not isinstance(target_ref, str) or not target_ref.startswith("element-"):
+            return ComputerResult("denied", error_code="element_ref_required")
+        result: NativeInputResult = await self.native_input_adapter.drag_element_to_element(source_ref, target_ref)
+        return ComputerResult(result.status, dict(result.output), result.error_code, result.verified)
+
     async def _keyboard_chord(self, parameters: Mapping[str, Any]) -> ComputerResult:
         if set(parameters) != {"window_ref", "chord"}:
             return ComputerResult("denied", error_code="keyboard_chord_parameters_invalid")
@@ -676,6 +690,13 @@ class ComputerActionService:
         ComputerCapability.KEYBOARD_KEY.value,
         ComputerCapability.KEYBOARD_CHORD.value,
     })
+    # Two-target action (Batch 04 Milestone 1): a drag has a source AND a
+    # target element, so it cannot be forced into the single-target element
+    # digest above - it gets its own dual-target preview/binding
+    # (`_drag_target_preview`) that describes and binds BOTH endpoints.
+    _dual_target_actions = frozenset({
+        ComputerCapability.POINTER_DRAG_ELEMENT_TO_ELEMENT.value,
+    })
 
     def __init__(
         self,
@@ -768,10 +789,19 @@ class ComputerActionService:
                 preview: dict[str, object]
                 now = datetime.now(UTC)
                 expires_at = now + timedelta(minutes=10)
-                if action.action in self._element_targeted_actions or action.action in self._window_targeted_actions:
+                if (
+                    action.action in self._element_targeted_actions
+                    or action.action in self._window_targeted_actions
+                    or action.action in self._dual_target_actions
+                ):
                     if action.action in self._element_targeted_actions:
                         target_kind = "element"
                         target_preview, identity_digest, preview_error, reference_expires_at = await self._element_target_preview(
+                            action, identity, target, adapter, session_id, correlation,
+                        )
+                    elif action.action in self._dual_target_actions:
+                        target_kind = "drag"
+                        target_preview, identity_digest, preview_error, reference_expires_at = await self._drag_target_preview(
                             action, identity, target, adapter, session_id, correlation,
                         )
                     else:
@@ -861,6 +891,10 @@ class ComputerActionService:
                 _preview, fresh_digest, preview_error, _exp = await self._window_target_preview(
                     action, pending_identity, target, adapter, "computer", correlation,
                 )
+            elif target_kind == "drag":
+                _preview, fresh_digest, preview_error, _exp = await self._drag_target_preview(
+                    action, pending_identity, target, adapter, "computer", correlation,
+                )
             else:
                 _preview, fresh_digest, preview_error, _exp = await self._element_target_preview(
                     action, pending_identity, target, adapter, "computer", correlation,
@@ -876,15 +910,25 @@ class ComputerActionService:
                 )
                 return ComputerResult("denied", error_code=preview_error, approval_id=approval_id)
             if fresh_digest != identity_digest:
+                reason = "approval_target_changed"
+                if target_kind == "drag":
+                    # Distinguish which endpoint specifically changed, per
+                    # the dual-target composite digest ("source|target").
+                    old_parts = identity_digest.split("|", 1)
+                    new_parts = fresh_digest.split("|", 1)
+                    if len(old_parts) == 2 and len(new_parts) == 2 and old_parts[0] != new_parts[0]:
+                        reason = "drag_source_changed"
+                    else:
+                        reason = "drag_target_changed"
                 await self._audit(
                     pending_identity,
                     pending_device,
                     correlation,
                     "computer.approval_refused",
                     "denied",
-                    {"action": action.action, "reason": "approval_target_changed"},
+                    {"action": action.action, "reason": reason},
                 )
-                return ComputerResult("denied", error_code="approval_target_changed", approval_id=approval_id)
+                return ComputerResult("denied", error_code=reason, approval_id=approval_id)
         return await self._execute_controller(action, pending_identity, pending_device, target, adapter, "computer", correlation, approval_id)
 
     def close(self) -> None:
@@ -957,6 +1001,95 @@ class ComputerActionService:
             "name": element.get("name"),
         })
         reference_expires_at = result.output.get("reference_expires_at") if isinstance(result.output, Mapping) else None
+        return preview, identity_digest, None, reference_expires_at
+
+    async def _resolve_drag_endpoint(
+        self,
+        element_ref: str,
+        identity: Identity,
+        target_device: DeviceIdentity,
+        adapter: str,
+        session_id: str,
+        correlation: str,
+    ) -> tuple[tuple[Mapping[str, Any], str, datetime | None] | None, str | None]:
+        """One drag endpoint's fresh trusted descriptor + identity digest,
+        via the same internal-only `resolve_element_target` capability
+        `_element_target_preview` uses - no second resolution path."""
+        metadata = {
+            "request_device_id": target_device.device_id,
+            "target_device_id": target_device.device_id,
+            "execution_adapter": adapter,
+        }
+        resolve_action = ComputerAction(ComputerCapability.RESOLVE_ELEMENT_TARGET.value, {"element_ref": element_ref}, dry_run=False)
+        result = await self.controller.execute(resolve_action, ToolContext(identity, target_device, session_id, correlation, metadata=metadata))
+        if result.status != "succeeded":
+            return None, result.error_code or "uia_target_unavailable"
+        element = result.output.get("element") if isinstance(result.output, Mapping) else None
+        if not isinstance(element, Mapping) or not element.get("actionable", False):
+            return None, "uia_target_not_actionable"
+        digest = _mapping_digest({
+            "element_ref": element_ref,
+            "window_ref": element.get("window_ref"),
+            "control_type": element.get("control_type"),
+            "automation_id": element.get("automation_id"),
+            "name": element.get("name"),
+        })
+        reference_expires_at = result.output.get("reference_expires_at") if isinstance(result.output, Mapping) else None
+        return (dict(element), digest, reference_expires_at), None
+
+    async def _drag_target_preview(
+        self,
+        action: ComputerAction,
+        identity: Identity,
+        target_device: DeviceIdentity,
+        adapter: str,
+        session_id: str,
+        correlation: str,
+    ) -> tuple[dict[str, object] | None, str | None, str | None, datetime | None]:
+        """Fetch fresh, trusted previews of BOTH the drag source and drag
+        target elements (Batch 04 Milestone 1) - a two-target action must
+        never be forced into a single-target digest. Returns (preview,
+        identity_digest, error_code, reference_expires_at); identity_digest
+        is a composite ``"source_digest|target_digest"`` string so `decide()`
+        can tell which endpoint specifically changed on resume. Both
+        endpoints must belong to the same trusted window - cross-window drag
+        is refused with `drag_cross_window_not_supported` rather than
+        silently resolved."""
+        parameters = action.parameters if isinstance(action.parameters, Mapping) else {}
+        source_ref = parameters.get("source_element_ref")
+        target_ref = parameters.get("target_element_ref")
+        if not isinstance(source_ref, str) or not source_ref.startswith("element-"):
+            return None, None, "element_ref_required", None
+        if not isinstance(target_ref, str) or not target_ref.startswith("element-"):
+            return None, None, "element_ref_required", None
+        source_info, source_error = await self._resolve_drag_endpoint(source_ref, identity, target_device, adapter, session_id, correlation)
+        if source_info is None:
+            return None, None, source_error or "drag_source_stale", None
+        target_info, target_error = await self._resolve_drag_endpoint(target_ref, identity, target_device, adapter, session_id, correlation)
+        if target_info is None:
+            return None, None, target_error or "drag_target_stale", None
+        source_element, source_digest, source_expiry = source_info
+        target_element, target_digest, target_expiry = target_info
+        if source_element.get("window_ref") != target_element.get("window_ref"):
+            return None, None, "drag_cross_window_not_supported", None
+
+        def _bounded(descriptor: Mapping[str, Any]) -> dict[str, object]:
+            name = descriptor.get("name")
+            return {
+                "name": name[:80] if isinstance(name, str) else None,
+                "control_type": descriptor.get("control_type"),
+                "automation_id": descriptor.get("automation_id"),
+                "window_ref": descriptor.get("window_ref"),
+            }
+
+        preview: dict[str, object] = {
+            "action": action.action,
+            "source": _bounded(source_element),
+            "target": _bounded(target_element),
+        }
+        identity_digest = f"{source_digest}|{target_digest}"
+        expiries = [value for value in (source_expiry, target_expiry) if value is not None]
+        reference_expires_at = min(expiries) if expiries else None
         return preview, identity_digest, None, reference_expires_at
 
     async def _window_target_preview(

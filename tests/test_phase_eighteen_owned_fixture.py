@@ -22,6 +22,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNNER_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "computer_use_acceptance.py"
 FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_fixture_host.py"
+TEXT_FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_text_fixture_host.py"
 
 
 def _load_module(path: Path, name: str):
@@ -51,30 +52,34 @@ class OwnedFixtureSourceSafetyTests(unittest.TestCase):
             self.assertNotIn(forbidden, source)
 
     def test_fixture_host_contains_no_owner_application_dependency(self) -> None:
-        source = FIXTURE_SCRIPT.read_text(encoding="utf-8").casefold()
-        for forbidden in ("msedge", "notepad.exe", "calc.exe", "chrome.exe"):
-            self.assertNotIn(forbidden, source)
+        for script in (FIXTURE_SCRIPT, TEXT_FIXTURE_SCRIPT):
+            source = script.read_text(encoding="utf-8").casefold()
+            for forbidden in ("msedge", "notepad.exe", "calc.exe", "chrome.exe"):
+                self.assertNotIn(forbidden, source)
 
     def test_fixture_host_has_no_network_or_file_dialog_calls(self) -> None:
-        source = FIXTURE_SCRIPT.read_text(encoding="utf-8").casefold()
-        for forbidden in ("socket", "urllib", "http", "getopenfilename", "getsavefilename"):
-            self.assertNotIn(forbidden, source)
+        for script in (FIXTURE_SCRIPT, TEXT_FIXTURE_SCRIPT):
+            source = script.read_text(encoding="utf-8").casefold()
+            for forbidden in ("socket", "urllib", "http", "getopenfilename", "getsavefilename"):
+                self.assertNotIn(forbidden, source)
 
     def test_fixture_not_imported_by_production_bootstrap(self) -> None:
         bootstrap_source = (REPO_ROOT / "src" / "jarvis" / "bootstrap.py").read_text(encoding="utf-8")
         self.assertNotIn("uia_fixture_host", bootstrap_source)
+        self.assertNotIn("uia_text_fixture_host", bootstrap_source)
         self.assertNotIn("computer_use_acceptance", bootstrap_source)
 
     def test_fixture_not_imported_anywhere_under_src(self) -> None:
         for path in (REPO_ROOT / "src").rglob("*.py"):
             source = path.read_text(encoding="utf-8")
             self.assertNotIn("uia_fixture_host", source, f"unexpected reference in {path}")
+            self.assertNotIn("uia_text_fixture_host", source, f"unexpected reference in {path}")
             self.assertNotIn("scripts.phase18", source, f"unexpected reference in {path}")
 
     def test_runner_and_fixture_are_syntactically_standalone_scripts(self) -> None:
         # Confirms these parse as plain scripts (no package-relative imports
         # that would only work if pulled into the production package).
-        for script in (RUNNER_SCRIPT, FIXTURE_SCRIPT):
+        for script in (RUNNER_SCRIPT, FIXTURE_SCRIPT, TEXT_FIXTURE_SCRIPT):
             tree = ast.parse(script.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and node.level and node.level > 0:
@@ -149,6 +154,18 @@ class OwnedFixtureRunnerLogicTests(unittest.IsolatedAsyncioTestCase):
                 "invoke": {"independent_status_matches_expected": True},
                 "toggle": {"independent_status_matches_expected": True},
                 "select": {"independent_status_matches_expected": True},
+                "fixture_child_confirmed_exited": True,
+            },
+            "text_drag_fixture": {
+                "attempted": True,
+                "drag": {"independent_status_matches_expected": True},
+                "literal_typing_english": {"independent_text_readback_matches_expected": True},
+                "literal_typing_arabic": {"independent_text_readback_matches_expected": True},
+                "native_key_home_end": {"home_marker_prepended": True, "end_marker_appended": True},
+                "native_key_backspace": {"one_character_shorter": True},
+                "native_key_tab": {"independent_focus_moved": True},
+                "native_chord_ctrl_c": {"clipboard_now_holds_fixture_text": True},
+                "native_chord_ctrl_z": {"independent_text_changed_from_pre_undo_state": True},
                 "fixture_child_confirmed_exited": True,
             },
             "non_primary_monitor": {"attempted": False, "skip_reason": "MULTI_MONITOR_PHYSICAL_PENDING"},

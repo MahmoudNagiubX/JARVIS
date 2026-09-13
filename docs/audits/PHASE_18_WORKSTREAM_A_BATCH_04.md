@@ -29,7 +29,7 @@ Two hardening findings identified after independent review of the Batch 03 file-
 
 ## 3. Milestone 0 — File-search boundary hardening
 
-**Commit:** `MILESTONE_0_COMMIT` (recorded in §3.6 below after push)
+**Commit:** `bdad0a96a25813414248be5cf06b445379c1956f`
 
 ### 3.1 Root cause
 
@@ -89,7 +89,108 @@ This confirmed `st_file_attributes`'s reparse-point bit (not `is_symlink()`) is 
 - `python -m compileall src tests scripts -q` → clean, no errors.
 - `git diff --check` → clean, no whitespace errors.
 - `grep -rn "rglob" src/` → no remaining `rglob()` usage inside the confined file-search path (`src/jarvis/computer/`); the only other `rglob()` call sites in the repo (`desktop/assets.py`, `desktop/model.py`, `research/providers.py`) are unrelated, out-of-scope subsystems not governed by `FileAccessPolicy`.
-- **Commit:** `MILESTONE_0_COMMIT`
+- **Commit:** `bdad0a96a25813414248be5cf06b445379c1956f`
+- **Push:** `feature/phase-18-computer-use-v2` (`7188c71..bdad0a9`) — pushed successfully.
+
+---
+
+## 4. Milestone 1 — Grounded drag + second owned fixture + evaluation breadth
+
+**Commit:** `MILESTONE_1_COMMIT` (recorded in §4.9 below after push)
+
+### 4.1 Drag architecture — dual-target, same-window-only, bounded interpolation
+
+- New `ComputerCapability.POINTER_DRAG_ELEMENT_TO_ELEMENT` (`pointer_drag_element_to_element`), reachable through the existing `computer.pointer.act` tool as `action: "drag_element_to_element"` with exactly `source_element_ref`/`target_element_ref` (no raw coordinates, no path/trajectory, no duration, no file paths).
+- `WindowsNativeInputAdapter.drag_element_to_element(source_element_ref, target_element_ref)` (`src/jarvis/computer/native_input.py`): both endpoints resolved through the exact same `resolve_actionable_target` machinery every other pointer action uses (`_ground_drag_pair` → `_resolve_grounded` twice). If the two endpoints' `window_ref` differ, refused with `drag_cross_window_not_supported` **before any input is sent** - cross-window drag is a deliberate, reviewed deferral (more consequential, harder to verify, file-transfer-bypass-adjacent), not an oversight. After the containing window is focused, both endpoints are **re-resolved a second time** (focus can change layout) before execution - the same pattern `_ground()` already uses for single-target actions.
+- Execution (`_execute_drag`): move to source (`MOUSEEVENTF_MOVE|ABSOLUTE|VIRTUALDESK`) → `MOUSEEVENTF_LEFTDOWN` → `DRAG_INTERPOLATION_STEPS = 8` bounded, deterministic, linearly-interpolated internal move points (within the reviewed 4-12 range; no randomness, no "human simulation" jitter; intermediate points are never exposed to the model) → `MOUSEEVENTF_LEFTUP`. On any partial `SendInput` failure mid-sequence, a `finally` block guarantees the JARVIS-pressed left button is released (`MOUSEEVENTF_LEFTUP` sent even on the failure path) - proven by a dedicated unit test (`test_drag_partial_failure_releases_left_button`) that forces the first interpolation step to fail and asserts the very next `SendInput` call is the cleanup release. Generic drag stays `verified=False` (same honesty rule as generic click/scroll/double-click) - only an owned-fixture postcondition counts as verified evidence.
+
+### 4.2 Dual-target approval binding
+
+`ComputerActionService` (`src/jarvis/computer/service.py`) gained a new `_dual_target_actions` frozenset (containing only `pointer_drag_element_to_element`) and a `_drag_target_preview()`/`_resolve_drag_endpoint()` pair, deliberately **not** folded into the single-target `_element_target_preview()` - the task's own instruction was explicit that a two-target action must never be forced into a single-target digest.
+
+- The approval preview shows bounded, trusted descriptions of **both** endpoints (`name`, `control_type`, `automation_id`, `window_ref`) plus the action name - never a single opaque digest standing in for two different targets.
+- The identity binding is a composite `"source_digest|target_digest"` string. `decide()` re-resolves both endpoints on resume and, if the digest changed, splits the composite to identify **which** endpoint changed, returning the specific typed failure `drag_source_changed` or `drag_target_changed` (rather than one generic `approval_target_changed`) - proven by two dedicated `ApprovalHardeningTests` cases. If either endpoint cannot be re-resolved at all, the preview-building error (`drag_source_stale`/`drag_target_stale`/`uia_target_unavailable`) propagates as the refusal reason.
+- Approval expiry is `min(10-minute default, source reference expiry, target reference expiry)` - the same "never outlive the actual target reference" rule Batch 02 established for single-target actions, now applied to both endpoints.
+- `computer.pointer.act`'s tool schema (`src/jarvis/tools/registry.py`) gained `source_element_ref`/`target_element_ref` (bounded strings, `element-` prefix enforced) and the `drag_element_to_element` enum value; `element_ref` is no longer in the JSON Schema `required` list (validated per-action in the handler instead, matching the existing `scroll_element` pattern) so drag's two-ref shape and the other actions' one-ref shape can coexist in one schema.
+
+### 4.3 Second owned fixture
+
+`scripts/phase18/uia_text_fixture_host.py` - a second fully JARVIS-owned native Win32 process (ctypes + user32 only, no third-party GUI framework), following the exact same safety discipline as Batch 03's fixture: nonce-based exact-title matching (`JARVIS-CUV2-TEXT-FIXTURE-<uuid>`), no owner data, no network, no file dialogs. Layout: a real single-line `EDIT` control (initial text `JARVIS TEXT FIXTURE`), two `BUTTON` controls (`Drag Source`/`Drop Target`), and a status label (`drag:accepted`/`drag:rejected`).
+
+Two real Win32 bugs were found and fixed via physical dogfooding of this new fixture (not fixed by inspection alone):
+
+1. **No initial keyboard focus.** A plain top-level window (unlike a dialog template) never gives keyboard focus to any child control automatically - every keyboard scenario silently did nothing (typed text vanished, chords had no effect) because no control ever had focus at all. Fixed with an explicit `user32.SetFocus(_hwnd_edit)` call at fixture startup.
+2. **Drag-detection capture race.** The first implementation used `WM_PARENTNOTIFY(WM_LBUTTONDOWN)` on the parent window to detect a press on the drag-source button and immediately call `SetCapture` on the parent. Empirically, `WM_PARENTNOTIFY` fired correctly, but the drag-source `BUTTON` control's own default window procedure re-captured the mouse for itself immediately afterward (its own built-in press/click tracking), silently winning the capture race - the parent's `WM_LBUTTONUP` handler never received the matching release. Fixed by **subclassing** the drag-source button's own window procedure (`SetWindowLongPtrW(GWLP_WNDPROC, ...)`, standard Win32 subclassing, no custom UIA provider): `WM_LBUTTONDOWN` is now intercepted and never forwarded to the original button proc at all, so the button never takes its own capture and the parent's capture is never contested.
+
+A pre-existing scenario-ordering bug in the *physical acceptance runner itself* (not the fixture) was also found and fixed: the Tab focus-cycling test was originally sequenced before the `ctrl+a`/`ctrl+c`/`ctrl+z` chord tests, so by the time those chords ran, keyboard focus had already moved away from the Edit control to the "Drag Source" button and the chords had no effect. Reordered so Tab runs last among the text-fixture's keyboard scenarios.
+
+### 4.4 English and Arabic literal typing
+
+The existing literal-typing implementation (`_keyboard_action` / `WindowsNativeComputerController`, Phase 11-era) needed **no changes** - both English and Arabic Unicode text round-trip through the existing UTF-16-unit-chunked `KEYEVENTF_UNICODE` path exactly as designed. Physically proven: `JARVIS COMPUTER USE` (19 chars) and `مرحبا يا جارفيس` (15 chars) both typed via `computer.keyboard.type` and independently read back via `computer.semantic.read`'s `get_text` action (an independent path from the typing action's own self-report), with an exact string match both times, 3/3 clean iterations.
+
+### 4.5 Other literal key/chord evidence
+
+- **Home/End:** proven via prepend/append markers (`H`/`E`) around the Arabic phrase - Home moves the caret to position 0 (marker prepended), End moves it to the end (marker appended), both independently confirmed via `get_text`.
+- **Backspace:** proven via an exact one-character-shorter length check after one press.
+- **Tab:** independent focus read-back (`focused: true` on "Drag Source" after Tab from the Edit control).
+- **`ctrl+a`/`ctrl+c` (clipboard):** a known sentinel is written to the clipboard *first* (`computer.clipboard.write`) - the pre-existing owner clipboard content is never read, inspected, or logged at any point. The fixture's own known text is then select-alled and copied; the clipboard is independently read back and compared against the fixture's own known text (not the sentinel), proving `ctrl+c` genuinely changed the clipboard. The sentinel is written back afterward to avoid leaving fixture text sitting in the owner's clipboard.
+- **`ctrl+z` (undo):** proven via an independent before/after text comparison showing the most recent edit (the Backspace above) was reverted.
+- **No paste added.** Ctrl+V remains completely absent from every schema and every chord allowlist - unchanged from Batch 03's deferral, confirmed by an evaluation-suite regression case.
+
+### 4.6 Incidental bug fix: `computer.clipboard_read` silently required approval
+
+Found via physical dogfooding of the `ctrl+c` clipboard scenario (not a Batch 04 regression - this bug predates this batch): `ComputerActionService.CLIPBOARD_READ` was correctly listed in `_read_actions` (`risk_level: "read"`), but `PolicyPermissionEngine`'s rule list had no matching `computer.clipboard_read` entry, so it fell through to the generic `"computer."` `REQUIRE_APPROVAL` catch-all - unlike every one of its sibling read actions (`inspect_file`, `search_files`, `semantic_*`, etc.), which all have an explicit `ALLOW` rule. Fixed by adding the missing rule (`src/jarvis/authority/permissions/engine.py`). `computer.clipboard_write` is unaffected and correctly still requires approval (it is not in `_read_actions`/`_safe_actions`, so it is legitimately consequential). One pre-existing test (`tests/test_phase_eleven_agent_computer_tools.py::test_clipboard_read_is_one_approval_and_ephemeral_to_agent`, renamed to `test_clipboard_read_is_direct_and_ephemeral_to_agent`) asserted the buggy approval-required behavior as if it were intended; updated to assert the corrected direct-completion behavior while preserving every one of its original ephemeral-retention/no-secret-leak assertions unchanged.
+
+### 4.7 Evaluation suite additions
+
+The deterministic `computer_use_v2` suite (`src/jarvis/evaluation/computer_use_v2.py`) grew from 24 to 32 cases:
+
+- `cuv2-24` (rewritten): paste absent everywhere; drag stays bounded/element-grounded only (`source_element_ref`/`target_element_ref` present, no raw position/path/duration fields) - replaces the now-obsolete "no drag anywhere" assertion, since Batch 04 deliberately adds a reviewed, bounded drag.
+- `cuv2-25`: drag requires two-target approval binding (preview shows both `source.name`/`target.name`).
+- `cuv2-26`: one drag target changing after approval is refused (`drag_target_changed`).
+- `cuv2-27`: drag source/target from different windows is refused (`drag_cross_window_not_supported`), at request time, before any approval is even created.
+- `cuv2-28`: generic drag stays unverified without a fixture postcondition (uses a fully injected `WindowsNativeInputAdapter` - the deterministic suite never delivers real `SendInput` to the actual desktop).
+- `cuv2-29`: a partial drag injection failure still releases the left button (standalone injected adapter, forces the first interpolation move to fail).
+- `cuv2-30`/`cuv2-31`: English/Arabic literal typing use the canonical path (schema-level and, for Arabic, a full round-trip through a fully injected native-input/window-provider harness).
+- `cuv2-32`: clipboard verification never inspects an unknown owner value (schema-level: `computer.clipboard.read` takes no filter/selector parameter that could target "whatever is already there").
+
+All 32 cases pass deterministically (`test_all_cases_pass_deterministically`), and the "no physical process spawned by default" guard (`test_no_physical_test_runs_by_default`, patches `subprocess.Popen` to raise) still passes - none of the new cases launch a real GUI process.
+
+### 4.8 Tests
+
+- `tests/test_phase_eighteen_native_input.py`: 8 new `DragTests` (bounded interpolation point count and flag sequence; both endpoints revalidated after focus; cross-window refused before any input; weak source/target refused before any input; partial-failure cleanup release; failure on `LEFTDOWN` itself needs no extra release; target-outside-virtual-desktop denial) plus 6 new `ApprovalHardeningTests` (dual-target preview content; successful dual-ref execution on approve; source-changed / target-changed typed refusals; cross-window refused at request time) plus 2 rewritten `ArchitectureTests` (paste/file-drop still absent everywhere; drag stays element-grounded-only with no raw position/path/duration field) - **78 tests total in the file, all passing** (was 65).
+- `tests/test_phase_eighteen_owned_fixture.py`: extended the static safety checks (no owner-app dependency, no network/file-dialog calls, not imported by production, syntactically standalone) to also cover the new `uia_text_fixture_host.py`; updated the `_summarize()` unit test's fake run fixture to include the new `text_drag_fixture` key - **11 tests, all passing**.
+- `tests/test_phase_eleven_agent_computer_tools.py`: updated the one clipboard-read test affected by the permission-engine fix (§4.6) - **5 tests, all passing**.
+- `src/jarvis/evaluation/computer_use_v2.py`: 8 new cases (32 total).
+
+### 4.9 Verification
+
+- `python -m pytest tests -k "native_input or owned_fixture or evaluation or phase_eighteen" -q` → **220 passed, 514 deselected**.
+- `python -m pytest tests -q` (full regression) → **734 passed, 36 subtests passed**.
+- `python -m compileall src tests scripts -q` → clean, no errors.
+- `git diff --check` → clean, no whitespace errors.
+- **Physical acceptance** (`scripts/phase18/computer_use_acceptance.py --runs 3`, both owned fixtures together, real Windows desktop, NIGHTFURY): **all scenarios 3/3**, including every Batch 03 scenario (unaffected/still green) and every new Batch 04 scenario:
+
+  | Scenario | Result |
+  | --- | --- |
+  | Semantic invoke/toggle/select (fixture 1, unaffected) | 3/3 each |
+  | Native left/right/double click, scroll (fixture 1, unaffected) | 3/3 each |
+  | Native Tab key, named chord (fixture 1, unaffected) | 3/3 each |
+  | Non-primary-monitor click (fixture 1, unaffected) | 3/3 |
+  | Grounded drag (`drag:accepted`, fixture 2) | 3/3 |
+  | Literal English typing (fixture 2) | 3/3 |
+  | Literal Arabic Unicode typing (fixture 2) | 3/3 |
+  | Home/End marker proof (fixture 2) | 3/3 |
+  | Backspace (fixture 2) | 3/3 |
+  | Tab focus-cycling (fixture 2) | 3/3 |
+  | `ctrl+c` clipboard proof (fixture 2) | 3/3 |
+  | `ctrl+z` undo (fixture 2) | 3/3 |
+  | Both fixtures' child processes confirmed exited (exact-PID cleanup) | 3/3 |
+
+  During dogfooding, a real Windows OS-level `SetForegroundWindow` foreground-activation race was also observed and characterized: a background process spawning a fresh top-level window can be denied foreground activation depending on exact input-history timing, unrelated to JARVIS or fixture code. The runner's `_approve_and_run` helper now retries only this specific mechanical precondition (`window_focus_not_verified`, up to 4 attempts with a short delay) before giving up - never retrying a semantic action's actual outcome, and the final reported status is always the true last attempt's result.
+- **Commit:** `MILESTONE_1_COMMIT`
 - **Push:** `feature/phase-18-computer-use-v2` — recorded after push.
+
+GAP-0102 advances from `PARTIAL` to a stronger `PARTIAL` (not resolved - paste, cross-window drag, and arbitrary hotkeys remain intentionally absent). GAP-0105 advances with a second owned fixture and 8 new evaluation cases, remaining `PARTIAL` (still a two-fixture foundation, not the broad real-app matrix named in the gap's original scope).
 
 GAP-0503 updated from `RESOLVED` (path-confinement scope) to `RESOLVED_AFTER_REVIEW_HARDENING` (same scope — read/open/search path confinement only; file write/dialogs remain out of scope and unimplemented).

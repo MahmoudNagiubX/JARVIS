@@ -51,6 +51,10 @@ class ComputerCapability(StrEnum):
     POINTER_RIGHT_CLICK_ELEMENT = "pointer_right_click_element"
     POINTER_DOUBLE_CLICK_ELEMENT = "pointer_double_click_element"
     POINTER_SCROLL_ELEMENT = "pointer_scroll_element"
+    # Two-target action (Batch 04 Milestone 1) - deliberately not modeled as
+    # an element-targeted single-ref action; see
+    # ComputerActionService._dual_target_actions and _drag_target_preview.
+    POINTER_DRAG_ELEMENT_TO_ELEMENT = "pointer_drag_element_to_element"
     KEYBOARD_KEY = "keyboard_key"
     KEYBOARD_CHORD = "keyboard_chord"
     # Internal-only capabilities: never registered in any ToolSpec, so the

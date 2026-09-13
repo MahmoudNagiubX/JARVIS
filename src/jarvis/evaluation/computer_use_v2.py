@@ -39,6 +39,16 @@ def _snapshot(
     )
 
 
+class _RecordingUser32:
+    """Minimal `SendInput`-only fake (mirrors the existing Phase 11 fixture
+    pattern) - just enough to let `_keyboard_action`'s literal typing path
+    run deterministically without a real Windows message loop."""
+
+    def SendInput(self, count: int, inputs: object, size: int) -> int:
+        del inputs, size
+        return int(count)
+
+
 class _FakeSemanticAdapter:
     """Minimal, per-case-configurable stand-in for `SemanticDesktopAdapter`."""
 
@@ -50,6 +60,7 @@ class _FakeSemanticAdapter:
         self.get_element_calls: list[str] = []
         self.element_error: dict[str, str] = {}
         self.element_name: dict[str, str] = {}
+        self.element_window: dict[str, str] = {}
         self.toggle_pre_post: tuple[int, int] = (0, 1)
 
     async def list_windows(self, device_id: str) -> SemanticResult:
@@ -61,7 +72,8 @@ class _FakeSemanticAdapter:
         if error is not None:
             return SemanticResult("failed", error_code=error)
         name = self.element_name.get(element_ref, "Target")
-        return SemanticResult("succeeded", {"element": _snapshot(element_ref, name=name)})
+        window_ref = self.element_window.get(element_ref, "window-1")
+        return SemanticResult("succeeded", {"element": _snapshot(element_ref, window_ref, name=name)})
 
     async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
         error = self.element_error.get(element_ref)
@@ -71,8 +83,9 @@ class _FakeSemanticAdapter:
             } else "failed"
             return SemanticResult(status, error_code=error)
         name = self.element_name.get(element_ref, "Target")
+        window_ref = self.element_window.get(element_ref, "window-1")
         return SemanticResult("succeeded", {
-            "element": _snapshot(element_ref, name=name),
+            "element": _snapshot(element_ref, window_ref, name=name),
             "reference_expires_at": datetime.now(UTC) + timedelta(seconds=45),
         })
 
@@ -609,19 +622,266 @@ async def _case_chord_allowlist_rejects_unlisted(_context: Any) -> bool:
         await ctx.runtime.shutdown()
 
 
-# -- 24/25. no paste, no drag/drop anywhere in the model-facing surface --
+# -- 24/25. no paste anywhere; drag stays bounded/element-grounded only --
 
-async def _case_no_paste_or_drag_drop_in_any_schema(_context: Any) -> bool:
+async def _case_no_paste_or_unrestricted_drag_in_any_schema(_context: Any) -> bool:
+    """Paste (Ctrl+V) remains absent everywhere (Batch 04 task's own
+    explicit deferral). Batch 04 Milestone 1 deliberately adds a reviewed,
+    bounded `drag_element_to_element` action to `computer.pointer.act` -
+    this case now asserts the drag surface stays element-grounded-only
+    (exactly `source_element_ref`/`target_element_ref`, no raw coordinates,
+    no path/trajectory, no duration, no file drag/drop) rather than
+    asserting drag's total absence."""
     ctx = await _new_runtime_context()
     try:
-        for tool_name in ("computer.pointer.act", "computer.keyboard.key", "computer.keyboard.chord", "computer.keyboard.type"):
+        for tool_name in ("computer.keyboard.key", "computer.keyboard.chord", "computer.keyboard.type"):
             spec = ctx.runtime.tools.get(tool_name)
             if spec is None:
                 return False
             blob = str(spec.parameters_schema).casefold()
             if "paste" in blob or "drag" in blob or "drop" in blob or "ctrl+v" in blob:
                 return False
-        return True
+        pointer_spec = ctx.runtime.tools.get("computer.pointer.act")
+        if pointer_spec is None:
+            return False
+        blob = str(pointer_spec.parameters_schema).casefold()
+        if "paste" in blob or "drop" in blob or "ctrl+v" in blob:
+            return False
+        if "path" in blob or "duration" in blob or "trajectory" in blob or "file" in blob:
+            return False
+        properties = set(pointer_spec.parameters_schema.get("properties", {}))
+        no_raw_position_fields = not (properties & {"x", "y", "dx", "dy", "hwnd", "points", "path"})
+        drag_is_element_grounded_only = {"source_element_ref", "target_element_ref"} <= properties
+        return no_raw_position_fields and drag_is_element_grounded_only
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 26. drag requires two-target approval binding, both trusted, bound to one window --
+
+async def _case_drag_requires_dual_target_approval(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    try:
+        ctx.semantic.element_name["element-drag-src"] = "Drag Source"
+        ctx.semantic.element_name["element-drag-dst"] = "Drop Target"
+        requested = await ctx.runtime.tool_service.execute(
+            "computer.pointer.act",
+            {"action": "drag_element_to_element", "source_element_ref": "element-drag-src", "target_element_ref": "element-drag-dst"},
+            ctx.context,
+        )
+        if requested.status.value != "approval_required" or requested.approval_id is None:
+            return False
+        row = ctx.runtime.repository.approval(requested.approval_id)
+        import json
+        preview = json.loads(row["preview_json"])
+        return (
+            preview.get("source", {}).get("name") == "Drag Source"
+            and preview.get("target", {}).get("name") == "Drop Target"
+            and preview.get("action") == "pointer_drag_element_to_element"
+        )
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 27. one drag target changing after approval refuses the drag --
+
+async def _case_drag_target_change_after_approval_refused(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    try:
+        ctx.semantic.element_name["element-drag-src"] = "Drag Source"
+        ctx.semantic.element_name["element-drag-dst"] = "Drop Target"
+        requested = await ctx.runtime.tool_service.execute(
+            "computer.pointer.act",
+            {"action": "drag_element_to_element", "source_element_ref": "element-drag-src", "target_element_ref": "element-drag-dst"},
+            ctx.context,
+        )
+        if requested.approval_id is None:
+            return False
+        # The target's observed name changes before the approval is decided -
+        # the fresh re-resolution at decide() time must produce a different
+        # digest and refuse rather than silently acting on stale consent.
+        ctx.semantic.element_name["element-drag-dst"] = "Drop Target (renamed)"
+        decided = await ctx.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, ctx.identity.identity_id, ctx.context
+        )
+        return decided.status.value == "denied" and decided.error_code == "drag_target_changed"
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 28. source and target from different windows are refused --
+
+async def _case_drag_cross_window_refused(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    try:
+        ctx.semantic.element_name["element-drag-src"] = "Drag Source"
+        ctx.semantic.element_name["element-drag-dst"] = "Drop Target"
+        ctx.semantic.element_window["element-drag-dst"] = "window-2"
+        requested = await ctx.runtime.tool_service.execute(
+            "computer.pointer.act",
+            {"action": "drag_element_to_element", "source_element_ref": "element-drag-src", "target_element_ref": "element-drag-dst"},
+            ctx.context,
+        )
+        return requested.status.value == "denied" and requested.error_code == "drag_cross_window_not_supported"
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 29. generic drag stays unverified without an owned-fixture postcondition --
+
+async def _case_generic_drag_unverified(_context: Any) -> bool:
+    from ..computer.native_input import WindowsNativeInputAdapter
+
+    ctx = await _new_runtime_context()
+    try:
+        ctx.semantic.element_name["element-drag-src"] = "Drag Source"
+        ctx.semantic.element_name["element-drag-dst"] = "Drop Target"
+
+        class _Provider:
+            def validate_input_window(self, window_ref: str) -> int:
+                return 1
+
+            def focus_window(self, window_ref: str) -> bool:
+                return True
+
+            def is_foreground(self, hwnd: int) -> bool:
+                return True
+
+        # Replace the real native-input adapter with a fully injected one
+        # (same pattern as cases 10/11) - the deterministic suite must never
+        # deliver a real SendInput to the actual desktop.
+        ctx.runtime.computer_actions.controller.local.native_input_adapter = WindowsNativeInputAdapter(
+            _Provider(), ctx.semantic,  # type: ignore[arg-type]
+            metrics_provider=lambda: (0, 0, 1920, 1080),
+            send_input=lambda inputs: len(inputs),
+            get_cursor_pos=lambda: (100, 100),
+        )
+        requested = await ctx.runtime.tool_service.execute(
+            "computer.pointer.act",
+            {"action": "drag_element_to_element", "source_element_ref": "element-drag-src", "target_element_ref": "element-drag-dst"},
+            ctx.context,
+        )
+        if requested.approval_id is None:
+            return False
+        decided = await ctx.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, ctx.identity.identity_id, ctx.context
+        )
+        return decided.status.value == "completed" and decided.verified is False
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 29b. partial injection failure mid-drag still releases the left button --
+
+async def _case_drag_partial_failure_releases_button(_context: Any) -> bool:
+    from ..computer.native_input import MOUSEEVENTF_LEFTUP, WindowsNativeInputAdapter
+
+    class _Semantic:
+        async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+            bounds = SemanticBounds(0, 0, 20, 20) if element_ref == "element-drag-src" else SemanticBounds(100, 100, 20, 20)
+            return SemanticResult("succeeded", {
+                "element": _snapshot(element_ref, "window-1", bounds=bounds),
+                "reference_expires_at": datetime.now(UTC) + timedelta(seconds=45),
+            })
+
+    class _Provider:
+        def validate_input_window(self, window_ref: str) -> int:
+            return 1
+
+        def focus_window(self, window_ref: str) -> bool:
+            return True
+
+        def is_foreground(self, hwnd: int) -> bool:
+            return True
+
+    sent_flags: list[tuple[int, ...]] = []
+    call_count = {"n": 0}
+
+    def flaky_send(inputs: object) -> int:
+        call_count["n"] += 1
+        sent_flags.append(tuple(item.mi.dwFlags for item in inputs))
+        # Fail exactly the first bounded interpolation move (after a
+        # successful move-to-source and left-down) to simulate a partial
+        # SendInput failure mid-drag.
+        if call_count["n"] == 3:
+            return 0
+        return len(inputs)
+
+    adapter = WindowsNativeInputAdapter(
+        _Provider(), _Semantic(),  # type: ignore[arg-type]
+        metrics_provider=lambda: (0, 0, 1920, 1080), send_input=flaky_send, get_cursor_pos=lambda: (0, 0),
+    )
+    result = await adapter.drag_element_to_element("element-drag-src", "element-drag-dst")
+    cleanup_released_button = bool(sent_flags) and MOUSEEVENTF_LEFTUP in sent_flags[-1]
+    return result.status == "failed" and result.error_code == "native_input_injection_failed" and cleanup_released_button
+
+
+# -- 30. English literal typing round-trips through the canonical path --
+
+async def _case_english_typing_canonical_path(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    try:
+        spec = ctx.runtime.tools.get("computer.keyboard.type")
+        if spec is None:
+            return False
+        properties = set(spec.parameters_schema.get("properties", {}))
+        return {"window_ref", "text"} <= properties and "path" not in properties
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 31. Arabic Unicode text is not rejected by the literal typing schema/path --
+
+async def _case_arabic_typing_canonical_path(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    try:
+
+        class _Provider:
+            def describe_window(self, window_ref: str) -> dict[str, object]:
+                return {"window_ref": window_ref, "title": "W", "process_name": "python.exe", "expires_at": datetime.now(UTC) + timedelta(minutes=10), "identity_digest": "d"}
+
+            def validate_input_window(self, window_ref: str) -> int:
+                return 1
+
+            def focus_window(self, window_ref: str) -> bool:
+                return True
+
+            def resolve_window_ref(self, window_ref: str) -> int:
+                return 1
+
+            def is_foreground(self, hwnd: int) -> bool:
+                return True
+
+        ctx.runtime.computer_actions.controller.local.perception_provider = _Provider()
+        ctx.runtime.computer_actions.controller.local._user32 = _RecordingUser32()
+        requested = await ctx.runtime.tool_service.execute(
+            "computer.keyboard.type", {"window_ref": "window-1", "text": "مرحبا يا جارفيس"}, ctx.context
+        )
+        decided = await ctx.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, ctx.identity.identity_id, ctx.context
+        ) if requested.approval_id is not None else requested
+        return decided.status.value == "completed" and decided.output.get("chars_sent") == len("مرحبا يا جارفيس")
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 32. clipboard chord verification never inspects a pre-existing owner value --
+
+async def _case_clipboard_test_never_reads_unknown_owner_value(_context: Any) -> bool:
+    """Documents the product rule (Batch 04 task, Milestone 1): any
+    clipboard-based verification of a chord such as ctrl+c must set a known
+    fixture value first and never read/log whatever the clipboard already
+    held - proven here by confirming clipboard_read's schema takes no
+    filter/selector that could be misused to target "whatever is already
+    there", and remains a plain bounded read the caller must pair with an
+    explicit prior clipboard_write of known content."""
+    ctx = await _new_runtime_context()
+    try:
+        spec = ctx.runtime.tools.get("computer.clipboard.read")
+        if spec is None:
+            return False
+        properties = set(spec.parameters_schema.get("properties", {}))
+        return properties <= {"target_device_id"}
     finally:
         await ctx.runtime.shutdown()
 
@@ -651,10 +911,19 @@ def build_suite() -> RegressionSuite:
         EvaluationCase("cuv2-21", "path-resolution escape refusal (real junction proof lives in test_phase_eighteen_file_access.py)", "computer_use_v2", _case_symlink_escape_refused),
         EvaluationCase("cuv2-22", "right-click/double-click/scroll stay element-grounded", "computer_use_v2", _case_expanded_pointer_actions_stay_element_grounded),
         EvaluationCase("cuv2-23", "chord allowlist rejects unlisted combinations", "computer_use_v2", _case_chord_allowlist_rejects_unlisted),
-        EvaluationCase("cuv2-24", "no paste or drag/drop in any model-facing schema", "computer_use_v2", _case_no_paste_or_drag_drop_in_any_schema),
+        EvaluationCase("cuv2-24", "paste absent; drag stays bounded/element-grounded only", "computer_use_v2", _case_no_paste_or_unrestricted_drag_in_any_schema),
+        EvaluationCase("cuv2-25", "drag requires two-target approval binding", "computer_use_v2", _case_drag_requires_dual_target_approval),
+        EvaluationCase("cuv2-26", "drag target changing after approval is refused", "computer_use_v2", _case_drag_target_change_after_approval_refused),
+        EvaluationCase("cuv2-27", "drag source/target cross-window is refused", "computer_use_v2", _case_drag_cross_window_refused),
+        EvaluationCase("cuv2-28", "generic drag stays unverified without a fixture postcondition", "computer_use_v2", _case_generic_drag_unverified),
+        EvaluationCase("cuv2-29", "partial drag injection failure still releases the left button", "computer_use_v2", _case_drag_partial_failure_releases_button),
+        EvaluationCase("cuv2-30", "English literal typing uses the canonical path", "computer_use_v2", _case_english_typing_canonical_path),
+        EvaluationCase("cuv2-31", "Arabic Unicode literal typing uses the canonical path", "computer_use_v2", _case_arabic_typing_canonical_path),
+        EvaluationCase("cuv2-32", "clipboard verification never inspects an unknown owner value", "computer_use_v2", _case_clipboard_test_never_reads_unknown_owner_value),
     )
     return RegressionSuite(
         SUITE_NAME, cases,
-        "Deterministic Computer Use V2 product acceptance contracts (Phase 18 Workstream A Batch 02 Milestone 2). "
-        "No GUI/live Windows dependency; every case runs against fakes at the OS/provider boundary.",
+        "Deterministic Computer Use V2 product acceptance contracts (Phase 18 Workstream A Batch 02 Milestone 2, "
+        "extended by Batch 04 Milestone 1 with grounded drag and text-input contracts). No GUI/live Windows "
+        "dependency; every case runs against fakes at the OS/provider boundary.",
     )

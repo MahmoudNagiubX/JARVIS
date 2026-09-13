@@ -418,9 +418,26 @@ def register_computer_tools(
 
     async def pointer_act(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
         action = arguments.get("action")
-        element_ref = arguments.get("element_ref")
-        if action not in {"move_to_element", "left_click_element", "right_click_element", "double_click_element", "scroll_element"}:
+        if action not in {
+            "move_to_element", "left_click_element", "right_click_element", "double_click_element",
+            "scroll_element", "drag_element_to_element",
+        }:
             return ToolResult(ToolResultStatus.DENIED, error_code="pointer_action_invalid")
+        if action == "drag_element_to_element":
+            if set(arguments) - {"action", "source_element_ref", "target_element_ref", "target_device_id"}:
+                return ToolResult(ToolResultStatus.DENIED, error_code="pointer_action_invalid")
+            source_element_ref = arguments.get("source_element_ref")
+            target_element_ref = arguments.get("target_element_ref")
+            if not isinstance(source_element_ref, str) or not source_element_ref.startswith("element-"):
+                return ToolResult(ToolResultStatus.DENIED, error_code="element_ref_required")
+            if not isinstance(target_element_ref, str) or not target_element_ref.startswith("element-"):
+                return ToolResult(ToolResultStatus.DENIED, error_code="element_ref_required")
+            return await execute_action(
+                "pointer_drag_element_to_element",
+                {"source_element_ref": source_element_ref, "target_element_ref": target_element_ref},
+                arguments, context,
+            )
+        element_ref = arguments.get("element_ref")
         if not isinstance(element_ref, str) or not element_ref.startswith("element-"):
             return ToolResult(ToolResultStatus.DENIED, error_code="element_ref_required")
         if action == "scroll_element":
@@ -431,7 +448,7 @@ def register_computer_tools(
             if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 5:
                 return ToolResult(ToolResultStatus.DENIED, error_code="native_input_scroll_steps_invalid")
             return await execute_action("pointer_scroll_element", {"element_ref": element_ref, "direction": direction, "steps": steps}, arguments, context)
-        if set(arguments) & {"direction", "steps"}:
+        if set(arguments) & {"direction", "steps", "source_element_ref", "target_element_ref"}:
             return ToolResult(ToolResultStatus.DENIED, error_code="pointer_action_invalid")
         return await execute_action(f"pointer_{action}", {"element_ref": element_ref}, arguments, context)
 
@@ -534,10 +551,12 @@ def register_computer_tools(
     registry.register(ToolSpec(
         "tool-computer-pointer-act-v1", "computer.pointer.act", "1",
         "Move the mouse pointer to a previously observed element, left-click, right-click, or "
-        "double-click it, or scroll over it, using bounded native Windows input. Grounded strictly "
-        "through an element reference - no raw coordinates, no HWND, no raw wheel delta. "
+        "double-click it, scroll over it, or left-button drag it onto another previously observed "
+        "element in the same window, using bounded native Windows input. Grounded strictly through "
+        "element references - no raw coordinates, no HWND, no raw wheel delta, no drag path/duration. "
         "Consequential - requires owner approval. Delivery is never proof the application's intended "
-        "action occurred; a generic click/scroll stays unverified.",
+        "action occurred; a generic click/scroll/drag stays unverified. Drag does not support "
+        "cross-window targets.",
         "safe", "tool.request", frozenset({"computer.input"}), 15.0, False, pointer_act,
         parameters_schema={
             "type": "object",
@@ -546,15 +565,17 @@ def register_computer_tools(
                     "type": "string",
                     "enum": [
                         "move_to_element", "left_click_element", "right_click_element",
-                        "double_click_element", "scroll_element",
+                        "double_click_element", "scroll_element", "drag_element_to_element",
                     ],
                 },
                 "element_ref": {"type": "string", "maxLength": 100},
                 "direction": {"type": "string", "enum": ["up", "down"]},
                 "steps": {"type": "integer", "minimum": 1, "maximum": 5},
+                "source_element_ref": {"type": "string", "maxLength": 100},
+                "target_element_ref": {"type": "string", "maxLength": 100},
                 "target_device_id": {"type": "string", "maxLength": 200},
             },
-            "required": ["action", "element_ref"],
+            "required": ["action"],
             "additionalProperties": False,
         },
         argument_retention=ToolResultRetention.EPHEMERAL,
