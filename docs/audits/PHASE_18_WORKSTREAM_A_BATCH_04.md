@@ -3,7 +3,7 @@
 
 **Task:** `tasks/CLOUD_CODE_MASTER_PHASE_18_WORKSTREAM_A_BATCH_04.md`
 **Branch:** `feature/phase-18-computer-use-v2`
-**Status:** IN PROGRESS — Milestone 0 complete, Milestones 1/2 not yet started.
+**Status:** COMPLETE — `PHASE18_COMPUTER_USE_BATCH04_PARTIAL`. Milestones 0 and 1 fully green and physically proven; Milestone 2 concluded `OCR_BACKEND_EVALUATION_BLOCKED` (evidence-first evaluation complete, no production OCR integration - see Section 5).
 
 This is the single report for the whole batch (per Section 11 of the task file); it is appended to, not duplicated, as later milestones complete.
 
@@ -197,7 +197,7 @@ GAP-0102 advances from `PARTIAL` to a stronger `PARTIAL` (not resolved - paste, 
 
 ## 5. Milestone 2 — Local Visual Grounding / OCR V1 evaluation (blocked, no production integration)
 
-**Commit:** `MILESTONE_2_COMMIT` (recorded in §5.7 below after push)
+**Commit:** `7ff4ce28de82de4f73f0cacc7fda5ca1bb6923a5`
 
 **Verdict: `OCR_BACKEND_EVALUATION_BLOCKED`.** Per the task's own explicit instruction ("do not force a provider merely to finish the milestone"), no OCR backend was integrated into production. No `computer-ocr` optional dependency group, no `computer.visual.read` tool, no `VisualTextRegion`/`VisualObservation` contracts, no OCR-owned fixture mode were added - core JARVIS runtime and every previously-green milestone are completely unaffected by this milestone. This section documents the evidence-first evaluation that produced this verdict.
 
@@ -258,9 +258,81 @@ Per Section 8 of the task ("If no candidate passes: Milestone 2 may finish as `O
 - `python -m compileall src tests scripts -q` → clean, no errors.
 - `git diff --check` → clean, no whitespace errors.
 - Frontend gate (`npm test -- --run`, `npm run build`, `npm audit --audit-level=high` in `ui/`) — run for completeness even though no frontend code was touched by this milestone (no OCR UI surface exists since no backend was integrated): **75/75 tests passed**, build succeeded, `npm audit --audit-level=high` exits clean (2 pre-existing moderate-severity `vitest`/`@vitest/mocker` dev-dependency advisories, below the `high` threshold, unrelated to and unchanged by this batch).
-- **Commit:** `MILESTONE_2_COMMIT`
-- **Push:** `feature/phase-18-computer-use-v2` — recorded after push.
+- **Commit:** `7ff4ce28de82de4f73f0cacc7fda5ca1bb6923a5`
+- **Push:** `feature/phase-18-computer-use-v2` (`309c2d7..7ff4ce2`) — pushed successfully.
 
 GAP-0103 stays `OPEN` (not `PARTIAL`) - the evaluation itself is complete and thorough, but no visual/OCR capability exists in the product. No DEC-048 was added to the decision log (no backend was accepted); OPEN-002 was updated in place with the full evidence instead, per the task's own instruction not to manufacture an accepted decision when no candidate passes.
+
+---
+
+## 6. Final regression (at final HEAD)
+
+- Branch: `feature/phase-18-computer-use-v2`, in sync with `origin/feature/phase-18-computer-use-v2` after every push, no unexplained divergence at any point in the batch.
+- Final HEAD: `7ff4ce28de82de4f73f0cacc7fda5ca1bb6923a5` (`docs: record visual OCR backend evaluation`) plus this report-finalization commit.
+- `python -m pytest tests -q` → **739 passed, 36 subtests passed**.
+- `python -m compileall src tests scripts -q` → clean, no errors.
+- `git diff --check` → clean, no whitespace errors.
+- Frontend gate (`ui/`: `npm test -- --run`, `npm run build`, `npm audit --audit-level=high`) → **75/75 tests passed**, build succeeded, audit clean at the `high` threshold (2 pre-existing moderate `vitest` dev-dependency advisories, unrelated to this batch).
+- `git diff 7188c712563a9340112da1b86fcd218d71898af1...HEAD --stat`: **18 files changed** (before this report-finalization commit), **4,274 insertions, 84 deletions** - matches the three implementation/evaluation commits plus the task file itself (`tasks/CLOUD_CODE_MASTER_PHASE_18_WORKSTREAM_A_BATCH_04.md`, committed alongside Milestone 0 per the established Batch 02/03 pattern). No unexplained untracked files anywhere in the working tree at any checkpoint in this batch.
+
+---
+
+## 7. Final security review (Section 9 of the task)
+
+**File boundary:** no `Path.rglob()` (or any other unbounded traversal) remains in the confined search path (`src/jarvis/computer/file_access.py`/`service.py`) - the pre-descent walker enforces containment/reparse-safety before descending into every directory; no directory outside the approved root is ever descended (verified: junction-outside-root, junction-inside-root-still-not-descended, cyclic-junction tests); no `.env.*` secret variant leaks (`.env.staging`/`.env.development.local`/`.env.production.local`/`.env.test.local` all denied); `.env.example` allowed; every test uses only `tempfile.TemporaryDirectory()`, never an owner file/path.
+
+**Drag:** `computer.pointer.act`'s schema carries no raw coordinate/path/duration field anywhere (verified by a dedicated architecture test); both `source_element_ref`/`target_element_ref` are resolved through the same strong-identity `resolve_actionable_target` pipeline every other action uses; same-trusted-window is enforced (`drag_cross_window_not_supported`, refused before any approval is even created); the approval preview and identity binding cover both endpoints (never collapsed to one digest); the composite binding's TTL is `min` of both endpoints' actual reference expiry; a changed source or target after approval is refused with a specific typed reason (`drag_source_changed`/`drag_target_changed`); a partial `SendInput` failure mid-drag guarantees the JARVIS-pressed left button is released (dedicated unit test); cross-window drag and file drag/drop remain completely absent from the codebase.
+
+**Text fixture:** both owned fixtures clean up via exact-PID `Popen.terminate()`/`wait()` (never a broad `taskkill`, confirmed by the existing static source check plus `fixture_child_confirmed_exited` physical evidence, 3/3 for both fixtures every run); both carry a fresh UUID nonce in their window title; no owner application is ever touched (both are fully JARVIS-owned native Win32 processes); the clipboard test writes a known sentinel *before* ever reading the clipboard and never inspects/logs whatever the clipboard held beforehand; paste (Ctrl+V) remains completely absent from every schema and chord allowlist, confirmed by a regression evaluation case.
+
+**Visual/OCR:** no production integration exists at all this batch (`OCR_BACKEND_EVALUATION_BLOCKED`) - therefore every visual/OCR-specific requirement (local-only, optional dependency, core starts without OCR, no raw image persistence, no Memory write, no sensitive-window OCR, no raw coordinate input, no visual actuation, no prompt-injection authority, no cloud API/key, no secrets) is trivially satisfied by absence. No model weights, caches, or generated fixture images were committed to Git at any point (both evaluation venvs and all downloaded model caches lived entirely outside the repository, under the session's temp scratchpad, and were deleted after benchmarking - confirmed by an explicit repository-wide search for `.onnx`/`.pdmodel`/`.pdiparams` files immediately before finalizing this report, with zero matches).
+
+**Authority:** exactly one `ComputerActionService`, one `PolicyPermissionEngine`, one `DurableApprovalEngine`, one audit authority throughout this entire batch - no second instance of any of these was created. The one production code change to a shared authority (`PolicyPermissionEngine`'s missing `computer.clipboard_read` rule) closes a real correctness gap rather than adding a second authority or bypass; it was found via physical dogfooding, is narrowly scoped (one rule, one sibling-consistent effect), and is covered by an updated regression test. No OCR provider adapter exists yet, so "OCR provider is only an adapter, never a second authority" has nothing to violate this batch - noted as a hard requirement for whichever future batch does add one.
+
+---
+
+## 8. Final gap state
+
+| Gap | Status | Note |
+| --- | --- | --- |
+| GAP-0101 | `RESOLVED` | Unchanged this batch - core semantic capability (invoke/toggle/select) locked in Batch 03 Milestone 2. Broader Computer Use V2 breadth remains split across the gaps below. |
+| GAP-0102 | `PARTIAL` (stronger) | Grounded drag added this batch (Milestone 1), physically proven 3/3. Paste, cross-window drag, and arbitrary hotkeys remain intentionally absent. |
+| GAP-0103 | `OPEN` | Milestone 2 evaluated two OCR candidates end-to-end; both failed acceptance gates on this machine (`OCR_BACKEND_EVALUATION_BLOCKED`). No visual/OCR capability exists in the product. Full evidence in §5 above and `05_JARVIS_DECISION_LOG.md` OPEN-002. |
+| GAP-0104 | `PARTIAL` | Unchanged this batch - no autonomous multi-app replanning/recovery loop exists; per-action fresh re-observation and typed-failure receipts remain proven from Batch 02. |
+| GAP-0105 | `PARTIAL` (stronger) | Evaluation suite grew from 24 to 32 cases; a second owned Win32 fixture added; physical runner now exercises both fixtures together. Still a two-fixture foundation, not the broad real-app matrix named in the gap's original scope. |
+| GAP-0106 | `PARTIAL` | Unchanged this batch - non-primary-monitor physical proof remains closed from Batch 03; DPI and secure-desktop physical proof remain pending. |
+| GAP-0503 | `RESOLVED_AFTER_REVIEW_HARDENING` | Milestone 0 closed the independent-review traversal-boundary finding (pre-descent bounded walker, `.env.*` wildcard sensitivity). Scope remains read/open/search path confinement only - write/move/copy/rename/delete/file-dialog richness from the gap's original broader description remains future work, unchanged. |
+
+---
+
+## 9. Manual dependencies / owner action required
+
+**NONE.** No API key, OAuth flow, credential, owner file, personal root, display-setting change, or UAC prompt was requested or required anywhere in this batch. The PaddleOCR/RapidOCR package installs and Hugging Face model downloads performed during Milestone 2's evaluation are normal, disposable development/evaluation setup in an isolated temporary venv (per the task's own explicit framing: "OCR model downloads/package installation are normal development setup, not owner secrets") - both venvs and every downloaded model file were deleted after the evaluation; nothing from them persists in the repository, the project's own `.venv`, or anywhere the owner would need to clean up. No production dependency group (`computer-ocr` or otherwise) was added to `pyproject.toml`, so `pip install`/`uv sync` behavior for the project is completely unchanged by this batch.
+
+---
+
+## 10. Restrictions remaining (unchanged or newly explicit)
+
+- **Paste (Ctrl+V) remains unimplemented** - live clipboard secrecy and an ephemeral-paste-transaction design remain deliberately deferred future work (Milestone 1, §4.5).
+- **Cross-window drag remains unsupported** - `drag_cross_window_not_supported` is a deliberate, reviewed deferral pending a separate design for the file-transfer-bypass risk it would introduce (Milestone 1, §4.1).
+- **File drag/drop and file-dialog automation remain completely absent** - no such capability exists anywhere in the codebase.
+- **Arbitrary hotkeys remain absent** - only the existing small, reviewed named-key/chord allowlists exist; nothing expanded this batch.
+- **No visual/OCR capability exists in the product** - Milestone 2 concluded `OCR_BACKEND_EVALUATION_BLOCKED`; both evaluated candidates (PaddleOCR, RapidOCR) failed acceptance gates on this machine, documented in full in §5. No `computer.visual.read` tool, no visual references, no visual actuation of any kind exists.
+- **Broad real-app evaluation breadth remains outstanding** - the physical acceptance runner exercises two JARVIS-owned fixtures only, not the Notepad/Explorer/Settings/VS Code/terminal/dialogs/multi-window matrix named in GAP-0105's original scope.
+- **Autonomous multi-app recovery/replanning remains absent** - GAP-0104 untouched this batch.
+- **DPI scaling and secure-desktop physical proof remain pending** - GAP-0106 untouched this batch (no non-100%-DPI monitor or UAC-triggering surface was available/appropriate to test).
+
+---
+
+## 11. Recommended next batch
+
+1. **A real OCR candidate re-evaluation, or an explicit pivot.** Milestone 2's blocker is concrete and specific (PaddlePaddle's CPU oneDNN executor bug; RapidOCR's Arabic-tier accuracy gap) - a future batch could productively: (a) re-run `scripts/phase18/ocr_backend_benchmark.py` against a newer PaddleOCR/PaddlePaddle release once the oneDNN bug is plausibly fixed upstream, (b) evaluate whether RapidOCR's English-only "small"/"medium" tiers could serve as an English-only OCR fallback while Arabic OCR stays explicitly unsupported (a narrower, honestly-scoped capability rather than an all-or-nothing gate), or (c) evaluate a genuinely different third candidate not named in this batch's task.
+2. **Ephemeral paste transaction design.** GAP-0102's most consequential remaining gap - a deliberate design for binding an approval to live clipboard content without ever persisting it, addressing the exact concern this batch (and Batch 03 before it) repeatedly deferred.
+3. **Cross-window drag, with its own dedicated review.** Given this batch's dual-target approval-binding infrastructure already exists, extending it to a reviewed cross-window case (with explicit file-transfer-bypass mitigations) is now a narrower, more tractable design problem than it was before Milestone 1.
+4. **Broader real-app physical evaluation breadth** (GAP-0105) - a batch specifically aimed at exercising JARVIS against a curated set of real, disposable Windows applications (or a wider variety of owned fixtures covering menus, dialogs, and multi-window scenarios) would meaningfully advance the gap's original scope beyond the two-fixture foundation that exists today.
+
+---
+
+**Do not merge to main.**
 
 GAP-0503 updated from `RESOLVED` (path-confinement scope) to `RESOLVED_AFTER_REVIEW_HARDENING` (same scope — read/open/search path confinement only; file write/dialogs remain out of scope and unimplemented).
