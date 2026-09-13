@@ -103,6 +103,19 @@ Never report success from intent, a click, a returned HTTP 200, or a mock alone.
 - Fail closed on ambiguous identity, target, permission, or verification state.
 - Physical PASS requires physical evidence. Tests/mocks are not physical evidence.
 
+## 6.1 Physical acceptance safety
+
+Physical acceptance may target only JARVIS-owned fixture scripts under
+`scripts/phase18/`, launched through the approved owned-fixture boundary.
+Never launch, attach to, inspect as disposable, mutate, close, or kill an
+owner-installed/general application or owner session. Every fixture run must
+use a fresh nonce, exact-title window discovery, exact child PID/object
+ownership, and exact-PID terminate/wait/kill cleanup. Never fall back to a
+similar title, a first matching window, or a broad image-name process kill.
+Never inspect owner clipboard contents, files, documents, profiles, or
+sessions. If a safe owned fixture cannot prove a physical behavior, leave the
+physical evidence pending rather than substituting an owner app.
+
 ## 7. Change discipline
 
 Before coding:
@@ -172,4 +185,4 @@ Do not:
 
 ## 11. Active work
 
-Phase 18A.1 (baseline audit), Phase 18A.2 (stabilization), and the Workstream A.1 UIA backend evaluation are complete. The active program is **Phase 18 Workstream A — Computer Use V2**, defined in `04_JARVIS_EXECUTION_ROADMAP.md` and tracked in `03_JARVIS_GAP_REGISTER.md`; current work advances the semantic UIA foundation.
+Phase 18A.1 (baseline audit), Phase 18A.2 (stabilization), and the Workstream A.1 UIA backend evaluation are complete. The active program is **Phase 18 Workstream A — Computer Use V2**, defined in `04_JARVIS_EXECUTION_ROADMAP.md` and tracked in `03_JARVIS_GAP_REGISTER.md`; Batch 07 Milestone 0 has hardened executor-level physical acceptance safety, while the bounded live-OCR evaluation and owned multi-window/dialog evaluation remain pending.

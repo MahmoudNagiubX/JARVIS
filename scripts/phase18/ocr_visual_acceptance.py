@@ -57,6 +57,11 @@ from pathlib import Path
 REPO_SRC = Path(__file__).resolve().parents[2] / "src"
 if str(REPO_SRC) not in sys.path:
     sys.path.insert(0, str(REPO_SRC))
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from owned_fixture_process import launch_owned_fixture, terminate_owned_fixture
 
 FIXTURE_HOST_SCRIPT = Path(__file__).resolve().with_name("uia_ocr_fixture_host.py")
 
@@ -158,9 +163,9 @@ async def _run_once(model_dir: str) -> dict:
     runtime, identity, device, context = await _new_harness(model_dir)
     proc: subprocess.Popen | None = None
     try:
-        proc = subprocess.Popen(
-            [sys.executable, str(FIXTURE_HOST_SCRIPT), "--nonce", nonce],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
+        proc = launch_owned_fixture(
+            FIXTURE_HOST_SCRIPT,
+            nonce=nonce,
         )
         window_ref, error = await _find_exact_fixture_window(runtime, context, title)
         if window_ref is None:
@@ -227,13 +232,7 @@ async def _run_once(model_dir: str) -> dict:
         return result
     finally:
         if proc is not None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-            result["fixture_child_confirmed_exited"] = proc.poll() is not None
+            result["fixture_child_confirmed_exited"] = terminate_owned_fixture(proc)
         await runtime.shutdown()
 
 

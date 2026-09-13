@@ -54,6 +54,11 @@ from pathlib import Path
 REPO_SRC = Path(__file__).resolve().parents[2] / "src"
 if str(REPO_SRC) not in sys.path:
     sys.path.insert(0, str(REPO_SRC))
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from owned_fixture_process import launch_owned_fixture, terminate_owned_fixture
 
 FIXTURE_HOST_SCRIPT = Path(__file__).resolve().with_name("uia_fixture_host.py")
 TEXT_FIXTURE_HOST_SCRIPT = Path(__file__).resolve().with_name("uia_text_fixture_host.py")
@@ -174,9 +179,9 @@ async def _run_owned_fixture_scenarios() -> dict:
     runtime, identity, device, context = await _new_harness()
     proc: subprocess.Popen | None = None
     try:
-        proc = subprocess.Popen(
-            [sys.executable, str(FIXTURE_HOST_SCRIPT), "--nonce", nonce],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
+        proc = launch_owned_fixture(
+            FIXTURE_HOST_SCRIPT,
+            nonce=nonce,
         )
         window_ref, error = await _find_exact_fixture_window(runtime, context, title)
         if window_ref is None:
@@ -309,13 +314,7 @@ async def _run_owned_fixture_scenarios() -> dict:
         return scenario
     finally:
         if proc is not None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-            scenario["fixture_child_confirmed_exited"] = proc.poll() is not None
+            scenario["fixture_child_confirmed_exited"] = terminate_owned_fixture(proc)
         await runtime.shutdown()
 
 
@@ -337,9 +336,9 @@ async def _run_text_drag_fixture_scenarios() -> dict:
     runtime, identity, device, context = await _new_harness()
     proc: subprocess.Popen | None = None
     try:
-        proc = subprocess.Popen(
-            [sys.executable, str(TEXT_FIXTURE_HOST_SCRIPT), "--nonce", nonce],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
+        proc = launch_owned_fixture(
+            TEXT_FIXTURE_HOST_SCRIPT,
+            nonce=nonce,
         )
         window_ref, error = await _find_exact_fixture_window(runtime, context, title)
         if window_ref is None:
@@ -496,13 +495,7 @@ async def _run_text_drag_fixture_scenarios() -> dict:
         return scenario
     finally:
         if proc is not None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-            scenario["fixture_child_confirmed_exited"] = proc.poll() is not None
+            scenario["fixture_child_confirmed_exited"] = terminate_owned_fixture(proc)
         await runtime.shutdown()
 
 
@@ -538,9 +531,10 @@ async def _run_recovery_fixture_scenarios() -> dict:
     runtime, identity, device, context = await _new_harness()
     proc: subprocess.Popen | None = None
     try:
-        proc = subprocess.Popen(
-            [sys.executable, str(RECOVERY_FIXTURE_HOST_SCRIPT), "--nonce", nonce],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True, text=True,
+        proc = launch_owned_fixture(
+            RECOVERY_FIXTURE_HOST_SCRIPT,
+            nonce=nonce,
+            stdin_pipe=True,
         )
         window_ref, error = await _find_exact_fixture_window(runtime, context, title)
         if window_ref is None:
@@ -645,13 +639,7 @@ async def _run_recovery_fixture_scenarios() -> dict:
                     proc.stdin.close()
                 except OSError:
                     pass
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-            scenario["fixture_child_confirmed_exited"] = proc.poll() is not None
+            scenario["fixture_child_confirmed_exited"] = terminate_owned_fixture(proc)
         await runtime.shutdown()
 
 
@@ -691,9 +679,11 @@ async def _run_non_primary_monitor_scenario() -> dict:
     runtime, identity, device, context = await _new_harness()
     proc: subprocess.Popen | None = None
     try:
-        proc = subprocess.Popen(
-            [sys.executable, str(FIXTURE_HOST_SCRIPT), "--nonce", nonce, "--x", str(target_x), "--y", "100"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
+        proc = launch_owned_fixture(
+            FIXTURE_HOST_SCRIPT,
+            nonce=nonce,
+            x=target_x,
+            y=100,
         )
         window_ref, error = await _find_exact_fixture_window(runtime, context, title)
         if window_ref is None:
@@ -722,13 +712,7 @@ async def _run_non_primary_monitor_scenario() -> dict:
         return scenario
     finally:
         if proc is not None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-            scenario["fixture_child_confirmed_exited"] = proc.poll() is not None
+            scenario["fixture_child_confirmed_exited"] = terminate_owned_fixture(proc)
         await runtime.shutdown()
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import importlib.util
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -29,6 +30,7 @@ OCR_FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_ocr_fixture_host.p
 OCR_ACCEPTANCE_RUNNER_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "ocr_visual_acceptance.py"
 PROVISION_SCRIPT = REPO_ROOT / "scripts" / "setup" / "provision_easyocr_models.py"
 RECOVERY_FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_recovery_fixture_host.py"
+OWNED_PROCESS_HELPER = REPO_ROOT / "scripts" / "phase18" / "owned_fixture_process.py"
 
 
 def _load_module(path: Path, name: str):
@@ -80,16 +82,146 @@ class OwnedFixtureSourceSafetyTests(unittest.TestCase):
             source = path.read_text(encoding="utf-8")
             self.assertNotIn("uia_fixture_host", source, f"unexpected reference in {path}")
             self.assertNotIn("uia_text_fixture_host", source, f"unexpected reference in {path}")
+            self.assertNotIn("owned_fixture_process", source, f"unexpected reference in {path}")
             self.assertNotIn("scripts.phase18", source, f"unexpected reference in {path}")
 
     def test_runner_and_fixture_are_syntactically_standalone_scripts(self) -> None:
         # Confirms these parse as plain scripts (no package-relative imports
         # that would only work if pulled into the production package).
-        for script in (RUNNER_SCRIPT, FIXTURE_SCRIPT, TEXT_FIXTURE_SCRIPT):
+        for script in (RUNNER_SCRIPT, FIXTURE_SCRIPT, TEXT_FIXTURE_SCRIPT, OWNED_PROCESS_HELPER):
             tree = ast.parse(script.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and node.level and node.level > 0:
                     self.fail(f"{script.name} uses a relative import, unexpected for a standalone dev script")
+
+
+class OwnedFixtureLaunchBoundaryTests(unittest.TestCase):
+    """Batch 07 Milestone 0: every disposable physical target crosses one
+    repository-owned launch boundary instead of accepting an arbitrary
+    executable command line."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.module = _load_module(OWNED_PROCESS_HELPER, "phase18_owned_fixture_process_test_target")
+
+    def test_allowlisted_launch_uses_current_interpreter_and_exact_fixture(self) -> None:
+        sentinel = object()
+        with unittest.mock.patch.object(self.module.subprocess, "Popen", return_value=sentinel) as popen:
+            result = self.module.launch_owned_fixture(FIXTURE_SCRIPT, nonce="00000000-0000-4000-8000-000000000001")
+
+        self.assertIs(result, sentinel)
+        argv = popen.call_args.args[0]
+        self.assertEqual(argv[0], sys.executable)
+        self.assertEqual(Path(argv[1]).resolve(), FIXTURE_SCRIPT.resolve())
+        self.assertEqual(argv[2:], ["--nonce", "00000000-0000-4000-8000-000000000001"])
+        self.assertEqual(popen.call_args.kwargs["stdin"], self.module.subprocess.DEVNULL)
+        self.assertEqual(popen.call_args.kwargs["stdout"], self.module.subprocess.DEVNULL)
+        self.assertEqual(popen.call_args.kwargs["stderr"], self.module.subprocess.DEVNULL)
+
+    def test_only_the_recovery_fixture_may_receive_a_private_stdin_pipe(self) -> None:
+        with self.assertRaises(self.module.OwnedFixtureError):
+            self.module.launch_owned_fixture(
+                FIXTURE_SCRIPT,
+                nonce="00000000-0000-4000-8000-000000000001",
+                stdin_pipe=True,
+            )
+
+        sentinel = object()
+        with unittest.mock.patch.object(self.module.subprocess, "Popen", return_value=sentinel) as popen:
+            result = self.module.launch_owned_fixture(
+                RECOVERY_FIXTURE_SCRIPT,
+                nonce="00000000-0000-4000-8000-000000000001",
+                stdin_pipe=True,
+            )
+
+        self.assertIs(result, sentinel)
+        self.assertEqual(popen.call_args.kwargs["stdin"], self.module.subprocess.PIPE)
+        self.assertEqual(popen.call_args.kwargs["stdout"], self.module.subprocess.DEVNULL)
+        self.assertEqual(popen.call_args.kwargs["stderr"], self.module.subprocess.DEVNULL)
+        self.assertTrue(popen.call_args.kwargs["text"])
+
+    def test_rejects_absolute_path_outside_fixture_area(self) -> None:
+        with self.assertRaises(self.module.OwnedFixtureError):
+            self.module.resolve_owned_fixture(Path(sys.executable))
+
+    def test_rejects_owner_application_name_even_inside_fixture_directory(self) -> None:
+        with self.assertRaises(self.module.OwnedFixtureError):
+            self.module.resolve_owned_fixture(self.module.FIXTURE_ROOT / "notepad.exe")
+
+    def test_rejects_non_allowlisted_script_inside_fixture_directory(self) -> None:
+        with self.assertRaises(self.module.OwnedFixtureError):
+            self.module.resolve_owned_fixture(self.module.FIXTURE_ROOT / "developer_probe.py")
+
+    def test_cleanup_targets_only_the_exact_child_and_uses_kill_fallback(self) -> None:
+        class _FakeChild:
+            pid = 12345
+
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+                self.killed = False
+
+            def poll(self):
+                self.calls.append("poll")
+                return None if not self.killed else 0
+
+            def terminate(self) -> None:
+                self.calls.append("terminate")
+
+            def wait(self, timeout: float) -> None:
+                self.calls.append("wait")
+                if not self.killed:
+                    raise subprocess.TimeoutExpired("owned-fixture", timeout)
+
+            def kill(self) -> None:
+                self.calls.append("kill")
+                self.killed = True
+
+        child = _FakeChild()
+        unrelated = _FakeChild()
+
+        self.assertTrue(self.module.terminate_owned_fixture(child, timeout=0.01))
+        self.assertEqual(child.calls, ["poll", "terminate", "wait", "kill", "wait", "poll"])
+        self.assertEqual(unrelated.calls, [])
+
+    def test_physical_runners_route_launch_and_cleanup_through_helper(self) -> None:
+        for script in (RUNNER_SCRIPT, OCR_ACCEPTANCE_RUNNER_SCRIPT):
+            tree = ast.parse(script.read_text(encoding="utf-8"))
+            direct_popen_calls = [
+                node for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "Popen"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "subprocess"
+            ]
+            self.assertEqual(direct_popen_calls, [], f"direct physical launch remains in {script.name}")
+            source = script.read_text(encoding="utf-8")
+            self.assertIn("launch_owned_fixture(", source)
+            self.assertIn("terminate_owned_fixture(", source)
+
+    def test_allowlist_covers_only_the_current_owned_fixture_hosts(self) -> None:
+        self.assertEqual(
+            self.module.ALLOWED_FIXTURE_NAMES,
+            frozenset({
+                FIXTURE_SCRIPT.name,
+                TEXT_FIXTURE_SCRIPT.name,
+                OCR_FIXTURE_SCRIPT.name,
+                RECOVERY_FIXTURE_SCRIPT.name,
+            }),
+        )
+
+    def test_active_physical_runners_have_no_broad_process_kill(self) -> None:
+        for script in (RUNNER_SCRIPT, OCR_ACCEPTANCE_RUNNER_SCRIPT):
+            tree = ast.parse(script.read_text(encoding="utf-8"))
+            module_docstring = ast.get_docstring(tree) or ""
+            executable_source = script.read_text(encoding="utf-8").replace(module_docstring, "")
+            self.assertNotIn("taskkill", executable_source.casefold(), script.name)
+
+    def test_physical_window_discovery_requires_exact_nonce_title(self) -> None:
+        for script in (RUNNER_SCRIPT, OCR_ACCEPTANCE_RUNNER_SCRIPT):
+            source = script.read_text(encoding="utf-8")
+            self.assertIn('w.get("title") == title', source, script.name)
+            self.assertNotIn("startswith(title)", source, script.name)
 
 
 class OcrBenchmarkSourceSafetyTests(unittest.TestCase):
@@ -286,8 +418,7 @@ class OwnedFixtureRunnerLogicTests(unittest.IsolatedAsyncioTestCase):
 
     def test_cleanup_uses_exact_pid_terminate_not_broad_kill(self) -> None:
         source = RUNNER_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("proc.terminate()", source)
-        self.assertIn("proc.wait(", source)
+        self.assertIn("terminate_owned_fixture(proc)", source)
 
 
 class OcrFixtureSourceSafetyTests(unittest.TestCase):
@@ -364,8 +495,7 @@ class OcrFixtureSourceSafetyTests(unittest.TestCase):
         module_docstring = ast.get_docstring(tree) or ""
         source_without_docstring = OCR_ACCEPTANCE_RUNNER_SCRIPT.read_text(encoding="utf-8").replace(module_docstring, "")
         self.assertNotIn("taskkill", source_without_docstring.casefold())
-        self.assertIn("proc.terminate()", source_without_docstring)
-        self.assertIn("proc.wait(", source_without_docstring)
+        self.assertIn("terminate_owned_fixture(proc)", source_without_docstring)
 
     def test_runner_never_reads_owner_clipboard(self) -> None:
         source = OCR_ACCEPTANCE_RUNNER_SCRIPT.read_text(encoding="utf-8").casefold()
@@ -438,8 +568,7 @@ class RecoveryFixtureSourceSafetyTests(unittest.TestCase):
         start = source.index("async def _run_recovery_fixture_scenarios")
         end = source.index("\n\n\n", start)
         scenario_source = source[start:end]
-        self.assertIn("proc.terminate()", scenario_source)
-        self.assertIn("proc.wait(", scenario_source)
+        self.assertIn("terminate_owned_fixture(proc)", scenario_source)
         self.assertIn("fixture_child_confirmed_exited", scenario_source)
 
 
