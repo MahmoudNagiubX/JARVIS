@@ -62,7 +62,7 @@ Added regression coverage in `tests/test_phase_eighteen_owned_fixture.py` for he
 - Static search found the only executable `subprocess.Popen` call in the central helper; active physical runners contain no direct launch call, no broad `taskkill`, and no forbidden-app command.
 - Physical acceptance was not run as part of this safety-only checkpoint; no owner/general application was launched or touched.
 
-**M0 commit:** pending at this report snapshot; the exact SHA will be appended after commit creation.
+**M0 commit:** `8cdb77515cfbe296281248a4c36461cbd0e17779` (`fix: harden owned physical acceptance boundaries`).
 **M0 push:** pending.
 
 ## 3. Milestones still pending
