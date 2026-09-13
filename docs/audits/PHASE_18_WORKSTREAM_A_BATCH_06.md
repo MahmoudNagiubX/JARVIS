@@ -3,7 +3,7 @@
 
 **Task:** `tasks/PHASE_18_WORKSTREAM_A_BATCH_06_MASTER_TASK.md` (pasted in full by the requester)
 **Branch:** `feature/phase-18-computer-use-v2`
-**Status:** IN PROGRESS — Milestone 0 complete, Milestones 1/2 not yet started.
+**Status:** IN PROGRESS — Milestones 0 and 1 complete and pushed, Milestone 2 not yet started.
 
 Batch 05's independent verdict was `BATCH05_NEEDS_FIX` (R18B05-001/002/003). Batch 05's implementation was **not** rolled back - it remains the working base this batch hardens.
 
@@ -81,4 +81,61 @@ This is the single report for the whole batch; it is appended to, not duplicated
 
 No R18B05-001 boundary remains open. Milestone 0 is green.
 
-**Commit:** see the final commit-chain table in this report's closing section for the exact pushed SHA (a self-referencing hash cannot be embedded before the commit itself is made).
+**Commit:** `04904b3b8f5639bb566fa95bf8739364c54cc742`
+**Push:** `feature/phase-18-computer-use-v2` (`a5d37da..04904b3`) — pushed.
+
+---
+
+## 3. Milestone 1 — Arabic/mixed physical OCR acceptance
+
+### 3.1 Third owned fixture
+
+`scripts/phase18/uia_ocr_fixture_host.py` (new) - a JARVIS-owned, standalone Win32 process (stdlib `ctypes`+`user32.dll` only, no third-party GUI framework), matching the exact safety discipline of the first two fixtures: fresh nonce window title (`JARVIS-CUV2-OCR-FIXTURE-<uuid>`), no network/clipboard/file-dialog calls, never imported by production. Unlike the first two fixtures it carries **no actuation surface at all** - every control is a plain STATIC/TextControl label, read only through `computer.visual.read` and, for cross-checking, `computer.semantic.read`. Labels:
+
+- `"JARVIS OCR fixture ready"` (English)
+- `"مرحبا يا جارفيس"` (Arabic-only, "Hello JARVIS")
+- `"الإعدادات"` (Arabic-only, "Settings")
+- `"JARVIS الإعدادات"` (mixed Latin+Arabic)
+- `"JARVIS OCR FIXTURE"` (English-only, cross-check)
+
+These are plain Python `str` literals containing real Arabic Unicode codepoints in ordinary logical order, passed straight through `SetWindowTextW`'s `LPCWSTR` marshaling - no reshaping/bidi library on the JARVIS side, deliberately, because a live Win32 STATIC control's own rendering already goes through Windows' own Uniscribe/DirectWrite shaping engine (the exact pipeline an *offline* PIL-rendered PNG, Batch 04/05's benchmark fixture, does not have without an explicit shaping library). A source-safety test (`tests/test_phase_eighteen_owned_fixture.py::OcrFixtureSourceSafetyTests::test_fixture_uses_real_arabic_unicode_not_a_latin_transliteration`) asserts every character in the Arabic-only labels falls in the Arabic Unicode block, guarding against an accidental future substitution.
+
+Visually confirmed before any OCR was run: a real screenshot of the live fixture window shows all 5 labels rendered correctly, with both Arabic labels properly joined and right-to-left (the screenshot itself was deleted immediately after visual confirmation - not committed, not retained, contained only JARVIS-authored fixture text).
+
+### 3.2 Physical acceptance runner
+
+`scripts/phase18/ocr_visual_acceptance.py` (new) - mirrors `computer_use_acceptance.py`'s safety discipline (exact-nonce window matching, exact-PID `Popen.terminate()`/`wait()` cleanup, never an owner app) but drives the **real** `computer.visual.read` tool through a **real** production runtime (`create_runtime(JarvisConfig(ocr_model_dir=<provisioned dir>))`), never a fake reader. Each `computer.visual.read` call runs inside a scoped network guard (`socket.socket.connect` patched to raise if ever invoked, restored immediately after) - proving zero network access, not merely asserting the offline-gate logic looks correct in isolation. Results (including Arabic text) are always written to a UTF-8 JSON file, never printed to the console (the default `cp1252` codec cannot encode Arabic).
+
+Run against the real, disposable-isolated-venv-provisioned model directory (via `scripts/setup/provision_easyocr_models.py`, real EasyOCR 1.7.2 / CPU PyTorch 2.14.0 / `uiautomation` 2.0.29 installed together in one isolated venv - never the project's own `.venv`), **3 clean iterations, no retry-until-green**:
+
+| Label | Script | Exact match | Confidence | Notes |
+|---|---|---|---|---|
+| `مرحبا يا جارفيس` | Arabic-only | **3/3** | 0.745 | Recognized verbatim, byte-for-byte, every run. |
+| `الإعدادات` | Arabic-only | **3/3** | 0.773 | Recognized verbatim, byte-for-byte, every run. |
+| `JARVIS الإعدادات` | Mixed | 0/3 (whole string) | 0.608 | The Arabic portion (`الإعدادات`) recognized correctly inside the same region every run; only the Latin portion misread (`JARVIS`→`JARMIS`). |
+| `JARVIS OCR fixture ready` | English | 0/3 | 0.465 | `JARVIS`→`JARMIS` (V/M confusion), rest correct. |
+| `JARVIS OCR FIXTURE` | English (caps) | 0/3 | 0.151 | Multiple character-level misreads (`A`→`4`, `O`→an Arabic-indic digit, `X`→`S`). |
+
+**This is honest, unmassaged evidence, not a failure of the milestone's actual goal.** The two pure-Arabic labels - the specific thing Batch 05's recommended follow-up flagged as unproven through a live GUI - are recognized perfectly, consistently, with good confidence, through the real production pipeline. The English-side character-level weakness is a genuine, now-directly-observed characteristic of EasyOCR's combined bilingual `arabic_g1` recognition network (which prioritizes the non-Latin script) - already an accepted trade-off under DEC-048 (whose own gates were normalized recall, not exact string match), not a regression, and not something this report retried or reshaped fixture content to hide.
+
+**`ocr_element` crop-boundary finding:** cropping tightly to just the Arabic-greeting element's UIA bounds caused EasyOCR's own CRAFT text detector to segment the 3-word line into 2 separate regions (`"جارفيس"` at 0.998 confidence, `"مرحبا"` at 0.994 confidence) instead of one combined line - both fragments individually correct and higher-confidence than the whole-line detection, but the strict single-region exact-match check used for `ocr_window` above reports this as "no match" for `ocr_element`. This is a text-detection segmentation artifact of tight cropping, not a recognition-accuracy problem, and is recorded here rather than worked around.
+
+**Latency:** each of the 3 runs constructs a brand-new runtime (never reusing a prior run's already-loaded model), so `ocr_window`'s reported 4.95-5.25s is a **cold** figure (one-time `Reader()` construction, independently measured at ~2.1s, plus first-call inference over 6 detected regions). The immediately-following `ocr_element` call within the *same* run (same already-loaded reader) completed in 250-276ms - genuine **warm** latency, comfortably under DEC-048's 3s gate.
+
+**Model readiness / no-download proof:** `EasyOcrVisualAdapter._models_ready()` returned `None` (ready) before the first call in every run - the offline gate passed cleanly against the provisioned directory. `network_access_ever_attempted` was `false` across all 3 runs (the scoped `socket.socket.connect` guard was never triggered) - the acceptance runner's own JSON output records this directly, not an inferred claim.
+
+### 3.3 Tests
+
+`tests/test_phase_eighteen_owned_fixture.py`'s new `OcrFixtureSourceSafetyTests` class (10 tests): no owner-application dependency in either the fixture or the runner; no network/clipboard/file-dialog calls in the fixture; real Arabic Unicode (not a Latin transliteration) verified character-by-character; neither script imported by production bootstrap or anywhere under `src/`; the provisioning script is never actually `import`ed under `src/` (AST-checked, distinct from being merely documented in a docstring); both scripts parse as standalone dev scripts; exact-PID cleanup, never a broad `taskkill`; no owner clipboard ever read.
+
+### 3.4 Verification
+
+- `python -m pytest tests/test_phase_eighteen_owned_fixture.py -q` → **30 passed** (20 pre-existing + 10 new).
+- `python -m pytest tests -k "file_access or phase_eighteen or ocr" -q` → **291 passed, 3 skipped, 515 deselected**.
+- `python -m pytest tests -q` (full regression) → **806 passed, 3 skipped, 36 subtests passed** in 226.65s (796 + 10 new fixture-source-safety tests).
+- `python -m compileall src tests scripts -q` → clean, no errors.
+- `git diff --check` → clean, no whitespace errors.
+
+GAP-0103 remains `PARTIAL` (still read-only, no visual actuation) - the previously-flagged missing unified live-GUI Arabic physical evidence gap is now closed. DEC-048 is unchanged (EasyOCR 1.7.2 remains accepted); its evidence entry is hardened with the offline/reproducibility/physical-Arabic details above.
+
+**Commit:** `7474d03742693b46d316adfde7b952bcf2e92bce`

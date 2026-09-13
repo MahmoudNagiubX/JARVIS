@@ -25,6 +25,9 @@ RUNNER_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "computer_use_acceptance.py"
 FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_fixture_host.py"
 TEXT_FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_text_fixture_host.py"
 OCR_BENCHMARK_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "ocr_backend_benchmark.py"
+OCR_FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_ocr_fixture_host.py"
+OCR_ACCEPTANCE_RUNNER_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "ocr_visual_acceptance.py"
+PROVISION_SCRIPT = REPO_ROOT / "scripts" / "setup" / "provision_easyocr_models.py"
 
 
 def _load_module(path: Path, name: str):
@@ -278,6 +281,93 @@ class OwnedFixtureRunnerLogicTests(unittest.IsolatedAsyncioTestCase):
         source = RUNNER_SCRIPT.read_text(encoding="utf-8")
         self.assertIn("proc.terminate()", source)
         self.assertIn("proc.wait(", source)
+
+
+class OcrFixtureSourceSafetyTests(unittest.TestCase):
+    """Batch 06 Milestone 1: the third owned fixture (OCR/visual
+    acceptance) and its dedicated physical runner carry the same safety
+    discipline as the first two fixtures - JARVIS-owned child process only,
+    no owner app/file/network/clipboard, exact-PID cleanup, never imported
+    by production, and real Arabic Unicode (never a Latin transliteration)."""
+
+    def test_fixture_host_has_no_owner_application_dependency(self) -> None:
+        source = OCR_FIXTURE_SCRIPT.read_text(encoding="utf-8").casefold()
+        for forbidden in ("msedge", "notepad.exe", "calc.exe", "chrome.exe"):
+            self.assertNotIn(forbidden, source)
+
+    def test_fixture_host_has_no_network_clipboard_or_file_dialog_calls(self) -> None:
+        # The docstring itself says "no network, no clipboard" (prose
+        # explaining what this fixture deliberately does NOT do) - only the
+        # executable source below it is checked.
+        tree = ast.parse(OCR_FIXTURE_SCRIPT.read_text(encoding="utf-8"))
+        module_docstring = ast.get_docstring(tree) or ""
+        source = OCR_FIXTURE_SCRIPT.read_text(encoding="utf-8")
+        source_without_docstring = source.replace(module_docstring, "").casefold()
+        for forbidden in ("socket", "urllib", "http", "getopenfilename", "getsavefilename", "clipboard", "openclipboard"):
+            self.assertNotIn(forbidden, source_without_docstring)
+
+    def test_fixture_uses_real_arabic_unicode_not_a_latin_transliteration(self) -> None:
+        module = _load_module(OCR_FIXTURE_SCRIPT, "jarvis_test_ocr_fixture_host")
+        self.assertEqual(module.LABEL_ARABIC_GREETING, "مرحبا يا جارفيس")
+        self.assertEqual(module.LABEL_ARABIC_SETTINGS, "الإعدادات")
+        self.assertEqual(module.LABEL_MIXED_SETTINGS, "JARVIS الإعدادات")
+        # Every character in the Arabic-only labels must actually fall in
+        # the Arabic Unicode block - guards against an accidental future
+        # substitution with a Latin transliteration ("marhaban ya jarvis").
+        for char in module.LABEL_ARABIC_GREETING.replace(" ", ""):
+            self.assertTrue("؀" <= char <= "ۿ", f"unexpected non-Arabic character {char!r}")
+        for char in module.LABEL_ARABIC_SETTINGS.replace(" ", ""):
+            self.assertTrue("؀" <= char <= "ۿ", f"unexpected non-Arabic character {char!r}")
+
+    def test_fixture_not_imported_by_production_bootstrap(self) -> None:
+        bootstrap_source = (REPO_ROOT / "src" / "jarvis" / "bootstrap.py").read_text(encoding="utf-8")
+        self.assertNotIn("uia_ocr_fixture_host", bootstrap_source)
+        self.assertNotIn("ocr_visual_acceptance", bootstrap_source)
+
+    def test_fixture_and_runner_not_imported_anywhere_under_src(self) -> None:
+        for path in (REPO_ROOT / "src").rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("uia_ocr_fixture_host", source, f"unexpected reference in {path}")
+            self.assertNotIn("ocr_visual_acceptance", source, f"unexpected reference in {path}")
+
+    def test_provisioning_script_never_actually_imported_under_src(self) -> None:
+        # `provision_easyocr_models` IS legitimately mentioned in prose
+        # inside `visual_ocr.py`'s own docstring/comments (pointing a
+        # developer at the setup step) - the property that actually matters
+        # is that no `import` statement anywhere under src/ ever references
+        # it, not that the name is never written down.
+        for path in (REPO_ROOT / "src").rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        self.assertNotIn("provision_easyocr_models", alias.name, f"unexpected import in {path}")
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    self.assertNotIn("provision_easyocr_models", node.module, f"unexpected import in {path}")
+
+    def test_scripts_are_syntactically_standalone(self) -> None:
+        for script in (OCR_FIXTURE_SCRIPT, OCR_ACCEPTANCE_RUNNER_SCRIPT, PROVISION_SCRIPT):
+            tree = ast.parse(script.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.level and node.level > 0:
+                    self.fail(f"{script.name} uses a relative import, unexpected for a standalone dev script")
+
+    def test_runner_cleanup_uses_exact_pid_not_broad_taskkill(self) -> None:
+        tree = ast.parse(OCR_ACCEPTANCE_RUNNER_SCRIPT.read_text(encoding="utf-8"))
+        module_docstring = ast.get_docstring(tree) or ""
+        source_without_docstring = OCR_ACCEPTANCE_RUNNER_SCRIPT.read_text(encoding="utf-8").replace(module_docstring, "")
+        self.assertNotIn("taskkill", source_without_docstring.casefold())
+        self.assertIn("proc.terminate()", source_without_docstring)
+        self.assertIn("proc.wait(", source_without_docstring)
+
+    def test_runner_never_reads_owner_clipboard(self) -> None:
+        source = OCR_ACCEPTANCE_RUNNER_SCRIPT.read_text(encoding="utf-8").casefold()
+        self.assertNotIn("clipboard", source)
+
+    def test_runner_has_no_owner_application_dependency(self) -> None:
+        source = OCR_ACCEPTANCE_RUNNER_SCRIPT.read_text(encoding="utf-8").casefold()
+        for forbidden in ("msedge", "notepad.exe", "calc.exe", "chrome.exe", "explorer.exe"):
+            self.assertNotIn(forbidden, source)
 
 
 if __name__ == "__main__":
