@@ -315,6 +315,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     file_access_policy = FileAccessPolicy.from_config_roots(config.file_access_roots)
     local_computer_controller = WindowsNativeComputerController(
         perception_provider=windows_perception_provider, file_access_policy=file_access_policy,
+        ocr_model_dir=config.ocr_model_dir,
     )
     satellite_computer_controller = WindowsComputerController(satellite)
     computer_router = ComputerExecutionRouter(local_computer_controller, satellite_computer_controller)

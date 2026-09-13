@@ -14,20 +14,30 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 from jarvis.authority.identity.service import EnrollmentGrant
 from jarvis.bootstrap import create_runtime
 from jarvis.config import JarvisConfig
+from jarvis.computer import visual_ocr as visual_ocr_module
 from jarvis.computer.visual_ocr import (
     MAX_REGIONS,
     MAX_TEXT_PER_REGION,
     MAX_TOTAL_TEXT,
+    OCR_DETECTION_MODEL_FILENAME,
+    OCR_RECOGNITION_MODEL_FILENAME,
     VISUAL_REF_TTL_SECONDS,
     EasyOcrVisualAdapter,
 )
 from jarvis.contracts import ComputerAction, ToolContext
 from jarvis.contracts.perception import VisualRegion
 from jarvis.contracts.semantic_ui import SemanticBounds, SemanticElementSnapshot, SemanticResult
+
+
+def _unreachable_reader(*_args: object, **_kwargs: object) -> None:
+    raise AssertionError("Reader() must never be constructed when required OCR models are unavailable")
 
 
 def _snapshot(
@@ -478,6 +488,127 @@ class ApprovalAndRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         # Should not raise - the bounded message is still valid, parseable
         # content even when it had to be truncated.
         self.assertIsInstance(message, str)
+
+
+class OfflineModelProvisioningTests(unittest.IsolatedAsyncioTestCase):
+    """Batch 06 (R18B05-001): production OCR initialization must be
+    offline-only - `download_enabled=False` is always passed, there is no
+    implicit `~/.EasyOCR` fallback, and both required model weight files
+    must already exist on disk before the real `Reader()` is ever
+    constructed. Every test here stands in for the real `easyocr` package
+    by patching `jarvis.computer.visual_ocr._easyocr` directly (this
+    deterministic suite does not require the optional dependency to be
+    installed) - `_unreachable_reader` proves a code path never even
+    attempts construction at all."""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory(prefix="jarvis_ocr_models_test_")
+        self.addCleanup(self._tmp.cleanup)
+        self.model_root = Path(self._tmp.name)
+
+    def _provision_valid_models(self) -> None:
+        model_dir = self.model_root / "model"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        (self.model_root / "user_network").mkdir(parents=True, exist_ok=True)
+        (model_dir / OCR_DETECTION_MODEL_FILENAME).write_bytes(b"fake-detection-weights")
+        (model_dir / OCR_RECOGNITION_MODEL_FILENAME).write_bytes(b"fake-recognition-weights")
+
+    async def test_production_reader_factory_passes_offline_config(self) -> None:
+        self._provision_valid_models()
+        recorded: list[dict[str, object]] = []
+
+        def recording_reader(*args: object, **kwargs: object) -> _FakeReader:
+            recorded.append({"args": args, "kwargs": kwargs})
+            return _FakeReader()
+
+        with mock.patch.object(visual_ocr_module, "_easyocr", SimpleNamespace(Reader=recording_reader)):
+            adapter = EasyOcrVisualAdapter(_FakeWindowProvider(), _FakeSemanticAdapter(), model_dir=str(self.model_root))
+            self.assertTrue(adapter.available)
+            reader = adapter._default_reader_factory()
+        self.assertIsInstance(reader, _FakeReader)
+        self.assertEqual(len(recorded), 1)
+        kwargs = recorded[0]["kwargs"]
+        self.assertEqual(kwargs["download_enabled"], False)
+        self.assertEqual(kwargs["model_storage_directory"], str(self.model_root / "model"))
+        self.assertEqual(kwargs["user_network_directory"], str(self.model_root / "user_network"))
+        self.assertEqual(recorded[0]["args"][0], ["ar", "en"])
+
+    async def test_ocr_window_never_constructs_reader_when_model_dir_unconfigured(self) -> None:
+        provider = _FakeWindowProvider()
+        with mock.patch.object(visual_ocr_module, "_easyocr", SimpleNamespace(Reader=_unreachable_reader)):
+            adapter = EasyOcrVisualAdapter(provider, _FakeSemanticAdapter(), model_dir=None)
+            self.assertTrue(adapter.available)
+            result = await adapter.ocr_window("window-1")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "visual_ocr_models_unavailable")
+        self.assertEqual(provider.captured_calls, [])  # capture never even attempted
+
+    async def test_no_implicit_home_directory_fallback_for_empty_model_dir(self) -> None:
+        with mock.patch.object(visual_ocr_module, "_easyocr", SimpleNamespace(Reader=_unreachable_reader)):
+            adapter = EasyOcrVisualAdapter(_FakeWindowProvider(), _FakeSemanticAdapter(), model_dir="")
+            result = await adapter.ocr_window("window-1")
+        self.assertEqual(result.error_code, "visual_ocr_models_unavailable")
+
+    async def test_ocr_window_fails_closed_when_model_directory_absent(self) -> None:
+        missing_root = self.model_root / "does-not-exist"
+        with mock.patch.object(visual_ocr_module, "_easyocr", SimpleNamespace(Reader=_unreachable_reader)):
+            adapter = EasyOcrVisualAdapter(_FakeWindowProvider(), _FakeSemanticAdapter(), model_dir=str(missing_root))
+            result = await adapter.ocr_window("window-1")
+        self.assertEqual(result.error_code, "visual_ocr_models_unavailable")
+
+    async def test_ocr_window_fails_closed_when_a_required_model_file_is_missing(self) -> None:
+        model_dir = self.model_root / "model"
+        model_dir.mkdir(parents=True)
+        (self.model_root / "user_network").mkdir(parents=True)
+        (model_dir / OCR_DETECTION_MODEL_FILENAME).write_bytes(b"present")
+        # OCR_RECOGNITION_MODEL_FILENAME deliberately left absent.
+        with mock.patch.object(visual_ocr_module, "_easyocr", SimpleNamespace(Reader=_unreachable_reader)):
+            adapter = EasyOcrVisualAdapter(_FakeWindowProvider(), _FakeSemanticAdapter(), model_dir=str(self.model_root))
+            result = await adapter.ocr_window("window-1")
+        self.assertEqual(result.error_code, "visual_ocr_models_unavailable")
+
+    async def test_ocr_element_fails_closed_before_any_semantic_resolution(self) -> None:
+        calls: list[str] = []
+
+        class _CountingSemantic:
+            async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+                calls.append(element_ref)
+                return SemanticResult("succeeded", {"element": _snapshot(element_ref)})
+
+        with mock.patch.object(visual_ocr_module, "_easyocr", SimpleNamespace(Reader=_unreachable_reader)):
+            adapter = EasyOcrVisualAdapter(_FakeWindowProvider(), _CountingSemantic(), model_dir=None)  # type: ignore[arg-type]
+            result = await adapter.ocr_element("element-1")
+        self.assertEqual(result.error_code, "visual_ocr_models_unavailable")
+        self.assertEqual(calls, [])
+
+    async def test_corrupt_model_file_fails_closed_without_redownload(self) -> None:
+        self._provision_valid_models()
+
+        def raising_reader(*_args: object, **kwargs: object) -> None:
+            # Mirrors real EasyOCR's own behavior for a checksum mismatch
+            # with `download_enabled=False`: `FileNotFoundError`, never a
+            # download attempt.
+            assert kwargs.get("download_enabled") is False
+            raise FileNotFoundError("MD5 mismatch for arabic.pth and downloads disabled")
+
+        provider = _FakeWindowProvider()
+        with mock.patch.object(visual_ocr_module, "_easyocr", SimpleNamespace(Reader=raising_reader)):
+            adapter = EasyOcrVisualAdapter(provider, _FakeSemanticAdapter(), model_dir=str(self.model_root))
+            result = await adapter.ocr_window("window-1")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "visual_ocr_models_unavailable")
+
+    async def test_injected_test_reader_factory_bypasses_the_offline_gate(self) -> None:
+        # A test-injected fake reader is never the real EasyOCR package, so
+        # it must not be blocked by the model-directory gate even when no
+        # `model_dir` is configured - this is the existing, already-proven
+        # test pattern used throughout the rest of this file.
+        adapter = _adapter(_FakeWindowProvider(), _FakeSemanticAdapter(), _FakeReader())
+        self.assertIsNone(adapter.model_dir)
+        result = await adapter.ocr_window("window-1")
+        self.assertEqual(result.status, "succeeded")
 
 
 if __name__ == "__main__":

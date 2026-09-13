@@ -228,6 +228,22 @@ _RECOVERABLE_GROUND_ERRORS = frozenset({
 })
 
 
+@dataclass(slots=True)
+class _RecoveryBudget:
+    """Batch 06 (R18B05-003): one bounded recovery attempt per *action*, not
+    per grounding call. `drag_element_to_element` grounds the dual-target
+    pair twice - once before focus, once again after focus can change
+    layout - and each of those two calls used to own its own independent
+    one-retry allowance, so a single drag request could consume up to two
+    separate recovery cycles. A single `_RecoveryBudget` instance, created
+    once per action and threaded through both grounding calls, closes that
+    gap: whichever of the two grounding calls hits a recoverable error
+    first spends the one allowed retry, and the other call sees `used=True`
+    and returns its raw error immediately, no bounded second chance."""
+
+    used: bool = False
+
+
 def _drag_interpolation_steps(start: tuple[int, int], end: tuple[int, int]) -> list[tuple[int, int]]:
     """Fixed, deterministic linear interpolation from `start` to `end` in
     `DRAG_INTERPOLATION_STEPS` bounded points (last point lands exactly on
@@ -451,7 +467,14 @@ class WindowsNativeInputAdapter:
         later, separately reviewed batch."""
         if not self.available:
             return NativeInputResult("failed", {}, "native_input_unavailable")
-        source, target, error = await self._ground_drag_pair_with_recovery(source_element_ref, target_element_ref)
+        # Batch 06 (R18B05-003): one shared budget for the whole action -
+        # both the pre-focus and post-focus grounding calls below draw from
+        # it, so this drag can consume at most one bounded recovery cycle
+        # in total, never one per call.
+        recovery_budget = _RecoveryBudget()
+        source, target, error = await self._ground_drag_pair_with_recovery(
+            source_element_ref, target_element_ref, recovery_budget,
+        )
         if error is not None:
             return NativeInputResult(_status_for(error), {}, error)
         assert source is not None and target is not None
@@ -461,8 +484,12 @@ class WindowsNativeInputAdapter:
             return NativeInputResult("failed", {}, "window_focus_not_verified")
         # Focus can change layout - re-resolve BOTH endpoints again after
         # focus, never reuse the pre-focus observation (matches the single-
-        # target `_ground()` pattern above).
-        source, target, error = await self._ground_drag_pair_with_recovery(source_element_ref, target_element_ref)
+        # target `_ground()` pattern above). Same shared budget - if the
+        # pre-focus call above already consumed it, this call gets no
+        # second recovery attempt.
+        source, target, error = await self._ground_drag_pair_with_recovery(
+            source_element_ref, target_element_ref, recovery_budget,
+        )
         if error is not None:
             return NativeInputResult(_status_for(error), {}, error)
         assert source is not None and target is not None
@@ -471,19 +498,23 @@ class WindowsNativeInputAdapter:
         return self._execute_drag(source, target)
 
     async def _ground_drag_pair_with_recovery(
-        self, source_element_ref: str, target_element_ref: str,
+        self, source_element_ref: str, target_element_ref: str, budget: _RecoveryBudget,
     ) -> tuple[_GroundedTarget | None, _GroundedTarget | None, str | None]:
-        """Bounded recovery (GAP-0104, Batch 05 Milestone 2): exactly one
-        additional fresh OBSERVE/re-ground attempt of the whole dual-target
-        pipeline, and only when the first attempt failed for a plausibly
+        """Bounded recovery (GAP-0104, Batch 05 Milestone 2; action-scoped
+        per R18B05-003, Batch 06): exactly one additional fresh OBSERVE/
+        re-ground attempt of the whole dual-target pipeline, across BOTH
+        calls this method may receive for a single `drag_element_to_element`
+        action - and only when the first attempt failed for a plausibly
         transient, pre-input reason (`_RECOVERABLE_GROUND_ERRORS`) - never
         for a policy denial (weak identity/sensitive/cross-window), never
-        more than once, and always entirely before any SendInput call. No
-        LLM-managed counter, no second authority - `_ground_drag_pair`
-        itself is simply given one more try."""
+        more than once per action (`budget.used`), and always entirely
+        before any SendInput call. No LLM-managed counter, no second
+        authority - `_ground_drag_pair` itself is simply given one more try,
+        at most once total, not once per call site."""
         source, target, error = await self._ground_drag_pair(source_element_ref, target_element_ref)
-        if source is not None or error not in _RECOVERABLE_GROUND_ERRORS:
+        if source is not None or error not in _RECOVERABLE_GROUND_ERRORS or budget.used:
             return source, target, error
+        budget.used = True
         return await self._ground_drag_pair(source_element_ref, target_element_ref)
 
     async def _ground_drag_pair(

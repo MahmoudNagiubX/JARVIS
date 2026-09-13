@@ -35,6 +35,20 @@ Deliberately read-only and observation-only this batch:
   lazily and only inside this module - core JARVIS startup and every other
   Computer Use capability work unchanged when it is absent, returning a
   typed `visual_ocr_not_available` result rather than an import crash.
+
+Offline-only by construction (Batch 06, R18B05-001): production
+`Reader()` construction always passes `download_enabled=False` plus an
+explicit, product-owned `model_storage_directory`/`user_network_directory`
+(configured via `JarvisConfig.ocr_model_dir`/`JARVIS_OCR_MODEL_DIR` - never
+EasyOCR's own `~/.EasyOCR` default), and `_models_ready()` verifies both
+required model weight files already exist on disk *before* `Reader()` is
+ever constructed - a read-only, no-approval capability must never be able
+to reach the network or create an implicit cache beneath the owner's home,
+whether because a model is missing or because it never was. Missing/corrupt
+models degrade to a typed `visual_ocr_models_unavailable` result. Model
+acquisition itself is a separate, explicitly-invoked, development/setup-only
+step - see `scripts/setup/provision_easyocr_models.py` - never triggered by
+this module or by core startup.
 """
 
 from __future__ import annotations
@@ -42,6 +56,7 @@ from __future__ import annotations
 import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -62,6 +77,27 @@ MAX_TOTAL_TEXT = 12_000
 # Within the task's reviewed 15-30 second range.
 VISUAL_REF_TTL_SECONDS = 20
 MAX_VISUAL_REFS = 500
+
+# Batch 06 (R18B05-001): the exact two EasyOCR 1.7.2 model weight files a
+# `Reader(["ar", "en"], detect_network="craft")` construction requires -
+# sourced directly from `easyocr.config.detection_models["craft"]` and
+# `easyocr.config.recognition_models["gen1"]["arabic_g1"]` (EasyOCR
+# automatically selects the "arabic_g1" generation-1 recognition network for
+# any lang_list containing "ar", per `Reader.__init__`'s auto-detect
+# branch - see `scripts/setup/provision_easyocr_models.py` for the recorded
+# download URLs/checksums). Both must already exist on disk before
+# `Reader()` is ever constructed - production OCR never downloads anything.
+OCR_DETECTION_MODEL_FILENAME = "craft_mlt_25k.pth"
+OCR_RECOGNITION_MODEL_FILENAME = "arabic.pth"
+
+
+class _OcrModelsUnavailableError(Exception):
+    """Internal-only marker (Batch 06, R18B05-001): raised when the real
+    EasyOCR package itself refuses to proceed without downloading (a
+    corrupt/checksum-mismatched model file, caught here rather than let
+    `FileNotFoundError` surface as a generic inference failure) - always
+    translated to the typed `visual_ocr_models_unavailable` result, never a
+    redownload attempt (`download_enabled=False` is always passed)."""
 
 
 @dataclass(slots=True)
@@ -108,9 +144,12 @@ class EasyOcrVisualAdapter:
         semantic_adapter: SemanticDesktopAdapter,
         *,
         reader_factory: Callable[[], Any] | None = None,
+        model_dir: str | None = None,
     ) -> None:
         self.perception_provider = perception_provider
         self.semantic_adapter = semantic_adapter
+        self.model_dir = model_dir
+        self._using_default_factory = reader_factory is None
         self._reader_factory = reader_factory or self._default_reader_factory
         self._reader: Any | None = None
         # `reader_factory` is only ever injected by tests (a fake OCR
@@ -121,10 +160,53 @@ class EasyOcrVisualAdapter:
         self.available = _easyocr is not None or reader_factory is not None
         self._visual_refs: dict[str, _VisualRefEntry] = {}
 
-    @staticmethod
-    def _default_reader_factory() -> Any:
+    def _models_ready(self) -> str | None:
+        """Fail-closed, offline-only gate (R18B05-001, Batch 06). Returns
+        `None` only when the two required model weight files already exist
+        inside a product-owned, explicitly configured directory - EasyOCR's
+        own `Reader()` construction is never given the chance to create a
+        missing directory (it unconditionally `mkdir`s both
+        `model_storage_directory`/`user_network_directory` if they don't
+        already exist) or attempt a download. A test-injected fake
+        `reader_factory` bypasses this gate entirely - it is never the real
+        EasyOCR package, so there is nothing to check."""
+        if not self._using_default_factory or self._reader is not None:
+            return None
+        if not self.model_dir:
+            return "visual_ocr_models_unavailable"
+        model_root = Path(self.model_dir)
+        model_storage_directory = model_root / "model"
+        user_network_directory = model_root / "user_network"
+        if not model_storage_directory.is_dir() or not user_network_directory.is_dir():
+            return "visual_ocr_models_unavailable"
+        for filename in (OCR_DETECTION_MODEL_FILENAME, OCR_RECOGNITION_MODEL_FILENAME):
+            if not (model_storage_directory / filename).is_file():
+                return "visual_ocr_models_unavailable"
+        return None
+
+    def _default_reader_factory(self) -> Any:
         assert _easyocr is not None
-        return _easyocr.Reader(["ar", "en"], gpu=False, verbose=False)
+        assert self.model_dir  # `_models_ready()` gates every call site before this ever runs
+        model_root = Path(self.model_dir)
+        try:
+            return _easyocr.Reader(
+                ["ar", "en"], gpu=False, verbose=False,
+                model_storage_directory=str(model_root / "model"),
+                user_network_directory=str(model_root / "user_network"),
+                # The single most important line in this module (R18B05-001):
+                # a read-only, no-approval capability must never be able to
+                # reach the network, no matter what state the model
+                # directory is in.
+                download_enabled=False,
+            )
+        except FileNotFoundError as exc:
+            # Defense-in-depth: a file that passed `_models_ready()`'s
+            # existence check but fails EasyOCR's own MD5 integrity check
+            # (corrupt/mismatched) raises exactly this, with
+            # `download_enabled=False` already guaranteeing no redownload
+            # was attempted - translate to the same typed result the caller
+            # already returns for a missing model.
+            raise _OcrModelsUnavailableError(str(exc)) from exc
 
     def _ensure_reader(self) -> Any:
         if self._reader is None:
@@ -134,6 +216,9 @@ class EasyOcrVisualAdapter:
     async def ocr_window(self, window_ref: str) -> VisualResult:
         if not self.available:
             return VisualResult("failed", {}, "visual_ocr_not_available")
+        models_error = self._models_ready()
+        if models_error is not None:
+            return VisualResult("failed", {}, models_error)
         try:
             self.perception_provider.validate_input_window(window_ref)
         except ValueError as exc:
@@ -157,6 +242,8 @@ class EasyOcrVisualAdapter:
 
         try:
             raw_results, origin_x, origin_y = await analyze_and_release(frame, analyze)
+        except _OcrModelsUnavailableError:
+            return VisualResult("failed", {}, "visual_ocr_models_unavailable")
         except Exception as exc:
             return VisualResult("failed", {}, f"visual_ocr_inference_failed:{exc.__class__.__name__}")
 
@@ -166,6 +253,9 @@ class EasyOcrVisualAdapter:
     async def ocr_element(self, element_ref: str) -> VisualResult:
         if not self.available:
             return VisualResult("failed", {}, "visual_ocr_not_available")
+        models_error = self._models_ready()
+        if models_error is not None:
+            return VisualResult("failed", {}, models_error)
         result = await self.semantic_adapter.resolve_actionable_target(element_ref)
         if result.status != "succeeded":
             return VisualResult(_status_for(result.error_code), {}, result.error_code or "uia_target_unavailable")
@@ -193,6 +283,8 @@ class EasyOcrVisualAdapter:
 
         try:
             raw_results = await analyze_and_release(frame, analyze)
+        except _OcrModelsUnavailableError:
+            return VisualResult("failed", {}, "visual_ocr_models_unavailable")
         except Exception as exc:
             return VisualResult("failed", {}, f"visual_ocr_inference_failed:{exc.__class__.__name__}")
 

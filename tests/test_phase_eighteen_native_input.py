@@ -559,6 +559,81 @@ class _FlakyOnceDragSemanticAdapter:
         return SemanticResult("succeeded", {"element": _snapshot(element_ref, "window-1", bounds=bounds)})
 
 
+class _ScriptedSemanticAdapter:
+    """Returns a scripted, non-monotonic sequence of `resolve_actionable_
+    target` outcomes per `element_ref`, consumed in call order (Batch 06,
+    R18B05-003) - lets a test express e.g. "fails, then succeeds, then
+    fails again", which `_FlakyOnceSemanticAdapter`'s simple "fails until
+    call N, then always succeeds" model cannot represent. An `element_ref`
+    with no script configured always succeeds with default bounds."""
+
+    def __init__(self) -> None:
+        self.scripts: dict[str, list[SemanticResult]] = {}
+        self.resolve_calls: dict[str, int] = {}
+
+    async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+        count = self.resolve_calls.get(element_ref, 0)
+        self.resolve_calls[element_ref] = count + 1
+        script = self.scripts.get(element_ref)
+        if not script:
+            return SemanticResult("succeeded", {"element": _snapshot(element_ref, "window-1", bounds=SemanticBounds(0, 0, 20, 20))})
+        return script[min(count, len(script) - 1)]
+
+
+class RecoveryBudgetScopeTests(unittest.IsolatedAsyncioTestCase):
+    """Batch 06 (R18B05-003): `drag_element_to_element` grounds its
+    dual-target pair twice (pre-focus, post-focus) - both calls must share
+    exactly one recovery attempt for the whole action, never one each."""
+
+    async def test_pre_focus_recovery_consumes_the_budget_for_post_focus_too(self) -> None:
+        semantic = _ScriptedSemanticAdapter()
+        semantic.scripts["element-src"] = [
+            SemanticResult("failed", error_code="uia_element_stale"),  # pre-focus attempt 1: fails
+            SemanticResult("succeeded", {"element": _snapshot("element-src", "window-1", bounds=SemanticBounds(0, 0, 20, 20))}),  # pre-focus recovery: succeeds
+            SemanticResult("failed", error_code="uia_element_stale"),  # post-focus attempt: fails again
+        ]
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "uia_element_stale")
+        # 3 calls total for element-src: pre-focus fail + pre-focus recovery
+        # success + post-focus fail with NO further recovery, since the one
+        # shared budget was already spent by the pre-focus cycle.
+        self.assertEqual(semantic.resolve_calls["element-src"], 3)
+
+    async def test_post_focus_recovery_allowed_when_pre_focus_needed_none(self) -> None:
+        semantic = _ScriptedSemanticAdapter()
+        semantic.scripts["element-src"] = [
+            SemanticResult("succeeded", {"element": _snapshot("element-src", "window-1", bounds=SemanticBounds(0, 0, 20, 20))}),  # pre-focus: succeeds immediately
+            SemanticResult("failed", error_code="uia_element_stale"),  # post-focus attempt 1: fails
+            SemanticResult("succeeded", {"element": _snapshot("element-src", "window-1", bounds=SemanticBounds(0, 0, 20, 20))}),  # post-focus recovery: succeeds
+        ]
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "succeeded")
+        # The unused budget from the pre-focus cycle carries over and is
+        # available to the post-focus cycle - exactly one recovery for the
+        # whole action, wherever it ends up being needed.
+        self.assertEqual(semantic.resolve_calls["element-src"], 3)
+
+    async def test_two_sequential_transient_failures_yield_only_one_recovery_and_clean_failure(self) -> None:
+        # Same scenario as the first test above, phrased as the task's own
+        # "recovery budget exhaustion" acceptance case: two transient
+        # grounding failures occur within one logical drag action, and only
+        # one of them may be recovered.
+        semantic = _ScriptedSemanticAdapter()
+        semantic.scripts["element-src"] = [
+            SemanticResult("failed", error_code="uia_element_not_found"),
+            SemanticResult("succeeded", {"element": _snapshot("element-src", "window-1", bounds=SemanticBounds(0, 0, 20, 20))}),
+            SemanticResult("failed", error_code="window_focus_not_verified"),
+        ]
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "window_focus_not_verified")
+        self.assertEqual(semantic.resolve_calls["element-src"], 3)
+
+
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
     """Batch 05 Milestone 2 (GAP-0104): bounded pre-input recovery. Every
     case here proves the recovery cycle happens strictly before any

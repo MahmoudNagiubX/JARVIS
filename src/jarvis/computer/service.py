@@ -63,6 +63,7 @@ class WindowsNativeComputerController:
         native_input_adapter: WindowsNativeInputAdapter | None = None,
         file_access_policy: FileAccessPolicy | None = None,
         visual_ocr_adapter: EasyOcrVisualAdapter | None = None,
+        ocr_model_dir: str | None = None,
     ) -> None:
         self.perception_provider = perception_provider or WindowsDesktopProvider()
         self.semantic_adapter = semantic_adapter or WindowsUIAutomationAdapter(self.perception_provider)
@@ -74,7 +75,9 @@ class WindowsNativeComputerController:
         # is False when the dependency is absent; every visual_ocr_* action
         # returns a typed `visual_ocr_not_available` result rather than an
         # import-time crash (Batch 05 Milestone 1, GAP-0103).
-        self.visual_ocr_adapter = visual_ocr_adapter or EasyOcrVisualAdapter(self.perception_provider, self.semantic_adapter)
+        self.visual_ocr_adapter = visual_ocr_adapter or EasyOcrVisualAdapter(
+            self.perception_provider, self.semantic_adapter, model_dir=ocr_model_dir,
+        )
         self._user32 = None
         self._kernel32 = None
         if platform.system().casefold() == "windows":

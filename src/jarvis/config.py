@@ -42,6 +42,7 @@ class JarvisConfig:
     voice_output_adapter: str = "noop"
     desktop_awareness_enabled: bool = False
     file_access_roots: tuple[str, ...] = ()
+    ocr_model_dir: str | None = None
 
     @classmethod
     def from_env(cls) -> "JarvisConfig":
@@ -82,6 +83,10 @@ class JarvisConfig:
         file_access_roots = tuple(
             entry.strip() for entry in file_access_roots_text.split(os.pathsep) if entry.strip()
         ) if file_access_roots_text else ()
+        # No implicit home-directory fallback (R18B05-001, Batch 06) - an
+        # unset/empty value means "OCR models unavailable", never "use
+        # EasyOCR's own ~/.EasyOCR default".
+        ocr_model_dir = os.getenv("JARVIS_OCR_MODEL_DIR", "").strip() or None
         try:
             timeout = float(timeout_text)
         except ValueError as exc:
@@ -154,6 +159,7 @@ class JarvisConfig:
             voice_output_adapter=voice_output_adapter,
             desktop_awareness_enabled=awareness_text in {"true", "1", "yes", "on"},
             file_access_roots=file_access_roots,
+            ocr_model_dir=ocr_model_dir,
         )
 
     @property
