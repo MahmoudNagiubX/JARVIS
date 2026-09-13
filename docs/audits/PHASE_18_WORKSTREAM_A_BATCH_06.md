@@ -191,4 +191,56 @@ One new `computer_use_v2` case (46 total): `cuv2-46` proves the action-scoped re
 
 GAP-0104 advances (remains `PARTIAL`, narrowly deepened further): the action-scoped recovery budget fix and its physical proof are complete; no autonomous multi-app replanning loop and no second planner/authority exist - full GAP-0104 closure remains out of scope. GAP-0105 grows from 45 to 46 evaluation cases and from 3 to 4 owned fixtures; still not the broad real-app matrix named in its original scope.
 
-**Commit:** see the final commit-chain table in this report's closing section for the exact pushed SHA.
+**Commit:** `e44d792c2ffad3f3c713a0574606a94668c3a8d7`
+
+---
+
+## 5. Final verification (Section 6)
+
+- `python -m pytest tests -q` (full regression, after Milestone 2's commit) → **814 passed, 3 skipped, 36 subtests passed** in 232.87s, exit code 0.
+- `python -m pytest tests -k "file_access or phase_eighteen or ocr" -q` (Phase 18 focused) → **299 passed, 3 skipped, 515 deselected**.
+- `python -m pytest tests/test_phase_eighteen_evaluation_suite.py -q` (`computer_use_v2`, all 46 cases) → **7 passed**.
+- Physical owned-fixture acceptance: `scripts/phase18/computer_use_acceptance.py --runs 3` (all four fixtures together - semantic/native-input/drag/text/non-primary-monitor from Batches 02-05, plus this batch's new recovery scenarios) → **every rate in the summary is 3/3**, including `recovery_relocation_click_succeeds`, `recovery_relocation_fresh_bounds_used`, `recovery_approval_identity_change_refused`, `recovery_approval_identity_change_zero_input_delivered`, and `recovery_fixture_child_confirmed_exited`. The dedicated OCR acceptance runner (`scripts/phase18/ocr_visual_acceptance.py --runs 3`, run separately in the isolated venv) is detailed in §3.2.
+- `python -m compileall src tests scripts -q` → clean, no errors.
+- `git diff --check` → clean, no whitespace errors, at every commit boundary.
+- Frontend gate: **not required** - `git diff --stat a5d37da..HEAD -- ui/ src/jarvis/ui_static/` is empty; no frontend/UI file was touched anywhere in this batch.
+- Branch: still exactly `feature/phase-18-computer-use-v2`. `main`: unchanged (`origin/main` still `54b67ba396ec45180f1b60ea472ef94c9ac181a9`, matching the preflight check). No force push was used at any point. No unexpected commits: exactly 3 commits exist between the required starting HEAD and the final HEAD (`git log --oneline a5d37da..HEAD`), matching the 3 milestones plus nothing else.
+- No OCR weights, cache directories, or generated fixture images committed: `git ls-files | grep -iE "\.pth$|\.pt$|\.onnx$|\.png$|\.jpg$|\.jpeg$|EasyOCR|ocr_models|model_storage"` matches only `scripts/setup/provision_easyocr_models.py` (the provisioning *script*, not a weight file) and two pre-existing, unrelated UI wallpaper JPGs that predate this batch. `git status --short` is clean.
+
+---
+
+## 6. Final GAP/decision-log state
+
+| Gap | State entering Batch 06 | State after Batch 06 |
+|---|---|---|
+| GAP-0101 | `RESOLVED` | `RESOLVED` (unchanged, untouched this batch) |
+| GAP-0102 | `PARTIAL` | `PARTIAL` (unchanged, untouched this batch) |
+| GAP-0103 | `PARTIAL` | `PARTIAL` (unchanged status - offline-runtime-hardened + unified live Arabic physical proof now closes the Batch 05 recommended follow-up; still read-only, no visual actuation) |
+| GAP-0104 | `PARTIAL` | `PARTIAL` (action-scoped recovery budget fixed and physically proven; still no autonomous multi-app replanning loop) |
+| GAP-0105 | `PARTIAL` | `PARTIAL` (evaluation suite 45→46 cases; owned fixtures 3→4) |
+| GAP-0106 | `PARTIAL` | `PARTIAL` (unchanged, untouched this batch) |
+| GAP-0503 | `RESOLVED_AFTER_REVIEW_HARDENING` | `RESOLVED_AFTER_REVIEW_HARDENING` (unchanged, untouched this batch) |
+
+**R18B05-001/002/003 status: all three resolved.** R18B05-001 (hidden network/filesystem side effects) - closed; production OCR is now offline-only by construction, verified against the real EasyOCR package. R18B05-002 (reproducible runtime) - closed; `torch`/`torchvision` pinned exactly alongside `easyocr`, verified CPU-only. R18B05-003 (one recovery budget per action) - closed; `drag_element_to_element`'s two grounding calls now share exactly one recovery attempt, verified deterministically and physically.
+
+**DEC-048 is unchanged** - EasyOCR 1.7.2 remains the accepted provider; its evidence entry is hardened, not replaced.
+
+**Manual/setup dependency (truthfully, not "none"):** offline OCR requires one-time model provisioning before `computer.visual.read` can do anything beyond return `visual_ocr_models_unavailable`. An operator must run `python scripts/setup/provision_easyocr_models.py --model-dir <path>` once (downloads and MD5-verifies two model files, ~285 MB total, from EasyOCR's own GitHub releases) and set `JARVIS_OCR_MODEL_DIR=<path>` (or `JarvisConfig.ocr_model_dir`) before OCR becomes available. This is setup state, not a secret/credential - but it is a genuine manual step, and core JARVIS startup and every other Computer Use capability are proven to work unchanged without it.
+
+**Restrictions still outstanding:** no visual actuation of any kind (unchanged from Batch 05, by design); no autonomous multi-app replanning/recovery loop (GAP-0104's broader scope); the broad real-app evaluation matrix (Notepad, Explorer, Settings, VS Code, terminal, dialogs, multi-window) named in GAP-0105's original scope remains uncovered; a genuinely successful physical bounded-recovery cycle and recovery-budget exhaustion remain deterministic-only (§4.3, by deliberate, task-sanctioned design, not an oversight).
+
+**New follow-up:** none beyond what Batch 05 already flagged (still outstanding: none additional identified this batch).
+
+---
+
+## 7. Commit chain
+
+| Milestone | Commit | Push range |
+|---|---|---|
+| Starting HEAD | `a5d37daca8b2c0af42b8356109d261b523b22d7f` | — |
+| 0 — Offline OCR runtime + reproducibility + recovery budget | `04904b3b8f5639bb566fa95bf8739364c54cc742` | `a5d37da..04904b3` |
+| 1 — Arabic OCR physical acceptance | `ddfc5b6b2dba4db3e220cb29817b6fd9301873ad` | `04904b3..ddfc5b6` |
+| 2 — Recovery physical acceptance | `e44d792c2ffad3f3c713a0574606a94668c3a8d7` | `ddfc5b6..e44d792` |
+| Final report (this commit) | see final HEAD in the closing verdict message returned to the requester | `e44d792..<final HEAD>` |
+
+**Final verdict: `PHASE18_COMPUTER_USE_BATCH06_PASS`** — Milestone 0 (the blocking gate) eliminated every R18B05-001 offline/network boundary, closed R18B05-002's reproducibility gap, and fixed R18B05-003's per-call recovery budget; Milestones 1 and 2 then proceeded and both delivered genuine, honest, 3/3 physical evidence (unified live Arabic OCR proof; relocation and approval-identity-change bounded-recovery proof) without retrying anything until it looked green. All required tests/evaluation cases/physical scenarios pass, DEC-048 stands unchanged with hardened evidence, and no stop condition was triggered at any point.
