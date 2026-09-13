@@ -1020,6 +1020,278 @@ async def _case_visual_ref_rejected_everywhere_as_targeting_input(_context: Any)
         await ctx.runtime.shutdown()
 
 
+# -- 38. stale ref before any input gets exactly one bounded re-ground --
+
+async def _case_recovery_stale_ref_bounded_reground(_context: Any) -> bool:
+    from ..computer.native_input import WindowsNativeInputAdapter
+
+    class _Semantic:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+            self.calls += 1
+            if self.calls == 1:
+                return SemanticResult("failed", error_code="uia_element_stale")
+            return SemanticResult("succeeded", {"element": _snapshot(element_ref, bounds=SemanticBounds(0, 0, 20, 20))})
+
+    class _Provider:
+        def validate_input_window(self, window_ref: str) -> int:
+            return 1
+
+        def focus_window(self, window_ref: str) -> bool:
+            return True
+
+        def is_foreground(self, hwnd: int) -> bool:
+            return True
+
+    semantic = _Semantic()
+    adapter = WindowsNativeInputAdapter(
+        _Provider(), semantic,  # type: ignore[arg-type]
+        metrics_provider=lambda: (0, 0, 1920, 1080), send_input=lambda inputs: len(inputs), get_cursor_pos=lambda: (10, 10),
+    )
+    result = await adapter.move_to_element("element-1")
+    # 1 failed resolve + 2 successful (pre-focus, post-focus) from the single
+    # bounded recovery attempt - never a third _ground() pass.
+    return result.status == "succeeded" and semantic.calls == 3
+
+
+# -- 39. a moved/re-laid-out element uses fresh bounds, never the stale pre-move ones --
+
+async def _case_recovery_moved_element_uses_fresh_bounds(_context: Any) -> bool:
+    from ..computer.native_input import WindowsNativeInputAdapter
+
+    class _Semantic:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+            self.calls += 1
+            bounds = SemanticBounds(0, 0, 20, 20) if self.calls == 1 else SemanticBounds(300, 300, 20, 20)
+            return SemanticResult("succeeded", {"element": _snapshot(element_ref, bounds=bounds)})
+
+    class _Provider:
+        def validate_input_window(self, window_ref: str) -> int:
+            return 1
+
+        def focus_window(self, window_ref: str) -> bool:
+            return True
+
+        def is_foreground(self, hwnd: int) -> bool:
+            return True
+
+    adapter = WindowsNativeInputAdapter(
+        _Provider(), _Semantic(),  # type: ignore[arg-type]
+        metrics_provider=lambda: (0, 0, 1920, 1080), send_input=lambda inputs: len(inputs), get_cursor_pos=lambda: (310, 310),
+    )
+    result = await adapter.move_to_element("element-1")
+    # Verification cross-checks the post-move cursor against the SECOND
+    # (fresh, moved) center - it would be False if the stale first-observed
+    # bounds had been used instead.
+    return result.status == "succeeded" and bool(result.verified)
+
+
+# -- 40. decide()'s own approval re-check is strict, never leniently retried --
+
+async def _case_approval_recheck_stale_target_refused_not_retried(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    try:
+        requested = await ctx.runtime.tool_service.execute(
+            "computer.semantic.act", {"action": "invoke", "element_ref": "element-recheck"}, ctx.context
+        )
+        if requested.approval_id is None:
+            return False
+        # Target becomes unresolvable for a plausibly-transient reason right
+        # before decide() - the service-layer approval re-check
+        # (`_element_target_preview`) must fail the approval outright
+        # (never silently migrate, never apply the native-input-level
+        # bounded-recovery leniency, never extend the approval by retrying).
+        ctx.semantic.element_error["element-recheck"] = "uia_element_stale"
+        decided = await ctx.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, ctx.identity.identity_id, ctx.context
+        )
+        return (
+            decided.status.value == "denied"
+            and decided.error_code == "uia_element_stale"
+            and ctx.semantic.invoke_calls == []
+        )
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 41. a pre-action focus race recovers via the single bounded cycle, end-to-end --
+
+async def _case_recovery_focus_race_end_to_end(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    try:
+        from ..computer.native_input import WindowsNativeInputAdapter
+
+        class _Provider:
+            def __init__(self) -> None:
+                self._foreground = [False, True, True]
+
+            def validate_input_window(self, window_ref: str) -> int:
+                return 1
+
+            def focus_window(self, window_ref: str) -> bool:
+                return True
+
+            def is_foreground(self, hwnd: int) -> bool:
+                return self._foreground.pop(0) if self._foreground else True
+
+        ctx.semantic.element_name["element-focus-race"] = "Focus Race Target"
+        ctx.runtime.computer_actions.controller.local.native_input_adapter = WindowsNativeInputAdapter(
+            _Provider(), ctx.semantic,  # type: ignore[arg-type]
+            metrics_provider=lambda: (0, 0, 1920, 1080), send_input=lambda inputs: len(inputs), get_cursor_pos=lambda: (10, 10),
+        )
+        requested = await ctx.runtime.tool_service.execute(
+            "computer.pointer.act", {"action": "left_click_element", "element_ref": "element-focus-race"}, ctx.context
+        )
+        if requested.approval_id is None:
+            return False
+        decided = await ctx.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, ctx.identity.identity_id, ctx.context
+        )
+        return decided.status.value == "completed"
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 42. partial drag injection after LEFTDOWN was accepted is never retried --
+
+async def _case_recovery_never_retries_uncertain_drag_side_effect(_context: Any) -> bool:
+    from ..computer.native_input import WindowsNativeInputAdapter
+
+    class _Semantic:
+        async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+            bounds = SemanticBounds(0, 0, 20, 20) if element_ref == "element-drag-src" else SemanticBounds(200, 200, 20, 20)
+            return SemanticResult("succeeded", {"element": _snapshot(element_ref, bounds=bounds)})
+
+    class _Provider:
+        def validate_input_window(self, window_ref: str) -> int:
+            return 1
+
+        def focus_window(self, window_ref: str) -> bool:
+            return True
+
+        def is_foreground(self, hwnd: int) -> bool:
+            return True
+
+    call_count = {"n": 0}
+
+    def flaky_send(inputs: object) -> int:
+        call_count["n"] += 1
+        # Move-to-source (1) and LEFTDOWN (2) succeed - the side effect
+        # (button physically held down) is now uncertain/in-flight; the
+        # first bounded interpolation move (3) then fails.
+        return 0 if call_count["n"] == 3 else len(inputs)
+
+    adapter = WindowsNativeInputAdapter(
+        _Provider(), _Semantic(),  # type: ignore[arg-type]
+        metrics_provider=lambda: (0, 0, 1920, 1080), send_input=flaky_send, get_cursor_pos=lambda: (0, 0),
+    )
+    result = await adapter.drag_element_to_element("element-drag-src", "element-drag-dst")
+    # Exactly 4 SendInput calls total (move, LEFTDOWN, the failed move, the
+    # cleanup LEFTUP) - never a second full drag attempt from scratch.
+    return result.status == "failed" and result.error_code == "native_input_injection_failed" and call_count["n"] == 4
+
+
+# -- 43. a click whose SendInput batch was accepted but outcome is unverified is never retried --
+
+async def _case_recovery_never_retries_unverified_click_outcome(_context: Any) -> bool:
+    from ..computer.native_input import WindowsNativeInputAdapter
+
+    semantic_calls = {"n": 0}
+
+    class _Semantic:
+        async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+            semantic_calls["n"] += 1
+            return SemanticResult("succeeded", {"element": _snapshot(element_ref, bounds=SemanticBounds(0, 0, 20, 20))})
+
+    class _Provider:
+        def validate_input_window(self, window_ref: str) -> int:
+            return 1
+
+        def focus_window(self, window_ref: str) -> bool:
+            return True
+
+        def is_foreground(self, hwnd: int) -> bool:
+            return True
+
+    adapter = WindowsNativeInputAdapter(
+        _Provider(), _Semantic(),  # type: ignore[arg-type]
+        metrics_provider=lambda: (0, 0, 1920, 1080), send_input=lambda inputs: len(inputs), get_cursor_pos=lambda: (10, 10),
+    )
+    result = await adapter.left_click_element("element-1")
+    # `verified` is honestly False (no fixture postcondition available) and
+    # grounding ran exactly once (pre-focus + post-focus, no recoverable
+    # error occurred) - a click SendInput accepted with an unknown semantic
+    # outcome must never be silently repeated.
+    return result.status == "succeeded" and result.verified is False and semantic_calls["n"] == 2
+
+
+# -- 44. a semantic invoke whose target disappears afterward is never re-invoked --
+
+async def _case_recovery_never_retries_invoke_after_disappearance(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    try:
+        requested = await ctx.runtime.tool_service.execute(
+            "computer.semantic.act", {"action": "invoke", "element_ref": "element-vanish"}, ctx.context
+        )
+        if requested.approval_id is None:
+            return False
+        decided = await ctx.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, ctx.identity.identity_id, ctx.context
+        )
+        # The generic invoke path has no fixture postcondition, so it stays
+        # honestly `verified=False` (uncertain outcome) - the contract under
+        # test is that this uncertainty never triggers a second, automatic
+        # invoke of the same (possibly now-gone) target.
+        return (
+            decided.status.value == "completed"
+            and decided.verified is False
+            and ctx.semantic.invoke_calls == ["element-vanish"]
+        )
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 45. an exhausted recovery budget produces a clean, typed failure --
+
+async def _case_recovery_budget_exhausted_clean_typed_failure(_context: Any) -> bool:
+    from ..computer.native_input import WindowsNativeInputAdapter
+
+    class _Semantic:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+            self.calls += 1
+            return SemanticResult("failed", error_code="uia_element_stale")  # never recovers
+
+    class _Provider:
+        def validate_input_window(self, window_ref: str) -> int:
+            return 1
+
+        def focus_window(self, window_ref: str) -> bool:
+            return True
+
+        def is_foreground(self, hwnd: int) -> bool:
+            return True
+
+    semantic = _Semantic()
+    adapter = WindowsNativeInputAdapter(
+        _Provider(), semantic,  # type: ignore[arg-type]
+        metrics_provider=lambda: (0, 0, 1920, 1080), send_input=lambda inputs: len(inputs), get_cursor_pos=lambda: (0, 0),
+    )
+    result = await adapter.move_to_element("element-1")
+    # Exactly 2 resolve attempts total (the first _ground() pass's own first
+    # resolve, plus the one bounded recovery pass's own first resolve) -
+    # never a third, and the result is a clean typed failure, not a hang or
+    # an unbounded loop.
+    return result.status == "failed" and result.error_code == "uia_element_stale" and semantic.calls == 2
+
+
 def build_suite() -> RegressionSuite:
     cases = (
         EvaluationCase("cuv2-01", "semantic read uses canonical authority", "computer_use_v2", _case_semantic_read_canonical),
@@ -1059,6 +1331,14 @@ def build_suite() -> RegressionSuite:
         EvaluationCase("cuv2-35", "sensitive window denied before any OCR capture", "computer_use_v2", _case_visual_read_sensitive_window_denied_before_capture),
         EvaluationCase("cuv2-36", "untrusted OCR text cannot self-authorize", "computer_use_v2", _case_visual_read_untrusted_text_cannot_self_authorize),
         EvaluationCase("cuv2-37", "visual references stay observation-only everywhere", "computer_use_v2", _case_visual_ref_rejected_everywhere_as_targeting_input),
+        EvaluationCase("cuv2-38", "stale ref before any input gets one bounded re-ground", "computer_use_v2", _case_recovery_stale_ref_bounded_reground),
+        EvaluationCase("cuv2-39", "moved/re-laid-out element uses fresh bounds before execution", "computer_use_v2", _case_recovery_moved_element_uses_fresh_bounds),
+        EvaluationCase("cuv2-40", "approval re-check on a stale target is refused, never leniently retried", "computer_use_v2", _case_approval_recheck_stale_target_refused_not_retried),
+        EvaluationCase("cuv2-41", "pre-action focus race recovers via bounded recovery end-to-end", "computer_use_v2", _case_recovery_focus_race_end_to_end),
+        EvaluationCase("cuv2-42", "partial drag after LEFTDOWN accepted is never retried", "computer_use_v2", _case_recovery_never_retries_uncertain_drag_side_effect),
+        EvaluationCase("cuv2-43", "click accepted by SendInput but unverified is never retried", "computer_use_v2", _case_recovery_never_retries_unverified_click_outcome),
+        EvaluationCase("cuv2-44", "semantic invoke followed by disappearance is never re-invoked", "computer_use_v2", _case_recovery_never_retries_invoke_after_disappearance),
+        EvaluationCase("cuv2-45", "exhausted recovery budget produces a clean typed failure", "computer_use_v2", _case_recovery_budget_exhausted_clean_typed_failure),
     )
     return RegressionSuite(
         SUITE_NAME, cases,

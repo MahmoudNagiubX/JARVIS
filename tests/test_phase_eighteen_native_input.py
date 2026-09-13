@@ -513,6 +513,195 @@ class DragTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error_code, "native_input_injection_failed")
 
 
+class _FlakyOnceSemanticAdapter:
+    """Fails with a given (recoverable-class or not) error on the first
+    `fail_calls` resolutions, then succeeds - used to prove the bounded
+    recovery cycle (GAP-0104, Batch 05 Milestone 2): exactly one additional
+    fresh re-ground when the first attempt fails for a plausibly transient
+    reason, and none at all for a policy denial."""
+
+    def __init__(self, *, fail_calls: int, error_code: str, bounds: SemanticBounds | None = SemanticBounds(0, 0, 20, 20)) -> None:
+        self.fail_calls = fail_calls
+        self.error_code = error_code
+        self.bounds = bounds
+        self.resolve_calls = 0
+
+    async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+        self.resolve_calls += 1
+        if self.resolve_calls <= self.fail_calls:
+            status = "denied" if self.error_code in {
+                "uia_element_identity_weak", "uia_target_not_interactable", "uia_sensitive_value_denied", "sensitive_window_denied",
+            } else "failed"
+            return SemanticResult(status, error_code=self.error_code)
+        return SemanticResult("succeeded", {"element": _snapshot(element_ref, "window-1", bounds=self.bounds)})
+
+
+class _FlakyOnceDragSemanticAdapter:
+    """Same contract as `_FlakyOnceSemanticAdapter`, but keyed per
+    element_ref, for the dual-target drag grounding pipeline."""
+
+    def __init__(self) -> None:
+        self.fail_calls: dict[str, int] = {}
+        self.error_code: dict[str, str] = {}
+        self.bounds: dict[str, SemanticBounds] = {}
+        self.resolve_calls: dict[str, int] = {}
+
+    async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+        self.resolve_calls[element_ref] = self.resolve_calls.get(element_ref, 0) + 1
+        fail_calls = self.fail_calls.get(element_ref, 0)
+        error_code = self.error_code.get(element_ref)
+        if self.resolve_calls[element_ref] <= fail_calls and error_code is not None:
+            status = "denied" if error_code in {
+                "uia_element_identity_weak", "uia_target_not_interactable", "uia_sensitive_value_denied", "sensitive_window_denied",
+            } else "failed"
+            return SemanticResult(status, error_code=error_code)
+        bounds = self.bounds.get(element_ref, SemanticBounds(0, 0, 20, 20))
+        return SemanticResult("succeeded", {"element": _snapshot(element_ref, "window-1", bounds=bounds)})
+
+
+class RecoveryTests(unittest.IsolatedAsyncioTestCase):
+    """Batch 05 Milestone 2 (GAP-0104): bounded pre-input recovery. Every
+    case here proves the recovery cycle happens strictly before any
+    SendInput call, is bounded to exactly one extra attempt, and never
+    fires for a fail-closed policy denial."""
+
+    async def test_stale_ref_recovers_via_one_bounded_retry(self) -> None:
+        # First _ground() attempt's first resolve fails with a
+        # transient-class error (short-circuits before its own second
+        # resolve) - the bounded recovery's own full _ground() pass (two
+        # resolves: pre-focus + post-focus) then succeeds.
+        semantic = _FlakyOnceSemanticAdapter(fail_calls=1, error_code="uia_element_stale")
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.move_to_element("element-1")
+        self.assertEqual(result.status, "succeeded")
+        self.assertEqual(semantic.resolve_calls, 3)  # 1 failed + 2 successful (pre/post-focus)
+
+    async def test_moved_element_fresh_bounds_used_before_execution(self) -> None:
+        # The element "moved" mid-grounding (post-focus resolve returns
+        # different bounds than the pre-focus one) - _ground() already
+        # always uses the LATEST resolve's bounds, never the stale
+        # pre-focus one; recovery does not change this contract.
+        class _MovingSemantic:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+                self.calls += 1
+                bounds = SemanticBounds(0, 0, 20, 20) if self.calls == 1 else SemanticBounds(200, 200, 20, 20)
+                return SemanticResult("succeeded", {"element": _snapshot(element_ref, "window-1", bounds=bounds)})
+
+        semantic = _MovingSemantic()
+        adapter = _adapter(semantic, _FakeWindowProvider(), get_cursor_pos=lambda: (210, 210))
+        result = await adapter.move_to_element("element-1")
+        self.assertEqual(result.status, "succeeded")
+        self.assertTrue(result.verified)  # cursor matches the SECOND (moved) center, not the first
+
+    async def test_recoverable_error_exhausts_after_exactly_one_retry(self) -> None:
+        semantic = _FlakyOnceSemanticAdapter(fail_calls=999, error_code="uia_element_stale")
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.move_to_element("element-1")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "uia_element_stale")
+        # Exactly 2 resolve calls total: the first _ground() attempt's own
+        # first resolve, and the recovery _ground() attempt's own first
+        # resolve - both short-circuit immediately on failure, never
+        # reaching a third attempt.
+        self.assertEqual(semantic.resolve_calls, 2)
+
+    async def test_focus_race_recovers_via_one_bounded_retry(self) -> None:
+        provider = _FakeWindowProvider(foreground_sequence=[False, True, True])
+        semantic = _FlakyOnceSemanticAdapter(fail_calls=0, error_code="uia_element_stale")
+        adapter = _adapter(semantic, provider)
+        result = await adapter.move_to_element("element-1")
+        self.assertEqual(result.status, "succeeded")
+
+    async def test_non_recoverable_policy_denial_never_retries(self) -> None:
+        semantic = _FlakyOnceSemanticAdapter(fail_calls=999, error_code="uia_element_identity_weak")
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.move_to_element("element-1")
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "uia_element_identity_weak")
+        # No recovery attempt at all for a policy denial - only the single
+        # first-attempt resolve.
+        self.assertEqual(semantic.resolve_calls, 1)
+
+    async def test_ambiguous_target_never_retries(self) -> None:
+        semantic = _FlakyOnceSemanticAdapter(fail_calls=999, error_code="uia_element_ambiguous")
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.move_to_element("element-1")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(semantic.resolve_calls, 1)
+
+    async def test_recovery_never_fires_after_sendinput_has_begun(self) -> None:
+        # Grounding succeeds cleanly (no recovery needed) - a SendInput
+        # failure afterward must never trigger a fresh re-ground/retry of
+        # any kind, matching the hard "no retry after an uncertain
+        # consequential side effect" rule.
+        semantic = _FakeSemanticAdapter(bounds=SemanticBounds(0, 0, 20, 20))
+        calls = {"count": 0}
+
+        def flaky_send(inputs: object) -> int:
+            calls["count"] += 1
+            return len(inputs) if calls["count"] == 1 else 0  # move ok, click batch fails
+
+        adapter = _adapter(semantic, _FakeWindowProvider(), send_input=flaky_send)
+        result = await adapter.left_click_element("element-1")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "native_input_injection_failed")
+        # Grounding itself only ran once (no recoverable error occurred),
+        # and the failed click batch was never retried either.
+        self.assertEqual(semantic.resolve_calls, 2)  # pre-focus + post-focus, exactly the one _ground() pass
+        self.assertEqual(calls["count"], 2)  # move + one click-batch attempt, never repeated
+
+    async def test_drag_partial_injection_failure_after_recovered_grounding_still_never_retries(self) -> None:
+        # Grounding for the drag needed one bounded recovery, but once
+        # SendInput begins (LEFTDOWN accepted), a later injection failure
+        # must never trigger another re-ground or another drag attempt.
+        semantic = _FlakyOnceDragSemanticAdapter()
+        semantic.fail_calls["element-src"] = 1
+        semantic.error_code["element-src"] = "uia_element_stale"
+        semantic.bounds["element-src"] = SemanticBounds(0, 0, 20, 20)
+        semantic.bounds["element-dst"] = SemanticBounds(200, 200, 20, 20)
+
+        call_count = {"n": 0}
+
+        def flaky_send(inputs: object) -> int:
+            call_count["n"] += 1
+            if call_count["n"] == 3:  # first bounded interpolation move fails
+                return 0
+            return len(inputs)
+
+        adapter = _adapter(semantic, _FakeWindowProvider(), send_input=flaky_send)
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "native_input_injection_failed")
+        # Grounding recovered exactly once (proven by the drag ultimately
+        # reaching SendInput at all despite the initial stale error), and
+        # the SendInput failure afterward was never retried - the total
+        # SendInput call count stops at the failure, plus one cleanup
+        # release, never restarting the whole drag.
+        self.assertLessEqual(call_count["n"], 4)
+
+    async def test_drag_recovery_exhausts_after_exactly_one_retry(self) -> None:
+        semantic = _FlakyOnceDragSemanticAdapter()
+        semantic.fail_calls["element-src"] = 999
+        semantic.error_code["element-src"] = "uia_window_stale"
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "uia_window_stale")
+        self.assertEqual(semantic.resolve_calls["element-src"], 2)
+
+    async def test_drag_non_recoverable_denial_never_retries(self) -> None:
+        semantic = _FlakyOnceDragSemanticAdapter()
+        semantic.fail_calls["element-src"] = 999
+        semantic.error_code["element-src"] = "uia_sensitive_value_denied"
+        adapter = _adapter(semantic, _FakeWindowProvider())
+        result = await adapter.drag_element_to_element("element-src", "element-dst")
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(semantic.resolve_calls["element-src"], 1)
+
+
 class KeyboardTests(unittest.IsolatedAsyncioTestCase):
     async def test_key_allowlist_enforced_unsupported_key_denied(self) -> None:
         semantic = _FakeSemanticAdapter(bounds=None)

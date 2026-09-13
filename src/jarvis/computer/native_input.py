@@ -210,6 +210,23 @@ _DENIED_ERROR_CODES = frozenset({
     "drag_cross_window_not_supported",
 })
 
+# Batch 05 Milestone 2 (GAP-0104): errors that plausibly reflect a
+# transient, pre-input condition - a stale ref because the target moved/
+# re-laid-out, a window ref racing a rebuild, or a momentary focus race -
+# rather than a deliberate fail-closed policy denial. Only these are
+# eligible for the single bounded recovery cycle below. Deliberately
+# EXCLUDES every code in `_DENIED_ERROR_CODES` (weak identity/sensitive/
+# not-interactable are policy refusals, not transient failures - retrying
+# them cannot change the outcome and would blur "policy remains
+# authoritative" into "policy gets bypassed by looping"), and excludes
+# `uia_element_ambiguous` (a structural problem a re-observe cannot fix).
+_RECOVERABLE_GROUND_ERRORS = frozenset({
+    "uia_element_stale",
+    "uia_element_not_found",
+    "uia_window_stale",
+    "window_focus_not_verified",
+})
+
 
 def _drag_interpolation_steps(start: tuple[int, int], end: tuple[int, int]) -> list[tuple[int, int]]:
     """Fixed, deterministic linear interpolation from `start` to `end` in
@@ -299,7 +316,7 @@ class WindowsNativeInputAdapter:
     async def move_to_element(self, element_ref: str) -> NativeInputResult:
         if not self.available:
             return NativeInputResult("failed", {}, "native_input_unavailable")
-        target, error = await self._ground(element_ref)
+        target, error = await self._ground_with_recovery(element_ref)
         if target is None:
             return NativeInputResult(_status_for(error), {}, error)
         accepted, verified, evidence = self._move_pointer(target)
@@ -310,7 +327,7 @@ class WindowsNativeInputAdapter:
     async def left_click_element(self, element_ref: str) -> NativeInputResult:
         if not self.available:
             return NativeInputResult("failed", {}, "native_input_unavailable")
-        target, error = await self._ground(element_ref)
+        target, error = await self._ground_with_recovery(element_ref)
         if target is None:
             return NativeInputResult(_status_for(error), {}, error)
         accepted, pointer_verified, evidence = self._move_pointer(target)
@@ -338,7 +355,7 @@ class WindowsNativeInputAdapter:
     async def right_click_element(self, element_ref: str) -> NativeInputResult:
         if not self.available:
             return NativeInputResult("failed", {}, "native_input_unavailable")
-        target, error = await self._ground(element_ref)
+        target, error = await self._ground_with_recovery(element_ref)
         if target is None:
             return NativeInputResult(_status_for(error), {}, error)
         accepted, _pointer_verified, evidence = self._move_pointer(target)
@@ -365,7 +382,7 @@ class WindowsNativeInputAdapter:
     async def double_click_element(self, element_ref: str) -> NativeInputResult:
         if not self.available:
             return NativeInputResult("failed", {}, "native_input_unavailable")
-        target, error = await self._ground(element_ref)
+        target, error = await self._ground_with_recovery(element_ref)
         if target is None:
             return NativeInputResult(_status_for(error), {}, error)
         accepted, _pointer_verified, evidence = self._move_pointer(target)
@@ -400,7 +417,7 @@ class WindowsNativeInputAdapter:
             return NativeInputResult("denied", {}, "native_input_scroll_direction_invalid")
         if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= MAX_SCROLL_STEPS:
             return NativeInputResult("denied", {}, "native_input_scroll_steps_invalid")
-        target, error = await self._ground(element_ref)
+        target, error = await self._ground_with_recovery(element_ref)
         if target is None:
             return NativeInputResult(_status_for(error), {}, error)
         accepted, _pointer_verified, evidence = self._move_pointer(target)
@@ -434,7 +451,7 @@ class WindowsNativeInputAdapter:
         later, separately reviewed batch."""
         if not self.available:
             return NativeInputResult("failed", {}, "native_input_unavailable")
-        source, target, error = await self._ground_drag_pair(source_element_ref, target_element_ref)
+        source, target, error = await self._ground_drag_pair_with_recovery(source_element_ref, target_element_ref)
         if error is not None:
             return NativeInputResult(_status_for(error), {}, error)
         assert source is not None and target is not None
@@ -445,13 +462,29 @@ class WindowsNativeInputAdapter:
         # Focus can change layout - re-resolve BOTH endpoints again after
         # focus, never reuse the pre-focus observation (matches the single-
         # target `_ground()` pattern above).
-        source, target, error = await self._ground_drag_pair(source_element_ref, target_element_ref)
+        source, target, error = await self._ground_drag_pair_with_recovery(source_element_ref, target_element_ref)
         if error is not None:
             return NativeInputResult(_status_for(error), {}, error)
         assert source is not None and target is not None
         if not self.window_provider.is_foreground(source.hwnd):
             return NativeInputResult("failed", {}, "window_focus_not_verified")
         return self._execute_drag(source, target)
+
+    async def _ground_drag_pair_with_recovery(
+        self, source_element_ref: str, target_element_ref: str,
+    ) -> tuple[_GroundedTarget | None, _GroundedTarget | None, str | None]:
+        """Bounded recovery (GAP-0104, Batch 05 Milestone 2): exactly one
+        additional fresh OBSERVE/re-ground attempt of the whole dual-target
+        pipeline, and only when the first attempt failed for a plausibly
+        transient, pre-input reason (`_RECOVERABLE_GROUND_ERRORS`) - never
+        for a policy denial (weak identity/sensitive/cross-window), never
+        more than once, and always entirely before any SendInput call. No
+        LLM-managed counter, no second authority - `_ground_drag_pair`
+        itself is simply given one more try."""
+        source, target, error = await self._ground_drag_pair(source_element_ref, target_element_ref)
+        if source is not None or error not in _RECOVERABLE_GROUND_ERRORS:
+            return source, target, error
+        return await self._ground_drag_pair(source_element_ref, target_element_ref)
 
     async def _ground_drag_pair(
         self, source_element_ref: str, target_element_ref: str,
@@ -539,6 +572,22 @@ class WindowsNativeInputAdapter:
             "pointer_target_verified": pointer_target_verified,
             "target_window_foreground": self.window_provider.is_foreground(target.hwnd),
         }
+
+    async def _ground_with_recovery(self, element_ref: str) -> tuple[_GroundedTarget | None, str | None]:
+        """Bounded recovery (GAP-0104, Batch 05 Milestone 2): exactly one
+        additional fresh OBSERVE/re-ground attempt, and only when the first
+        attempt failed for a plausibly transient, pre-input reason
+        (`_RECOVERABLE_GROUND_ERRORS`) - never for a policy denial, never
+        more than once, and always entirely before any SendInput call (this
+        method only ever returns a target to ground on; the caller sends
+        input only after it succeeds - the OBSERVE/GROUND/pre-action-
+        failure/re-OBSERVE/re-GROUND cycle happens strictly before ACT).
+        No LLM-managed retry counter, no second authority - `_ground()`
+        itself is simply given one more try."""
+        target, error = await self._ground(element_ref)
+        if target is not None or error not in _RECOVERABLE_GROUND_ERRORS:
+            return target, error
+        return await self._ground(element_ref)
 
     async def _ground(self, element_ref: str) -> tuple[_GroundedTarget | None, str | None]:
         first, error = await self._resolve_grounded(element_ref)

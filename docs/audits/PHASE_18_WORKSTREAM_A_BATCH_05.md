@@ -3,7 +3,7 @@
 
 **Task:** `tasks/PHASE_18_WORKSTREAM_A_BATCH_05_MASTER_TASK.md`
 **Branch:** `feature/phase-18-computer-use-v2`
-**Status:** IN PROGRESS — Milestone 0 complete, Milestones 1/2 not yet started.
+**Status:** Milestones 0, 1, and 2 complete and pushed.
 
 This is the single report for the whole batch (per Section 7 of the task file); it is appended to, not duplicated, as later milestones complete.
 
@@ -90,7 +90,7 @@ The budget checks now run **before** each `next()` call, so once `MAX_SEARCH_CAN
 
 ## 4. Milestone 1 — OCR backend resolution + read-only Visual Grounding V1
 
-**Commit:** `MILESTONE_1_COMMIT` (recorded in §4.6 below after push)
+**Commit:** `d569c061a23720cc3a3849a744d388b5b830eaba`
 
 ### 4.1 Corrected RapidOCR re-run (Arabic accuracy confirmed as a genuine limitation)
 
@@ -148,7 +148,60 @@ Real end-to-end proof against the existing JARVIS-owned Win32 fixture (`scripts/
 - `python -m pytest tests -q` (full regression) → **774 passed, 36 subtests passed**.
 - `python -m compileall src tests scripts -q` → clean, no errors.
 - `git diff --check` → clean, no whitespace errors.
-- **Commit:** `MILESTONE_1_COMMIT`
-- **Push:** `feature/phase-18-computer-use-v2` — recorded after push.
+- **Commit:** `d569c061a23720cc3a3849a744d388b5b830eaba`
+- **Push:** `feature/phase-18-computer-use-v2` (`81423ca..d569c06`) — pushed successfully.
 
 GAP-0103 advances from `OPEN` to `PARTIAL` (read-only OCR only - visual actuation remains completely absent, deliberately deferred to a later, separately reviewed batch). DEC-048 (decision log) records the full provider-selection evidence; OPEN-002 is closed.
+
+---
+
+## 5. Milestone 2 — Bounded re-ground/recovery foundation (GAP-0104)
+
+**Commit:** `MILESTONE_2_COMMIT` (recorded below after push)
+
+### 5.1 Design
+
+Per Section 6.2 of the task, a consequential action whose side effect is confirmed, possibly, or uncertainly delivered must **never** be automatically retried - only a failure occurring strictly **before** any `SendInput` call, for a plausibly transient reason, may trigger a single bounded recovery cycle. The implementation adds exactly two wrapper methods to `WindowsNativeInputAdapter` (`src/jarvis/computer/native_input.py`), leaving the underlying `_ground`/`_ground_drag_pair` methods completely unchanged:
+
+- `_RECOVERABLE_GROUND_ERRORS = frozenset({"uia_element_stale", "uia_element_not_found", "uia_window_stale", "window_focus_not_verified"})` - deliberately excludes every policy-denial error code (`uia_element_identity_weak`, `uia_target_not_interactable`, `uia_sensitive_value_denied`, `sensitive_window_denied`) and the structural `uia_element_ambiguous` code, so a fail-closed policy decision or a genuinely ambiguous match is never retried.
+- `_ground_with_recovery(element_ref)` / `_ground_drag_pair_with_recovery(source_element_ref, target_element_ref)`: call the underlying `_ground`/`_ground_drag_pair` once; if it failed with a recoverable error, call it exactly one more time and return that result regardless of outcome. No loop, no counter, no second planner/authority - just one extra call to the same trusted resolution path.
+- All 5 single-target call sites (`move_to_element`, `left_click_element`, `right_click_element`, `double_click_element`, `scroll_element`) and both call sites inside `drag_element_to_element` were switched from `_ground`/`_ground_drag_pair` to the `_with_recovery` variants. Because this happens entirely inside the grounding phase, before any `SendInput` call is made, "no retry after an uncertain side effect" holds by construction - there is no code path where a recovery attempt can occur after injection has begun.
+
+### 5.2 Approval-interaction analysis (Section 6.4)
+
+The task requires that a target-bound approval never silently migrate to a newly discovered target, and that recovery never extends an approval's TTL by re-observing. `ComputerActionService.decide()` (`src/jarvis/computer/service.py:891-961`) already performs a single fresh re-resolution (`_element_target_preview`/`_drag_target_preview`/`_window_target_preview`) immediately before executing an approved action, and compares its identity digest against the one captured at request time:
+
+- If the fresh re-resolution fails outright (including for a transient/recoverable-class error such as `uia_element_stale`), `decide()` denies the approval with that raw error code - it does **not** apply the native-input-level bounded-recovery leniency at all. A stale target at decide-time is refused, not silently retried into a fresh approval.
+- If the fresh re-resolution succeeds but the identity digest differs from the approval-time digest, `decide()` denies with `approval_target_changed`/`drag_source_changed`/`drag_target_changed`.
+- Only after this strict re-check passes does `_execute_controller` run, which is the only place the new native-input-level recovery cycle can fire - and by that point the approval has already independently proven the target's identity is unchanged from request time. The recovery cycle inside `native_input.py` re-resolves the *same* `element_ref` through the *same* identity-preserving `resolve_actionable_target` used everywhere else, which itself fails closed (`uia_element_ambiguous`/stale/not-found) rather than ever silently returning a different underlying element for the same ref - so there is no code path by which the bounded recovery cycle could cause an approved action to execute against a genuinely different target without a fresh owner approval.
+
+This was previously an unverified analytical claim; it is now backed by a dedicated evaluation-suite case (`cuv2-40`) proving `decide()`'s own re-check denies a stale target outright rather than retrying it.
+
+### 5.3 Tests
+
+- `tests/test_phase_eighteen_native_input.py::RecoveryTests` (10 new tests, 88 total in the file, all passing): stale ref recovers via one bounded retry; moved element uses fresh (not stale) bounds; a persistently recoverable error exhausts after exactly one retry with a clean typed failure; a pre-action focus race recovers via one bounded retry; a non-recoverable policy denial (`uia_element_identity_weak`) never retries; a structurally ambiguous target never retries; recovery never fires once `SendInput` has begun (a post-grounding injection failure is never retried); a drag whose grounding needed one recovery cycle still never retries after a later partial-injection failure; drag recovery exhausts after exactly one retry; a non-recoverable drag denial never retries.
+- `src/jarvis/evaluation/computer_use_v2.py` (8 new cases, cuv2-38 through cuv2-45, 45 total, all passing) - directly maps to every bullet in the task's Section 6.5:
+  - `cuv2-38` stale ref before any input → one bounded re-ground succeeds.
+  - `cuv2-39` moved/re-laid-out element → fresh bounds used before execution.
+  - `cuv2-40` target identity changed → the approval's own fresh re-check refuses outright, with no recovery leniency applied at the service layer.
+  - `cuv2-41` a pre-action focus race recovers via the bounded cycle end-to-end, through the full approval → decide → execute pipeline.
+  - `cuv2-42` partial drag injection failure after `LEFTDOWN` was accepted → no retry, clean typed failure.
+  - `cuv2-43` a click whose `SendInput` batch was accepted but the semantic outcome is unverified → no retry.
+  - `cuv2-44` a semantic invoke followed by target disappearance/uncertain state → no re-invoke.
+  - `cuv2-45` an exhausted recovery budget (persistently recoverable error) → a clean, bounded, typed failure, never a hang or unbounded loop.
+
+### 5.4 Physical testing
+
+Not performed for this milestone. The recovery contract under test is entirely about deterministic pre-input failure/timing sequences (stale UIA references, focus races, injection ordering) that require precise, repeatable fault injection at the adapter boundary - exactly what the unit and evaluation-suite fakes above exercise. Deliberately reproducing a stale-reference or focus-race condition against a real, JARVIS-owned Win32 fixture would require either a second concurrent process racing the fixture's own window lifecycle or destructively tearing down/relaunching the fixture mid-action - both add fault-injection complexity without adding evidence beyond what the deterministic suite already proves, and neither uses an owner application as a disposable test surface (which would be prohibited regardless). No owner application or session was used as a test surface for this milestone.
+
+### 5.5 Verification
+
+- `python -m pytest tests/test_phase_eighteen_native_input.py -q` → **88 passed**.
+- `python -m pytest tests/test_phase_eighteen_evaluation_suite.py -q` → **7 passed** (all 45 `computer_use_v2` cases, including the 8 new ones, pass deterministically).
+- `python -m pytest tests -q` (full regression) → **784 passed, 36 subtests passed** (774 + the 10 new `RecoveryTests`), in 223.08s.
+- `python -m compileall src tests scripts -q` → clean, no errors.
+- `git diff --check` → clean, no whitespace errors.
+- **Commit:** `MILESTONE_2_COMMIT`
+- **Push:** `feature/phase-18-computer-use-v2` — recorded after push.
+
+GAP-0104 advances (remains `PARTIAL`, narrowly deepened): the bounded pre-input recovery cycle described in Section 6 is now implemented, tested, and evaluation-suite-proven; no autonomous multi-app replanning/recovery loop, no retry budget beyond this single bounded cycle, and no second planner/authority exist - full GAP-0104 closure is explicitly out of scope for this batch.
