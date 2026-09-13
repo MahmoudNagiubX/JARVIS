@@ -208,13 +208,21 @@ class FileAccessPolicy:
         return decision
 
     def iter_search_candidates(self, root: Path, pattern: str) -> tuple[list[str], int]:
-        """Pre-descent bounded walker (R18B03-001).
+        """Pre-descent bounded walker (R18B03-001, streamed per R18B04-001).
 
-        Unlike the previous `Path.rglob()` + post-hoc-filter approach, this
+        Unlike the original `Path.rglob()` + post-hoc-filter approach, this
         decides containment and reparse-safety BEFORE descending into each
         directory, and never materializes an unbounded candidate list first:
-        candidate-scan and result-count bounds are enforced live, one
-        directory listing at a time.
+        candidate-scan and result-count bounds are enforced live, directly
+        against the `os.scandir()` iterator for the current directory - not
+        against a list built from it. The budget is checked BEFORE each
+        `next()` call, so once `MAX_SEARCH_CANDIDATES_SCANNED` is reached the
+        walker never requests another directory entry at all, from this
+        directory or any other still on the stack, even if the current
+        directory itself contains far more entries than the budget (R18B04-001
+        - an independent-review finding against the Batch 04 version, which
+        called `list(os.scandir(current))` and could still enumerate an
+        arbitrarily large single directory before the budget was enforced).
 
         Default reparse policy: directory symlinks/junctions/reparse points
         are never followed during generic search at all (deliberately
@@ -239,78 +247,83 @@ class FileAccessPolicy:
                 continue
             visited.add(current_key)
             try:
-                entries = list(os.scandir(current))
+                scandir_iterator = os.scandir(current)
             except OSError:
                 continue
-            for entry in entries:
-                if len(matches) >= MAX_SEARCH_MATCHES:
-                    return matches, filtered
-                scanned += 1
-                if scanned > MAX_SEARCH_CANDIDATES_SCANNED:
-                    return matches, filtered
-                entry_path = Path(entry.path)
-                try:
-                    is_dir_no_follow = entry.is_dir(follow_symlinks=False)
-                except OSError:
-                    continue
-                reparse = _is_reparse_point(entry_path)
-                if reparse:
-                    if is_dir_no_follow:
-                        # Directory-shaped reparse point (junction or
-                        # directory symlink) - never descended.
-                        filtered += 1
-                        continue
-                    # File symlink - only usable if its resolved target
-                    # stays inside root, is a real file, and is not
-                    # sensitive; never trusted from the unresolved name
-                    # alone.
+            with scandir_iterator:
+                while True:
+                    if len(matches) >= MAX_SEARCH_MATCHES:
+                        return matches, filtered
+                    if scanned >= MAX_SEARCH_CANDIDATES_SCANNED:
+                        return matches, filtered
                     try:
-                        resolved_file = entry_path.resolve()
+                        entry = next(scandir_iterator)
+                    except StopIteration:
+                        break
+                    scanned += 1
+                    entry_path = Path(entry.path)
+                    try:
+                        is_dir_no_follow = entry.is_dir(follow_symlinks=False)
                     except OSError:
-                        filtered += 1
                         continue
-                    try:
-                        resolved_file.relative_to(root)
-                    except ValueError:
-                        filtered += 1
+                    reparse = _is_reparse_point(entry_path)
+                    if reparse:
+                        if is_dir_no_follow:
+                            # Directory-shaped reparse point (junction or
+                            # directory symlink) - never descended.
+                            filtered += 1
+                            continue
+                        # File symlink - only usable if its resolved target
+                        # stays inside root, is a real file, and is not
+                        # sensitive; never trusted from the unresolved name
+                        # alone.
+                        try:
+                            resolved_file = entry_path.resolve()
+                        except OSError:
+                            filtered += 1
+                            continue
+                        try:
+                            resolved_file.relative_to(root)
+                        except ValueError:
+                            filtered += 1
+                            continue
+                        if not resolved_file.is_file():
+                            filtered += 1
+                            continue
+                        if not fnmatch.fnmatch(entry.name.casefold(), pattern.casefold()):
+                            continue
+                        if _is_sensitive(resolved_file):
+                            filtered += 1
+                            continue
+                        matches.append(str(resolved_file))
                         continue
-                    if not resolved_file.is_file():
-                        filtered += 1
+                    if is_dir_no_follow:
+                        if depth + 1 > MAX_SEARCH_DEPTH:
+                            filtered += 1
+                            continue
+                        if entry.name.casefold() in _SENSITIVE_DIR_NAMES:
+                            # Prune the entire sensitive subtree - never
+                            # descended, so no hidden child can appear later.
+                            filtered += 1
+                            continue
+                        try:
+                            canonical_dir = entry_path.resolve()
+                        except OSError:
+                            continue
+                        try:
+                            canonical_dir.relative_to(root)
+                        except ValueError:
+                            # Would escape the approved root - fail closed,
+                            # never descended.
+                            filtered += 1
+                            continue
+                        stack.append((canonical_dir, depth + 1))
                         continue
+                    # Plain file, no reparse involved.
                     if not fnmatch.fnmatch(entry.name.casefold(), pattern.casefold()):
                         continue
-                    if _is_sensitive(resolved_file):
+                    if _is_sensitive(entry_path):
                         filtered += 1
                         continue
-                    matches.append(str(resolved_file))
-                    continue
-                if is_dir_no_follow:
-                    if depth + 1 > MAX_SEARCH_DEPTH:
-                        filtered += 1
-                        continue
-                    if entry.name.casefold() in _SENSITIVE_DIR_NAMES:
-                        # Prune the entire sensitive subtree - never
-                        # descended, so no hidden child can appear later.
-                        filtered += 1
-                        continue
-                    try:
-                        canonical_dir = entry_path.resolve()
-                    except OSError:
-                        continue
-                    try:
-                        canonical_dir.relative_to(root)
-                    except ValueError:
-                        # Would escape the approved root - fail closed,
-                        # never descended.
-                        filtered += 1
-                        continue
-                    stack.append((canonical_dir, depth + 1))
-                    continue
-                # Plain file, no reparse involved.
-                if not fnmatch.fnmatch(entry.name.casefold(), pattern.casefold()):
-                    continue
-                if _is_sensitive(entry_path):
-                    filtered += 1
-                    continue
-                matches.append(str(entry_path))
+                    matches.append(str(entry_path))
         return matches, filtered

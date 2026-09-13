@@ -15,6 +15,7 @@ import ast
 import asyncio
 import importlib.util
 import sys
+import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -115,6 +116,72 @@ class OcrBenchmarkSourceSafetyTests(unittest.TestCase):
         source = OCR_BENCHMARK_SCRIPT.read_text(encoding="utf-8")
         for expected in ("JARVIS COMPUTER USE", "مرحبا يا جارفيس", "الإعدادات"):
             self.assertIn(expected, source)
+
+    def test_benchmark_records_rendering_diagnostics_and_never_silently_scores_unshaped_arabic(self) -> None:
+        # R18B04-002: the benchmark must record Pillow version, font path,
+        # raqm availability, and the layout engine actually used per
+        # fixture, and must fail closed (FIXTURE_RENDERING_INVALID) rather
+        # than silently generate an accuracy score for Arabic/mixed text
+        # when no proven complex-text shaping path is available.
+        source = OCR_BENCHMARK_SCRIPT.read_text(encoding="utf-8")
+        for expected in (
+            "FIXTURE_RENDERING_INVALID", "raqm_feature_available", "pillow_version",
+            "font_path", "per_fixture_layout_engine", "arabic_reshaper", "python-bidi",
+            "scoring_method",
+        ):
+            self.assertIn(expected, source)
+
+
+class OcrBenchmarkRenderingTests(unittest.TestCase):
+    """Functional coverage of the R18B04-002 fixture-rendering contract -
+    exercises the real `render_fixture_images()` function (pure, no OCR
+    package dependency), never a real OCR backend."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.module = _load_module(OCR_BENCHMARK_SCRIPT, "phase18_ocr_benchmark_test_target")
+
+    def test_english_fixtures_always_render_without_shaping(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="jarvis_ocr_render_") as tmp:
+            fixtures, _diagnostics = self.module.render_fixture_images(Path(tmp))
+            english = [f for f in fixtures if f.category == "english"]
+            self.assertEqual(len(english), 3)
+            for fixture in english:
+                self.assertTrue(fixture.rendering_valid)
+                assert fixture.path is not None
+                self.assertTrue(fixture.path.exists())
+
+    def test_arabic_and_mixed_fixtures_fail_closed_without_a_proven_shaping_path(self) -> None:
+        # On this machine, neither PIL raqm nor arabic_reshaper+python-bidi
+        # is installed in the environment running the test suite - proving
+        # the fail-closed contract rather than a silently-garbled score.
+        with tempfile.TemporaryDirectory(prefix="jarvis_ocr_render_") as tmp:
+            fixtures, diagnostics = self.module.render_fixture_images(Path(tmp))
+            if diagnostics.raqm_feature_available or (
+                diagnostics.arabic_reshaper_available and diagnostics.python_bidi_available
+            ):
+                self.skipTest("a valid Arabic shaping path is available in this environment")
+            arabic_and_mixed = [f for f in fixtures if f.category in ("arabic", "mixed")]
+            self.assertEqual(len(arabic_and_mixed), 4)
+            for fixture in arabic_and_mixed:
+                self.assertFalse(fixture.rendering_valid)
+                self.assertIsNone(fixture.path)
+                self.assertIsNone(fixture.layout_engine)
+                assert fixture.rendering_error is not None
+                self.assertIn("FIXTURE_RENDERING_INVALID", fixture.rendering_error)
+
+    def test_expected_scoring_text_is_never_the_reshaped_presentation_form(self) -> None:
+        # The ground truth used for scoring must always be the original
+        # semantic Unicode string, never Arabic-presentation-form glyphs
+        # used only for rendering.
+        with tempfile.TemporaryDirectory(prefix="jarvis_ocr_render_") as tmp:
+            fixtures, _diagnostics = self.module.render_fixture_images(Path(tmp))
+        original_texts = {text for entries in self.module.FIXTURES.values() for text in entries}
+        for fixture in fixtures:
+            self.assertIn(fixture.expected_text, original_texts)
+            # Arabic presentation-form codepoints (U+FB50-FDFF, U+FE70-FEFF)
+            # must never appear in the text used for scoring.
+            self.assertFalse(any("ﭐ" <= ch <= "﷿" or "ﹰ" <= ch <= "﻿" for ch in fixture.expected_text))
 
 
 class OwnedFixtureRunnerLogicTests(unittest.IsolatedAsyncioTestCase):

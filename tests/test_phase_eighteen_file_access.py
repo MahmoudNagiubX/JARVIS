@@ -301,6 +301,104 @@ class FileAccessPolicySearchBoundsTests(unittest.TestCase):
             file_access_module.MAX_SEARCH_MATCHES = original
 
 
+class _FakeScandirEntry:
+    """Minimal stand-in for `os.DirEntry` - deliberately references a path
+    that does not exist on disk, so it is harmlessly classified as
+    unclassifiable/filtered (fail-closed) by `_is_reparse_point`'s
+    `os.lstat()` call, without needing to mock `os.lstat` too. This test
+    only cares how many entries the walker pulls from the iterator, not
+    whether any of them end up as a match."""
+
+    def __init__(self, path: str, name: str) -> None:
+        self.path = path
+        self.name = name
+
+    def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+        return False
+
+    def is_symlink(self) -> bool:
+        return False
+
+
+class _CountingScandirIterator:
+    """Wraps a lazy generator of `_FakeScandirEntry` objects and records
+    exactly how many were pulled via `next()` - the real `os.scandir()`
+    iterator is itself lazy/OS-batched, never eagerly materializing every
+    entry at construction time, so this fake must behave the same way for
+    the test to actually prove streaming behavior rather than just
+    asserting on a pre-built list."""
+
+    def __init__(self, total: int, directory: str) -> None:
+        self.total = total
+        self.consumed = 0
+        self._generator = (
+            _FakeScandirEntry(f"{directory}\\fake_entry_{index}.txt", f"fake_entry_{index}.txt")
+            for index in range(total)
+        )
+
+    def __iter__(self) -> "_CountingScandirIterator":
+        return self
+
+    def __next__(self) -> _FakeScandirEntry:
+        entry = next(self._generator)
+        self.consumed += 1
+        return entry
+
+    def __enter__(self) -> "_CountingScandirIterator":
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        return False
+
+
+class FileAccessPolicyStreamingScandirTests(unittest.TestCase):
+    """R18B04-001: the walker must consume `os.scandir()` as a live
+    iterator, never `list(os.scandir(...))` first - proven here by an
+    instrumented fake iterator that records exactly how many entries were
+    actually pulled, not merely by inspecting the final match count (which
+    would pass even if the whole directory had been materialized first)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="jarvis_fa_streaming_")
+        self.tmp = Path(self._tmp.name)
+        self.allowed = self.tmp / "Data"
+        self.allowed.mkdir()
+        self.policy = FileAccessPolicy.from_config_roots((str(self.allowed),))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_scan_budget_stops_consuming_the_iterator_without_materializing_the_directory(self) -> None:
+        from unittest import mock
+
+        from jarvis.computer import file_access as file_access_module
+
+        total_entries = 5_000
+        budget = 7
+        created_iterators: list[_CountingScandirIterator] = []
+
+        def fake_scandir(path: object) -> _CountingScandirIterator:
+            iterator = _CountingScandirIterator(total_entries, str(path))
+            created_iterators.append(iterator)
+            return iterator
+
+        original_budget = file_access_module.MAX_SEARCH_CANDIDATES_SCANNED
+        file_access_module.MAX_SEARCH_CANDIDATES_SCANNED = budget
+        try:
+            with mock.patch.object(file_access_module.os, "scandir", side_effect=fake_scandir):
+                matches, _filtered = self.policy.iter_search_candidates(self.allowed, "*")
+        finally:
+            file_access_module.MAX_SEARCH_CANDIDATES_SCANNED = original_budget
+
+        self.assertEqual(len(created_iterators), 1)
+        # The walker must stop calling next() the moment the budget is
+        # reached - never fetching a single entry beyond it, and nowhere
+        # close to the directory's real (simulated) size.
+        self.assertEqual(created_iterators[0].consumed, budget)
+        self.assertLess(created_iterators[0].consumed, total_entries)
+        self.assertLessEqual(len(matches), budget)
+
+
 class FileAccessServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
     """Through the actual JARVIS ComputerActionService -> controller path,
     per Section 8.12 - a temporary directory is the one explicit approved
