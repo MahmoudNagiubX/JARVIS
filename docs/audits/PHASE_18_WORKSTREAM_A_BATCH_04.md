@@ -96,7 +96,7 @@ This confirmed `st_file_attributes`'s reparse-point bit (not `is_symlink()`) is 
 
 ## 4. Milestone 1 — Grounded drag + second owned fixture + evaluation breadth
 
-**Commit:** `MILESTONE_1_COMMIT` (recorded in §4.9 below after push)
+**Commit:** `309c2d705fe37ce4c45307c190a16ed80d4f3497`
 
 ### 4.1 Drag architecture — dual-target, same-window-only, bounded interpolation
 
@@ -188,9 +188,79 @@ All 32 cases pass deterministically (`test_all_cases_pass_deterministically`), a
   | Both fixtures' child processes confirmed exited (exact-PID cleanup) | 3/3 |
 
   During dogfooding, a real Windows OS-level `SetForegroundWindow` foreground-activation race was also observed and characterized: a background process spawning a fresh top-level window can be denied foreground activation depending on exact input-history timing, unrelated to JARVIS or fixture code. The runner's `_approve_and_run` helper now retries only this specific mechanical precondition (`window_focus_not_verified`, up to 4 attempts with a short delay) before giving up - never retrying a semantic action's actual outcome, and the final reported status is always the true last attempt's result.
-- **Commit:** `MILESTONE_1_COMMIT`
-- **Push:** `feature/phase-18-computer-use-v2` — recorded after push.
+- **Commit:** `309c2d705fe37ce4c45307c190a16ed80d4f3497`
+- **Push:** `feature/phase-18-computer-use-v2` (`bdad0a9..309c2d7`) — pushed successfully.
 
 GAP-0102 advances from `PARTIAL` to a stronger `PARTIAL` (not resolved - paste, cross-window drag, and arbitrary hotkeys remain intentionally absent). GAP-0105 advances with a second owned fixture and 8 new evaluation cases, remaining `PARTIAL` (still a two-fixture foundation, not the broad real-app matrix named in the gap's original scope).
+
+---
+
+## 5. Milestone 2 — Local Visual Grounding / OCR V1 evaluation (blocked, no production integration)
+
+**Commit:** `MILESTONE_2_COMMIT` (recorded in §5.7 below after push)
+
+**Verdict: `OCR_BACKEND_EVALUATION_BLOCKED`.** Per the task's own explicit instruction ("do not force a provider merely to finish the milestone"), no OCR backend was integrated into production. No `computer-ocr` optional dependency group, no `computer.visual.read` tool, no `VisualTextRegion`/`VisualObservation` contracts, no OCR-owned fixture mode were added - core JARVIS runtime and every previously-green milestone are completely unaffected by this milestone. This section documents the evidence-first evaluation that produced this verdict.
+
+### 5.1 Evaluation environment
+
+Per the task's instruction, benchmarking was performed in an **isolated** temporary venv, never the project's own `.venv` and never as an installed JARVIS dependency - two separate venvs (one per candidate, to avoid one candidate's transitive dependencies masking a real missing-dependency finding in the other - see §5.3), both built from the project-compatible Python 3.12 interpreter already present on this machine (`C:\Users\mahmo\AppData\Local\Python\pythoncore-3.12-64`, resolving to Python 3.12.10 - the project's `requires-python = ">=3.11"` and its own `.venv` both target 3.12), on NIGHTFURY. Both venvs and all downloaded model caches were deleted after the evaluation; nothing from either venv reached the repository.
+
+### 5.2 Benchmark corpus and methodology
+
+`scripts/phase18/ocr_backend_benchmark.py` (preserved, evaluation-only, never imported by production) generates seven JARVIS-owned synthetic fixture images using an already-installed Windows system font (Segoe UI - never copied into the repository):
+
+- English: `JARVIS COMPUTER USE`, `Open Settings`, `Save Draft`
+- Arabic: `مرحبا يا جارفيس`, `الإعدادات`, `حفظ`
+- Mixed: `JARVIS الإعدادات`
+
+Accuracy is scored as **normalized character recall** (NFKC-normalized, whitespace-collapsed, order-insensitive multiset character overlap - never byte-perfect glyph comparison, per the task's own accuracy-gate wording), matching the gate thresholds: English ≥0.90, Arabic ≥0.85, mixed ≥0.80. Generated images are deleted immediately after each benchmark run; none are committed.
+
+### 5.3 Candidate 1 (primary): PaddleOCR 3.7.0 + paddlepaddle 3.3.1 (PP-OCRv5, CPU) — FAILS
+
+Installed via `pip install paddlepaddle==3.3.1 paddleocr==3.7.0` (~0.77 GB venv + ~0.23 GB model cache under `~/.paddlex/official_models`, downloaded from Hugging Face on first use, cached thereafter - never committed). `PaddleOCR(lang=..., ocr_version="PP-OCRv5", ...)` initializes successfully and downloads/caches the PP-OCRv5 mobile recognition + detection models for both `en` and `ar`. **Every single `.predict()` call, for every one of the 7 fixture images, on both the English and Arabic engines, raises the identical error:**
+
+```
+NotImplementedError: (Unimplemented) ConvertPirAttribute2RuntimeAttribute not support
+[pir::ArrayAttribute<pir::DoubleAttribute>]
+(at ..\paddle\fluid\framework\new_executor\instruction\onednn\onednn_instruction.cc:118)
+```
+
+This is a crash deep inside PaddlePaddle's own compiled C++ CPU inference executor (its new "PIR"/Paddle-IR execution path interacting with its oneDNN-accelerated operator kernels) - not a JARVIS or benchmark-script defect, and not fixable from application code. Three independent remediation attempts were made, all unsuccessful:
+
+1. Disabling oneDNN via the documented `FLAGS_use_mkldnn=0` environment variable - error persists identically.
+2. Disabling oneDNN programmatically via `paddle.set_flags({'FLAGS_use_mkldnn': False})` before model load - error persists identically (the exported inference graph appears to already bake in oneDNN-fused operators at export time, unaffected by a client-side runtime flag).
+3. Downgrading to `paddlepaddle==2.6.2` (the last pre-"PIR" release) - this instead breaks paddleocr 3.7.0's own required API surface (`AttributeError: 'paddle.base.libpaddle.AnalysisConfig' object has no attribute 'set_optimization_level'`), since paddleocr 3.7.0 requires the newer paddle 3.x API. The two packages' version requirements are tightly coupled; there is no working paddle-3.x-API-compatible version that avoids the oneDNN crash on this machine.
+
+**Verdict: PaddleOCR fails acceptance gates 3 and 4 (English/Arabic fixture text usable) outright - zero successful predictions across the entire corpus.** Gates 1/2 (local, no cloud/API key) are technically met; the candidate is disqualified regardless since it cannot produce any output at all.
+
+### 5.4 Candidate 2 (secondary): RapidOCR 3.9.2 (ONNX Runtime, CPU) — FAILS the accuracy gate
+
+Installed via `pip install rapidocr==3.9.2` in a **separate, clean** venv (~0.30 GB + ~57 MB bundled/cached models under the package's own `models/` directory - never committed) specifically to test the task's own named risk without contamination from PaddleOCR's transitive dependencies (PaddleOCR's install had incidentally pulled in `python-bidi` as a transitive dependency of `paddlex`, which would have silently masked the exact finding below).
+
+- **Confirmed the task's named upstream risk, empirically, from a clean install.** `pip show rapidocr` lists `Requires: colorlog, numpy, omegaconf, opencv_python, Pillow, pyclipper, PyYAML, requests, Shapely, six, tqdm` - **no `python-bidi`**. Constructing an Arabic-language `RapidOCR` engine succeeds, but every single prediction call raises `ModuleNotFoundError: Required dependency 'python-bidi' is not installed. Install it with: pip install python-bidi`. This exactly matches the task's advance caution ("a recent RapidOCR upstream issue reports Arabic recognition on a fresh install can fail because an RTL python-bidi runtime dependency is missing from declared dependencies"). Separately, RapidOCR's default `onnxruntime` inference engine is *also* not a declared/pinned dependency - a clean `pip install rapidocr` alone cannot run any engine at all without a manual `pip install onnxruntime` too.
+- **After manually installing both `onnxruntime` and `python-bidi`:** recognition runs without crashing, but accuracy fails the gate. RapidOCR's only available Arabic recognition tier - for **both** PP-OCRv4 and PP-OCRv5, confirmed by probing every `(OCRVersion, ModelType)` combination programmatically - is `"mobile"` (no `"server"`/`"small"`/`"medium"` Arabic model exists in this release). Recall on the Arabic fixtures via this tier ranged **0.0-0.412** per case, far below the required 0.85. The mixed-text fixture (`JARVIS الإعدادات`) scored 0.267. English recall via the *same* `"mobile"` tier (the only tier where both languages are simultaneously available) was also weak (0.353-0.412 on the longer phrase, though two short common-word fixtures scored 1.0 on this order-insensitive metric). By contrast, RapidOCR's **default** configuration (PP-OCRv6 "small", English/Chinese only - no Arabic support at that tier at all) recognized `JARVIS COMPUTER USE` perfectly (`('JARVIS', 'COMPUTER', 'USE')`), confirming the poor score is specific to the smaller Arabic-capable tier, not a general RapidOCR or fixture-image defect.
+
+**Verdict: RapidOCR fails accuracy gate 4 (Arabic ≥0.85) and effectively gate 3 as well (English ≥0.90 only achievable in a config with no Arabic support) - no single configuration passes both language gates simultaneously.** Gates 1/2/9 (local, no API key, deterministic provider seam mockable) would otherwise be met.
+
+### 5.5 Candidate 3 (baseline): Tesseract — not evaluated
+
+Not already installed on this machine (`where tesseract` found nothing, no `Tesseract-OCR` install directory under Program Files), and installing its system-level binary is outside Python packaging entirely - it did not meet the task's own conditional bar ("only as a baseline if already installed or straightforward to isolate"). Not evaluated this batch; may be reconsidered in a future batch if a reviewer wants baseline comparison data.
+
+### 5.6 Decision
+
+Per Section 8 of the task ("If no candidate passes: Milestone 2 may finish as `OCR_BACKEND_EVALUATION_BLOCKED` with no unsafe production integration - do not force a provider merely to finish the milestone"): **no backend was integrated.** `docs/source_of_truth/05_JARVIS_DECISION_LOG.md` OPEN-002 records this as an **open, evidence-backed evaluation result** - not an accepted/locked decision, since no candidate was actually selected. GAP-0103 remains `OPEN` (not advanced to `PARTIAL`), with the full evidence trail recorded against it. The benchmark tooling (`scripts/phase18/ocr_backend_benchmark.py`) is preserved, with its own module docstring recording the exact verdict, so a future batch can re-run it against a newer PaddleOCR/PaddlePaddle release (the oneDNN bug may be fixed upstream) or an additional candidate without re-deriving this evaluation from scratch.
+
+### 5.7 Tests and verification
+
+- 5 new static safety tests (`OcrBenchmarkSourceSafetyTests` in `tests/test_phase_eighteen_owned_fixture.py`): the benchmark script is never imported by production bootstrap or anywhere under `src/`, deletes its generated images after running, is a syntactically standalone script, and uses only the JARVIS-owned synthetic fixture strings named above - **16 tests total in the file, all passing** (was 11).
+- `python -m pytest tests/test_phase_eighteen_owned_fixture.py -q` → **16 passed**.
+- `python -m pytest tests -q` (full regression) → **739 passed, 36 subtests passed**.
+- `python -m compileall src tests scripts -q` → clean, no errors.
+- `git diff --check` → clean, no whitespace errors.
+- Frontend gate (`npm test -- --run`, `npm run build`, `npm audit --audit-level=high` in `ui/`) — run for completeness even though no frontend code was touched by this milestone (no OCR UI surface exists since no backend was integrated): **75/75 tests passed**, build succeeded, `npm audit --audit-level=high` exits clean (2 pre-existing moderate-severity `vitest`/`@vitest/mocker` dev-dependency advisories, below the `high` threshold, unrelated to and unchanged by this batch).
+- **Commit:** `MILESTONE_2_COMMIT`
+- **Push:** `feature/phase-18-computer-use-v2` — recorded after push.
+
+GAP-0103 stays `OPEN` (not `PARTIAL`) - the evaluation itself is complete and thorough, but no visual/OCR capability exists in the product. No DEC-048 was added to the decision log (no backend was accepted); OPEN-002 was updated in place with the full evidence instead, per the task's own instruction not to manufacture an accepted decision when no candidate passes.
 
 GAP-0503 updated from `RESOLVED` (path-confinement scope) to `RESOLVED_AFTER_REVIEW_HARDENING` (same scope — read/open/search path confinement only; file write/dialogs remain out of scope and unimplemented).

@@ -23,6 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNNER_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "computer_use_acceptance.py"
 FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_fixture_host.py"
 TEXT_FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_text_fixture_host.py"
+OCR_BENCHMARK_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "ocr_backend_benchmark.py"
 
 
 def _load_module(path: Path, name: str):
@@ -84,6 +85,36 @@ class OwnedFixtureSourceSafetyTests(unittest.TestCase):
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and node.level and node.level > 0:
                     self.fail(f"{script.name} uses a relative import, unexpected for a standalone dev script")
+
+
+class OcrBenchmarkSourceSafetyTests(unittest.TestCase):
+    """Batch 04 Milestone 2: the OCR backend benchmark is an evaluation-only
+    dev tool (never a production dependency) - no owner data, no persisted
+    model weights/images, never imported by production bootstrap."""
+
+    def test_benchmark_not_imported_by_production_bootstrap(self) -> None:
+        bootstrap_source = (REPO_ROOT / "src" / "jarvis" / "bootstrap.py").read_text(encoding="utf-8")
+        self.assertNotIn("ocr_backend_benchmark", bootstrap_source)
+
+    def test_benchmark_not_imported_anywhere_under_src(self) -> None:
+        for path in (REPO_ROOT / "src").rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("ocr_backend_benchmark", source, f"unexpected reference in {path}")
+
+    def test_benchmark_deletes_generated_images_after_running(self) -> None:
+        source = OCR_BENCHMARK_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("unlink", source)
+
+    def test_benchmark_is_syntactically_standalone_script(self) -> None:
+        tree = ast.parse(OCR_BENCHMARK_SCRIPT.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level and node.level > 0:
+                self.fail("ocr_backend_benchmark.py uses a relative import, unexpected for a standalone dev script")
+
+    def test_benchmark_uses_only_jarvis_owned_synthetic_fixture_text(self) -> None:
+        source = OCR_BENCHMARK_SCRIPT.read_text(encoding="utf-8")
+        for expected in ("JARVIS COMPUTER USE", "مرحبا يا جارفيس", "الإعدادات"):
+            self.assertIn(expected, source)
 
 
 class OwnedFixtureRunnerLogicTests(unittest.IsolatedAsyncioTestCase):
