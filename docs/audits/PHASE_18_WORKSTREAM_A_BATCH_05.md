@@ -157,7 +157,7 @@ GAP-0103 advances from `OPEN` to `PARTIAL` (read-only OCR only - visual actuatio
 
 ## 5. Milestone 2 — Bounded re-ground/recovery foundation (GAP-0104)
 
-**Commit:** `MILESTONE_2_COMMIT` (recorded below after push)
+**Commit:** `2ac574fb2540889b6b276485afea5874d79b8965`
 
 ### 5.1 Design
 
@@ -201,7 +201,54 @@ Not performed for this milestone. The recovery contract under test is entirely a
 - `python -m pytest tests -q` (full regression) → **784 passed, 36 subtests passed** (774 + the 10 new `RecoveryTests`), in 223.08s.
 - `python -m compileall src tests scripts -q` → clean, no errors.
 - `git diff --check` → clean, no whitespace errors.
-- **Commit:** `MILESTONE_2_COMMIT`
-- **Push:** `feature/phase-18-computer-use-v2` — recorded after push.
+- **Commit:** `2ac574fb2540889b6b276485afea5874d79b8965`
+- **Push:** `feature/phase-18-computer-use-v2` (`d569c06..2ac574f`) — pushed successfully.
 
 GAP-0104 advances (remains `PARTIAL`, narrowly deepened): the bounded pre-input recovery cycle described in Section 6 is now implemented, tested, and evaluation-suite-proven; no autonomous multi-app replanning/recovery loop, no retry budget beyond this single bounded cycle, and no second planner/authority exist - full GAP-0104 closure is explicitly out of scope for this batch.
+
+---
+
+## 6. Final batch verification (Section 7)
+
+- `python -m pytest tests -q` (full regression, run after Milestone 2's commit) → **784 passed, 36 subtests passed** in 223.08s, exit code 0.
+- `python -m pytest tests -k "file_access or phase_eighteen" -q` (Phase 18 focused) → **269 passed, 515 deselected**.
+- `python -m pytest tests/test_phase_eighteen_evaluation_suite.py -q` (Computer Use V2 evaluation suite, all 45 `computer_use_v2` cases) → **7 passed**.
+- Physical owned-fixture acceptance: covered per-milestone above (§3 streaming file-access regression is unit-level only, no physical component; §4.6 `ocr_window`/`ocr_element` 3/3 each against `uia_fixture_host.py`; §5.4 explains why Milestone 2's recovery contract was deliberately left to the deterministic suite rather than physical fault injection).
+- Frontend tests/build/audit: **not run** - no file under a frontend/UI directory was touched anywhere in this batch (Milestones 0-2 touched only `src/jarvis/**`, `tests/**`, `scripts/phase18/**`, `pyproject.toml`, and `docs/**`), matching the precedent set in Batch 04.
+- `python -m compileall src tests scripts -q` → clean, no errors (re-run after Milestone 2).
+- `git diff --check` → clean, no whitespace errors, at every commit boundary and again after this final doc-only commit's own edits.
+- Security/authority review: no new authority, no new sensitivity-detection path, and no new identity-comparison logic were introduced. Milestone 1's `computer.visual.read` reuses the existing GDI-capture and `resolve_actionable_target`/`validate_input_window` privacy/staleness checks (no second screenshot subsystem, no second sensitivity policy) and is strictly observation-only (no visual actuation surface exists). Milestone 2's recovery cycle reuses the existing `resolve_actionable_target` identity-preserving resolution path twice at most, never introduces a second planner/authority, never fires after any `SendInput` call, and never applies to a policy denial or structural ambiguity; `ComputerActionService.decide()`'s pre-existing approval re-validation (unmodified this batch) continues to refuse a stale or identity-changed target outright, with no leniency from the new recovery cycle. Both new two-layer permission-rule pairs (`tool.computer.visual.read` + `computer.visual_ocr_window`/`computer.visual_ocr_element`) were added together from the start of Milestone 1, informed directly by the Batch 04 `clipboard_read` finding.
+
+---
+
+## 7. Final GAP/decision-log state and summary
+
+| Gap | State entering Batch 05 | State after Batch 05 |
+|---|---|---|
+| GAP-0101 | `RESOLVED` | `RESOLVED` (unchanged, untouched this batch) |
+| GAP-0102 | `PARTIAL` | `PARTIAL` (unchanged, untouched this batch) |
+| GAP-0103 | `OPEN` | `PARTIAL` (Milestone 1: read-only OCR/visual grounding integrated via EasyOCR 1.7.2 / DEC-048; visual actuation remains completely absent by design) |
+| GAP-0104 | `PARTIAL` | `PARTIAL` (Milestone 2: bounded single-cycle pre-input recovery added and proven; no autonomous multi-app replanning loop) |
+| GAP-0105 | `PARTIAL` | `PARTIAL` (evaluation suite grew from 32 to 45 cases across Milestones 1-2; broad real-app matrix still out of scope) |
+| GAP-0106 | `PARTIAL` | `PARTIAL` (unchanged, untouched this batch) |
+| GAP-0503 | `RESOLVED_AFTER_REVIEW_HARDENING` | `RESOLVED_AFTER_REVIEW_HARDENING` (Milestone 0 addendum: the file-search streaming-budget follow-up is now closed with a proven fake-iterator regression test) |
+
+**OCR backend decision:** OCR **was** integrated this batch - EasyOCR 1.7.2 (Apache-2.0, PyTorch CPU, no system binary/installer, no cloud/API key), selected after RapidOCR was re-tested with corrected Arabic fixture shaping and still failed (confirming a genuine model limitation, not a Batch 04 rendering artifact) and PaddleOCR was not re-probed (no new evidence since its Batch 04 crash). Recorded as DEC-048 in `docs/source_of_truth/05_JARVIS_DECISION_LOG.md`; OPEN-002 is closed. Production integration is strictly read-only (`computer.visual.read`: `ocr_window`/`ocr_element`), grounded only by opaque `window_ref`/`element_ref`, with no visual actuation surface of any kind.
+
+**Manual dependency:** none. `computer-ocr = ["easyocr==1.7.2"]` is an optional `pyproject.toml` extras group, not a manual/system-level install; core JARVIS startup and every other Computer Use capability are proven (by test) to work unchanged when it is absent.
+
+**New follow-up for a future batch:** a third JARVIS-owned Win32 fixture with an Arabic-labeled control, to allow a single unified full-pipeline physical proof of Arabic/mixed-text OCR (currently the physical fixture proof is English-only; Arabic/mixed evidence instead comes from the benchmark script's real-hardware, real-EasyOCR, isolated-venv runs against JARVIS-owned synthetic images - see §4.6). No other new follow-up was identified.
+
+---
+
+## 8. Commit chain
+
+| Milestone | Commit | Push range |
+|---|---|---|
+| Starting HEAD | `24fbaffa43d60d83e5428ae93c62cfc112a776f0` | — |
+| 0 — Batch 04 review closure | `81423caf55703eee9aad2506f72bf8ae6df0739f` | `24fbaff..81423ca` |
+| 1 — OCR resolution + visual grounding | `d569c061a23720cc3a3849a744d388b5b830eaba` | `81423ca..d569c06` |
+| 2 — Bounded recovery policy | `2ac574fb2540889b6b276485afea5874d79b8965` | `d569c06..2ac574f` |
+| Final report (this commit) | see final HEAD in the closing verdict message returned to the requester | `2ac574f..<final HEAD>` |
+
+**Final verdict: `PHASE18_COMPUTER_USE_BATCH05_PASS`** — all three milestones completed, all required tests/evaluation cases green, both required regression suites (file-access streaming; OCR-benchmark source-safety/rendering-diagnostics) added and passing, a clean provider decision was reached and integrated (not blocked), and the bounded recovery foundation was implemented and evaluation-suite-proven, all pushed to `feature/phase-18-computer-use-v2` with no stop condition triggered at any point.
