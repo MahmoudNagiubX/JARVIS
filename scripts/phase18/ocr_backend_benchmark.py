@@ -378,9 +378,49 @@ def run_rapidocr(fixtures: list[RenderedFixture]) -> dict:
     return result
 
 
+def run_easyocr(fixtures: list[RenderedFixture]) -> dict:
+    """Third candidate (Batch 05 Milestone 1, per-task preference for a
+    genuinely different, purely pip-installable local engine): EasyOCR
+    (PyTorch CPU). Chosen over a portable Tesseract specifically because it
+    requires no separate system binary/installer and cannot mutate the
+    owner's PATH or install a system-wide service - it runs entirely from
+    packages inside this isolated venv. Unlike RapidOCR/PaddleOCR, EasyOCR's
+    "arabic" recognition model natively covers Arabic+English together in
+    one reader (`Reader(["ar", "en"])`), so this evaluates one combined
+    engine rather than two per-language engines."""
+    import platform
+
+    result: dict = {"backend": "easyocr", "python_version": platform.python_version()}
+    import easyocr
+    import torch
+
+    result["easyocr_version"] = getattr(easyocr, "__version__", "unknown")
+    result["torch_version"] = getattr(torch, "__version__", "unknown")
+    result["engines"] = {}
+
+    for engine_name, langs in (("english", ["en"]), ("arabic_and_english", ["ar", "en"])):
+        engine_result: dict = {}
+        cold_start = time.perf_counter()
+        try:
+            reader = easyocr.Reader(langs, gpu=False, verbose=False)
+        except Exception as exc:
+            engine_result["init_error"] = f"{exc.__class__.__name__}: {exc}"
+            result["engines"][engine_name] = engine_result
+            continue
+        engine_result["cold_init_seconds"] = round(time.perf_counter() - cold_start, 3)
+
+        def predict_one(path: Path, _reader=reader) -> str:
+            results = _reader.readtext(str(path), detail=1)
+            return " ".join(text for (_bbox, text, _confidence) in results)
+
+        engine_result["cases"] = _run_cases(fixtures, predict_one)
+        result["engines"][engine_name] = engine_result
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backend", required=True, choices=["paddleocr", "rapidocr"])
+    parser.add_argument("--backend", required=True, choices=["paddleocr", "rapidocr", "easyocr"])
     parser.add_argument("--out", required=True)
     parser.add_argument("--image-dir", default=None)
     args = parser.parse_args()
@@ -392,6 +432,8 @@ def main() -> int:
         result = run_paddleocr(fixtures)
     elif args.backend == "rapidocr":
         result = run_rapidocr(fixtures)
+    elif args.backend == "easyocr":
+        result = run_easyocr(fixtures)
     else:
         raise ValueError(args.backend)
 

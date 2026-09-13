@@ -22,6 +22,7 @@ from .semantic_ui import (
     SemanticResult,
     SemanticTreeNode,
 )
+from .visual_ui import VisualBounds, VisualObservation, VisualTextRegion
 from .clients import ALLOWED_CLIENT_TOPICS, ClientSession
 from .autonomy import AutonomyDecision, AutonomyLevel, AutonomyRule
 from .computer import ComputerAction, ComputerCapability, ComputerController, ComputerResult
@@ -191,6 +192,9 @@ __all__ = [
     "SemanticReferenceState",
     "SemanticResult",
     "SemanticTreeNode",
+    "VisualBounds",
+    "VisualObservation",
+    "VisualTextRegion",
     "DeveloperWorkerAdapter",
     "DeveloperWorkerProvider",
     "DeviceEnrollmentRequest",

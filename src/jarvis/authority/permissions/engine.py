@@ -48,6 +48,14 @@ class PolicyPermissionEngine:
             PermissionRule("tool.computer.pointer.act", PermissionEffect.ALLOW, "computer_pointer_act_boundary"),
             PermissionRule("tool.computer.keyboard.key", PermissionEffect.ALLOW, "computer_keyboard_key_boundary"),
             PermissionRule("tool.computer.keyboard.chord", PermissionEffect.ALLOW, "computer_keyboard_chord_boundary"),
+            # Same pattern as tool.computer.semantic.read/clipboard.read: the
+            # outer wrapper only gates entry, ComputerActionService's inner
+            # read_actions classification (VISUAL_OCR_WINDOW/ELEMENT) is what
+            # actually decides ALLOW - this outer rule alone is not
+            # sufficient without the matching inner rules above (that
+            # distinction is exactly what the clipboard_read finding
+            # missed).
+            PermissionRule("tool.computer.visual.read", PermissionEffect.ALLOW, "computer_visual_read_boundary"),
             # BrowserActionService owns the inner read/approval decision. The
             # outer tool wrapper must not create a second approval request.
             PermissionRule("tool.browser.", PermissionEffect.ALLOW, "browser_action_boundary"),
@@ -81,6 +89,12 @@ class PolicyPermissionEngine:
             PermissionRule("computer.semantic_get_element", PermissionEffect.ALLOW, "safe_semantic_read"),
             PermissionRule("computer.semantic_get_text", PermissionEffect.ALLOW, "safe_semantic_read"),
             PermissionRule("computer.semantic_revalidate", PermissionEffect.ALLOW, "safe_semantic_read"),
+            # Batch 05 Milestone 1: read-only local OCR visual grounding.
+            # Explicit ALLOW rules added up front (learning directly from
+            # the clipboard_read gap above) - both are already in
+            # ComputerActionService._read_actions (risk_level "read").
+            PermissionRule("computer.visual_ocr_window", PermissionEffect.ALLOW, "safe_visual_ocr_read"),
+            PermissionRule("computer.visual_ocr_element", PermissionEffect.ALLOW, "safe_visual_ocr_read"),
             PermissionRule("computer.screen_snapshot_on_demand", PermissionEffect.ALLOW, "on_demand_screen_read"),
             PermissionRule("browser.open_url", PermissionEffect.ALLOW, "safe_browser_navigation"),
             PermissionRule("browser.navigate", PermissionEffect.ALLOW, "safe_browser_navigation"),

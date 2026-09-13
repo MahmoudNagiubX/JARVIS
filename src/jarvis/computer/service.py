@@ -32,6 +32,7 @@ from ..perception.windows import WindowsDesktopProvider
 from .file_access import FileAccessPolicy
 from .native_input import NativeInputResult, WindowsNativeInputAdapter
 from .semantic_uia import WindowsUIAutomationAdapter
+from .visual_ocr import EasyOcrVisualAdapter, VisualResult
 
 
 class WindowsNativeComputerController:
@@ -61,6 +62,7 @@ class WindowsNativeComputerController:
         semantic_adapter: SemanticDesktopAdapter | None = None,
         native_input_adapter: WindowsNativeInputAdapter | None = None,
         file_access_policy: FileAccessPolicy | None = None,
+        visual_ocr_adapter: EasyOcrVisualAdapter | None = None,
     ) -> None:
         self.perception_provider = perception_provider or WindowsDesktopProvider()
         self.semantic_adapter = semantic_adapter or WindowsUIAutomationAdapter(self.perception_provider)
@@ -68,6 +70,11 @@ class WindowsNativeComputerController:
         # Fail-closed by default (GAP-0503): no configured roots means every
         # path-requiring file action is denied, never silently unrestricted.
         self.file_access_policy = file_access_policy or FileAccessPolicy()
+        # Optional (`computer-ocr` extra) - `EasyOcrVisualAdapter.available`
+        # is False when the dependency is absent; every visual_ocr_* action
+        # returns a typed `visual_ocr_not_available` result rather than an
+        # import-time crash (Batch 05 Milestone 1, GAP-0103).
+        self.visual_ocr_adapter = visual_ocr_adapter or EasyOcrVisualAdapter(self.perception_provider, self.semantic_adapter)
         self._user32 = None
         self._kernel32 = None
         if platform.system().casefold() == "windows":
@@ -149,6 +156,10 @@ class WindowsNativeComputerController:
                 return await self._keyboard_key(action.parameters)
             if capability is ComputerCapability.KEYBOARD_CHORD:
                 return await self._keyboard_chord(action.parameters)
+            if capability is ComputerCapability.VISUAL_OCR_WINDOW:
+                return await self._visual_ocr_window(action.parameters)
+            if capability is ComputerCapability.VISUAL_OCR_ELEMENT:
+                return await self._visual_ocr_element(action.parameters)
             if capability is ComputerCapability.RESOLVE_ELEMENT_TARGET:
                 return await self._resolve_element_target(action.parameters)
             if capability is ComputerCapability.RESOLVE_WINDOW_TARGET:
@@ -567,6 +578,22 @@ class WindowsNativeComputerController:
         result: NativeInputResult = await self.native_input_adapter.press_key(window_ref, key, tuple(modifiers))
         return ComputerResult(result.status, dict(result.output), result.error_code, result.verified)
 
+    async def _visual_ocr_window(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        if set(parameters) != {"window_ref"} or not isinstance(parameters.get("window_ref"), str):
+            return ComputerResult("denied", error_code="window_ref_required")
+        window_ref = parameters["window_ref"]
+        if not window_ref.startswith("window-"):
+            return ComputerResult("denied", error_code="window_ref_required")
+        result: VisualResult = await self.visual_ocr_adapter.ocr_window(window_ref)
+        return ComputerResult(result.status, result.output, result.error_code, result.verified)
+
+    async def _visual_ocr_element(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        element_ref = self._require_element_ref(parameters)
+        if element_ref is None:
+            return ComputerResult("denied", error_code="element_ref_required")
+        result: VisualResult = await self.visual_ocr_adapter.ocr_element(element_ref)
+        return ComputerResult(result.status, result.output, result.error_code, result.verified)
+
     async def _resolve_element_target(self, parameters: Mapping[str, Any]) -> ComputerResult:
         """Internal-only: fresh, trusted, actuation-grade element target
         descriptor (R18B02-001/002). Never reachable through any tool
@@ -654,6 +681,8 @@ class ComputerActionService:
         ComputerCapability.SEMANTIC_GET_ELEMENT.value,
         ComputerCapability.SEMANTIC_GET_TEXT.value,
         ComputerCapability.SEMANTIC_REVALIDATE.value,
+        ComputerCapability.VISUAL_OCR_WINDOW.value,
+        ComputerCapability.VISUAL_OCR_ELEMENT.value,
     })
     _safe_actions = frozenset({
         ComputerCapability.OPEN_APPLICATION.value,
