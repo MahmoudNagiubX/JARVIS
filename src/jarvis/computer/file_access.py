@@ -15,24 +15,29 @@ silent fallback to unrestricted access.
 
 from __future__ import annotations
 
+import fnmatch
 import os
+import stat as _stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
 MAX_ROOTS = 20
 MAX_SEARCH_MATCHES = 100
 MAX_SEARCH_CANDIDATES_SCANNED = 5_000
+# R18B03-001: bounded traversal depth for the pre-descent search walker -
+# defense in depth alongside the bounded canonical-directory visited set,
+# even though a normal (non-reparse) directory tree cannot be cyclic.
+MAX_SEARCH_DEPTH = 32
 
 # Credential/key-store directory names, denied wherever they appear as a
 # path component - defense in depth even nested under an approved root.
 _SENSITIVE_DIR_NAMES = frozenset({".ssh", ".gnupg", ".aws", ".azure", ".kube"})
 
-# Exact (casefolded) filenames that are always sensitive. ".env.example" is
-# deliberately absent - it is a safe template, not a secret.
-_SENSITIVE_FILE_NAMES = frozenset({
-    ".env", ".env.local", ".env.development", ".env.production", ".env.test",
-    "login data", "cookies", "web data",
-})
+# Exact (casefolded) filenames that are always sensitive, aside from the
+# broader ".env"/".env.*" family handled separately below (R18B03-002) -
+# ".env.example" is deliberately excluded there, it is a safe template.
+_SENSITIVE_FILE_NAMES = frozenset({"login data", "cookies", "web data"})
+_ENV_SAFE_TEMPLATE_NAME = ".env.example"
 _SENSITIVE_FILE_SUFFIXES = (".pem", ".key", ".pfx", ".p12", ".ppk")
 _SENSITIVE_FILE_STEMS = frozenset({"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"})
 # Path substrings (already casefolded, backslash-normalized) recognizable as
@@ -83,12 +88,44 @@ def _is_forbidden_root(path: Path) -> bool:
     return False
 
 
+def _is_env_secret_name(name_casefold: str) -> bool:
+    """True for ``.env`` and the ``.env.*`` family (R18B03-002), except the
+    explicitly-safe template ``.env.example``. Matches on the literal ``.env``
+    stem followed by nothing or a ``.`` separator only, so ``.environment``
+    (no separator after the ``.env`` prefix) is never caught by this rule."""
+    if name_casefold == _ENV_SAFE_TEMPLATE_NAME:
+        return False
+    return name_casefold == ".env" or name_casefold.startswith(".env.")
+
+
+def _is_reparse_point(path: Path) -> bool:
+    """True for a symlink OR a Windows junction/other reparse point,
+    classified WITHOUT following it (`os.lstat`). Empirically verified: a
+    real `mklink /J` junction sets `FILE_ATTRIBUTE_REPARSE_POINT` on
+    `st_file_attributes` even though `Path.is_symlink()` reports False for
+    it - so the attribute bit, not `is_symlink()` alone, is the correct
+    pre-descent classifier on Windows. Fails closed (treated as a reparse
+    point, therefore never descended) if the entry cannot be classified at
+    all, and falls back to `is_symlink()` where `st_file_attributes` is
+    unavailable (non-Windows)."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return True
+    attrs = getattr(st, "st_file_attributes", None)
+    if attrs is not None:
+        return bool(attrs & _stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    return path.is_symlink()
+
+
 def _is_sensitive(path: Path) -> bool:
     parts_casefold = {part.casefold() for part in path.parts}
     if parts_casefold & _SENSITIVE_DIR_NAMES:
         return True
     name_casefold = path.name.casefold()
     if name_casefold in _SENSITIVE_FILE_NAMES:
+        return True
+    if _is_env_secret_name(name_casefold):
         return True
     if name_casefold.endswith(_SENSITIVE_FILE_SUFFIXES):
         return True
@@ -170,30 +207,110 @@ class FileAccessPolicy:
             return FileAccessDecision(False, "file_path_outside_allowed_root")
         return decision
 
-    def filter_search_results(self, root: Path, candidates) -> tuple[list[str], int]:
-        """Re-checks every candidate individually (never trusts bulk
-        traversal alone) - a symlink/junction that walks outside the
-        approved root is excluded, and sensitive children are silently
-        skipped (never named in the returned/filtered-count output)."""
+    def iter_search_candidates(self, root: Path, pattern: str) -> tuple[list[str], int]:
+        """Pre-descent bounded walker (R18B03-001).
+
+        Unlike the previous `Path.rglob()` + post-hoc-filter approach, this
+        decides containment and reparse-safety BEFORE descending into each
+        directory, and never materializes an unbounded candidate list first:
+        candidate-scan and result-count bounds are enforced live, one
+        directory listing at a time.
+
+        Default reparse policy: directory symlinks/junctions/reparse points
+        are never followed during generic search at all (deliberately
+        stricter than "follow if still inside root" - simpler, deterministic,
+        avoids cycles/mount ambiguity entirely). A file symlink is only
+        returned if its final resolved target is still inside `root`, is
+        genuinely a file, and passes the sensitivity policy.
+
+        Direct `inspect_file`/`open_file`/`open_folder` confinement (via
+        `evaluate()`) is untouched by this method - it still resolves and
+        checks the real target directly, unaffected by search-only policy.
+        """
         matches: list[str] = []
         filtered = 0
         scanned = 0
-        for candidate in candidates:
-            scanned += 1
-            if scanned > MAX_SEARCH_CANDIDATES_SCANNED or len(matches) >= MAX_SEARCH_MATCHES:
-                break
+        visited: set[str] = set()
+        stack: list[tuple[Path, int]] = [(root, 0)]
+        while stack:
+            current, depth = stack.pop()
+            current_key = str(current).casefold()
+            if current_key in visited:
+                continue
+            visited.add(current_key)
             try:
-                resolved = candidate.resolve()
+                entries = list(os.scandir(current))
             except OSError:
                 continue
-            try:
-                resolved.relative_to(root)
-            except ValueError:
-                continue
-            if not resolved.is_file():
-                continue
-            if _is_sensitive(resolved):
-                filtered += 1
-                continue
-            matches.append(str(resolved))
+            for entry in entries:
+                if len(matches) >= MAX_SEARCH_MATCHES:
+                    return matches, filtered
+                scanned += 1
+                if scanned > MAX_SEARCH_CANDIDATES_SCANNED:
+                    return matches, filtered
+                entry_path = Path(entry.path)
+                try:
+                    is_dir_no_follow = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    continue
+                reparse = _is_reparse_point(entry_path)
+                if reparse:
+                    if is_dir_no_follow:
+                        # Directory-shaped reparse point (junction or
+                        # directory symlink) - never descended.
+                        filtered += 1
+                        continue
+                    # File symlink - only usable if its resolved target
+                    # stays inside root, is a real file, and is not
+                    # sensitive; never trusted from the unresolved name
+                    # alone.
+                    try:
+                        resolved_file = entry_path.resolve()
+                    except OSError:
+                        filtered += 1
+                        continue
+                    try:
+                        resolved_file.relative_to(root)
+                    except ValueError:
+                        filtered += 1
+                        continue
+                    if not resolved_file.is_file():
+                        filtered += 1
+                        continue
+                    if not fnmatch.fnmatch(entry.name.casefold(), pattern.casefold()):
+                        continue
+                    if _is_sensitive(resolved_file):
+                        filtered += 1
+                        continue
+                    matches.append(str(resolved_file))
+                    continue
+                if is_dir_no_follow:
+                    if depth + 1 > MAX_SEARCH_DEPTH:
+                        filtered += 1
+                        continue
+                    if entry.name.casefold() in _SENSITIVE_DIR_NAMES:
+                        # Prune the entire sensitive subtree - never
+                        # descended, so no hidden child can appear later.
+                        filtered += 1
+                        continue
+                    try:
+                        canonical_dir = entry_path.resolve()
+                    except OSError:
+                        continue
+                    try:
+                        canonical_dir.relative_to(root)
+                    except ValueError:
+                        # Would escape the approved root - fail closed,
+                        # never descended.
+                        filtered += 1
+                        continue
+                    stack.append((canonical_dir, depth + 1))
+                    continue
+                # Plain file, no reparse involved.
+                if not fnmatch.fnmatch(entry.name.casefold(), pattern.casefold()):
+                    continue
+                if _is_sensitive(entry_path):
+                    filtered += 1
+                    continue
+                matches.append(str(entry_path))
         return matches, filtered

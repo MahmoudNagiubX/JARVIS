@@ -223,7 +223,7 @@ class WindowsNativeComputerController:
             return ComputerResult("denied", error_code=decision.reason_code)
         root = decision.resolved_path
         assert root is not None
-        matches, filtered_count = self.file_access_policy.filter_search_results(root, root.rglob(pattern))
+        matches, filtered_count = self.file_access_policy.iter_search_candidates(root, pattern)
         return ComputerResult("succeeded", {"root": str(root), "matches": matches, "filtered_count": filtered_count}, verified=True)
 
     def _stop_safe_process(self, parameters: Mapping[str, Any]) -> ComputerResult:
