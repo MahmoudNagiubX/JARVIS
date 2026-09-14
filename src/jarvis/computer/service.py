@@ -32,7 +32,7 @@ from ..perception.windows import WindowsDesktopProvider
 from .file_access import FileAccessPolicy
 from .native_input import NativeInputResult, WindowsNativeInputAdapter
 from .semantic_uia import WindowsUIAutomationAdapter
-from .visual_ocr import EasyOcrVisualAdapter, VisualResult, VisualTargetResult
+from .visual_ocr import EasyOcrVisualAdapter, VisualResult, VisualTarget, VisualTargetResult
 
 
 class WindowsNativeComputerController:
@@ -164,7 +164,11 @@ class WindowsNativeComputerController:
             if capability is ComputerCapability.VISUAL_OCR_ELEMENT:
                 return await self._visual_ocr_element(action.parameters)
             if capability is ComputerCapability.LEFT_CLICK_VISUAL:
-                return await self._left_click_visual(action.parameters)
+                trusted_visual_target = context.metadata.get("_internal_visual_target")
+                return await self._left_click_visual(
+                    action.parameters,
+                    trusted_visual_target=trusted_visual_target if isinstance(trusted_visual_target, VisualTarget) else None,
+                )
             if capability is ComputerCapability.RESOLVE_ELEMENT_TARGET:
                 return await self._resolve_element_target(action.parameters)
             if capability is ComputerCapability.RESOLVE_WINDOW_TARGET:
@@ -616,24 +620,43 @@ class WindowsNativeComputerController:
         result: VisualTargetResult = await self.visual_ocr_adapter.resolve_visual_ref(visual_ref)
         if result.target is None:
             return ComputerResult(result.status, {}, result.error_code, False)
-        return ComputerResult("succeeded", result.public_output(), verified=True)
+        return ComputerResult(
+            "succeeded",
+            result.public_output(),
+            verified=True,
+            _internal_visual_target=result.target,
+        )
 
-    async def _left_click_visual(self, parameters: Mapping[str, Any]) -> ComputerResult:
+    async def _left_click_visual(
+        self,
+        parameters: Mapping[str, Any],
+        *,
+        trusted_visual_target: VisualTarget | None = None,
+    ) -> ComputerResult:
         """Execute one approval-gated visual click through native input.
 
-        The visual resolver runs immediately before focus, then once more
-        after focus. Native input receives only the private, fresh bounds and
-        performs one move followed by one left-down/left-up batch.
+        A target freshly resolved by the canonical approval path may be carried
+        into the pre-focus step as an internal handoff. The post-focus
+        revalidation remains a fresh OCR read; native input receives only the
+        private, fresh bounds and performs one move followed by one
+        left-down/left-up batch.
         """
         if set(parameters) != {"visual_ref"}:
             return ComputerResult("denied", error_code="visual_ref_required")
         visual_ref = parameters.get("visual_ref")
         if not isinstance(visual_ref, str) or not visual_ref.startswith("visual-"):
             return ComputerResult("denied", error_code="visual_ref_required")
-        first: VisualTargetResult = await self.visual_ocr_adapter.resolve_visual_ref(visual_ref)
-        if first.target is None:
-            return ComputerResult(first.status, {}, first.error_code, False)
-        target = first.target
+        if trusted_visual_target is not None:
+            if trusted_visual_target.visual_ref != visual_ref:
+                return ComputerResult("failed", error_code="visual_target_binding_unavailable")
+            if trusted_visual_target.expires_at <= datetime.now(UTC):
+                return ComputerResult("failed", error_code="visual_ref_expired")
+            target = trusted_visual_target
+        else:
+            first: VisualTargetResult = await self.visual_ocr_adapter.resolve_visual_ref(visual_ref)
+            if first.target is None:
+                return ComputerResult(first.status, {}, first.error_code, False)
+            target = first.target
         hwnd, focus_failure = self.native_input_adapter.ground_visual_window(target.source_window_ref)
         if hwnd is None:
             assert focus_failure is not None
@@ -862,6 +885,7 @@ class ComputerActionService:
                 "reason": decision.reason_code,
             },
         )
+        trusted_visual_target: VisualTarget | None = None
         if decision.effect.value != "allow":
             if decision.effect.value == "require_approval" and self.approvals is not None:
                 if len(self._pending) >= self.MAX_PENDING:
@@ -896,7 +920,7 @@ class ComputerActionService:
                         )
                     elif action.action in self._visual_targeted_actions:
                         target_kind = "visual"
-                        target_preview, identity_digest, preview_error, reference_expires_at = await self._visual_target_preview(
+                        target_preview, identity_digest, preview_error, reference_expires_at, trusted_visual_target = await self._visual_target_preview(
                             action, identity, target, adapter, session_id, correlation,
                         )
                     else:
@@ -952,7 +976,16 @@ class ComputerActionService:
                 return ComputerResult("approval_required", error_code=decision.reason_code, approval_id=approval_id)
             await self._emit("computer.action_failed", identity.owner_id, correlation, {"action": action.action, "reason": decision.reason_code}, EventState.FAILED)
             return ComputerResult("approval_required" if decision.effect.value == "require_approval" else "denied", error_code=decision.reason_code)
-        return await self._execute_controller(action, identity, device, target, adapter, session_id, correlation)
+        return await self._execute_controller(
+            action,
+            identity,
+            device,
+            target,
+            adapter,
+            session_id,
+            correlation,
+            trusted_visual_target=trusted_visual_target,
+        )
 
     async def decide(
         self,
@@ -981,6 +1014,7 @@ class ComputerActionService:
         if decision.status.value != "approved":
             return ComputerResult("denied", error_code=decision.status.value, approval_id=approval_id)
         correlation = f"computer-{approval_id}"
+        trusted_visual_target: VisualTarget | None = None
         if identity_digest is not None:
             if target_kind == "window":
                 _preview, fresh_digest, preview_error, _exp = await self._window_target_preview(
@@ -991,7 +1025,7 @@ class ComputerActionService:
                     action, pending_identity, target, adapter, "computer", correlation,
                 )
             elif target_kind == "visual":
-                _preview, fresh_digest, preview_error, _exp = await self._visual_target_preview(
+                _preview, fresh_digest, preview_error, _exp, trusted_visual_target = await self._visual_target_preview(
                     action, pending_identity, target, adapter, "computer", correlation,
                 )
             else:
@@ -1028,7 +1062,17 @@ class ComputerActionService:
                     {"action": action.action, "reason": reason},
                 )
                 return ComputerResult("denied", error_code=reason, approval_id=approval_id)
-        return await self._execute_controller(action, pending_identity, pending_device, target, adapter, "computer", correlation, approval_id)
+        return await self._execute_controller(
+            action,
+            pending_identity,
+            pending_device,
+            target,
+            adapter,
+            "computer",
+            correlation,
+            approval_id,
+            trusted_visual_target=trusted_visual_target,
+        )
 
     def close(self) -> None:
         self._pending.clear()
@@ -1199,7 +1243,7 @@ class ComputerActionService:
         adapter: str,
         session_id: str,
         correlation: str,
-    ) -> tuple[dict[str, object] | None, str | None, str | None, datetime | None]:
+    ) -> tuple[dict[str, object] | None, str | None, str | None, datetime | None, VisualTarget | None]:
         """Fetch fresh visual metadata and an opaque binding digest.
 
         The controller's internal resolver owns OCR text, bounds, confidence,
@@ -1208,7 +1252,7 @@ class ComputerActionService:
         """
         visual_ref = action.parameters.get("visual_ref") if isinstance(action.parameters, Mapping) else None
         if not isinstance(visual_ref, str) or not visual_ref.startswith("visual-"):
-            return None, None, "visual_ref_required", None
+            return None, None, "visual_ref_required", None, None
         metadata = {
             "request_device_id": target_device.device_id,
             "target_device_id": target_device.device_id,
@@ -1224,11 +1268,11 @@ class ComputerActionService:
             ToolContext(identity, target_device, session_id, correlation, metadata=metadata),
         )
         if result.status != "succeeded":
-            return None, None, result.error_code or "visual_target_unavailable", None
+            return None, None, result.error_code or "visual_target_unavailable", None, None
         descriptor = result.output if isinstance(result.output, Mapping) else {}
         binding_digest = descriptor.get("binding_digest")
         if not isinstance(binding_digest, str) or not binding_digest:
-            return None, None, "visual_target_binding_unavailable", None
+            return None, None, "visual_target_binding_unavailable", None, None
         title = descriptor.get("title")
         reference_expires_at = descriptor.get("reference_expires_at")
         preview: dict[str, object] = {
@@ -1239,7 +1283,9 @@ class ComputerActionService:
             "process_name": descriptor.get("process_name"),
             "window_ref": descriptor.get("source_window_ref"),
         }
-        return preview, binding_digest, None, reference_expires_at if isinstance(reference_expires_at, datetime) else None
+        result_target = getattr(result, "_internal_visual_target", None)
+        trusted_target = result_target if isinstance(result_target, VisualTarget) else None
+        return preview, binding_digest, None, reference_expires_at if isinstance(reference_expires_at, datetime) else None, trusted_target
 
     async def _window_target_preview(
         self,
@@ -1308,15 +1354,22 @@ class ComputerActionService:
         session_id: str,
         correlation: str,
         approval_id: str | None = None,
+        trusted_visual_target: VisualTarget | None = None,
     ) -> ComputerResult:
         metadata = {
             "request_device_id": request_device.device_id,
             "target_device_id": target_device.device_id,
             "execution_adapter": adapter,
         }
+        controller_metadata = dict(metadata)
+        if adapter == "local" and trusted_visual_target is not None:
+            controller_metadata["_internal_visual_target"] = trusted_visual_target
         await self._emit("computer.action_requested", identity.owner_id, correlation, {"action": action.action, **metadata})
         await self._emit("computer.action_started", identity.owner_id, correlation, {"action": action.action, **metadata}, EventState.ACCEPTED)
-        result = await self.controller.execute(action, ToolContext(identity, target_device, session_id, correlation, metadata=metadata))
+        result = await self.controller.execute(
+            action,
+            ToolContext(identity, target_device, session_id, correlation, metadata=controller_metadata),
+        )
         event = "computer.action_completed" if result.status == "succeeded" else "computer.action_failed"
         await self._emit(event, identity.owner_id, correlation, {"action": action.action, "error_code": result.error_code, **metadata}, EventState.COMPLETED if result.status == "succeeded" else EventState.FAILED)
         await self._audit(identity, request_device, correlation, event, result.status, {"action": action.action, "error_code": result.error_code, **metadata})

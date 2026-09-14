@@ -79,6 +79,11 @@ class ComputerResult:
     error_code: str | None = None
     verified: bool = False
     approval_id: str | None = None
+    # Internal-only handoff for a canonical service to carry already-trusted
+    # provider state into the controller. It is deliberately not part of
+    # `output`, is hidden from repr/equality, and is never persisted or passed
+    # to a model-facing ToolResult.
+    _internal_visual_target: object | None = field(default=None, repr=False, compare=False)
 
 
 class ComputerController(Protocol):

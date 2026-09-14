@@ -698,6 +698,30 @@ class SchemaAndCoreStartupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(batches[1], (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP))
         self.assertEqual(provider.focus_calls, ["window-1"])
 
+    async def test_visual_act_reuses_decision_target_but_keeps_post_focus_ocr(self) -> None:
+        from jarvis.computer import service as computer_service
+
+        provider, reader, _batches = self._install_actuation_fixture()
+        with mock.patch.object(computer_service.platform, "system", return_value="Windows"):
+            observed = await self.runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_window", "window_ref": "window-1"}, self._context()
+            )
+            visual_ref = observed.output["regions"][0]["visual_ref"]
+            requested = await self.runtime.tool_service.execute(
+                "computer.visual.act", {"action": "left_click_visual", "visual_ref": visual_ref}, self._context()
+            )
+            decided = await self.runtime.tool_service.decide_and_resume(
+                requested.approval_id, True, self.identity.identity_id, self._context()
+            )
+
+        self.assertEqual(decided.status.value, "completed")
+        # Initial read + approval preview + decide-time drift check + the
+        # required post-focus fresh OCR. The pre-focus execution step must
+        # consume the trusted decide-time target instead of OCRing a fourth
+        # time before focus.
+        self.assertEqual(reader.readtext_calls, 4)
+
+
     async def test_visual_act_target_drift_refuses_approval_without_input(self) -> None:
         from jarvis.computer import service as computer_service
 
