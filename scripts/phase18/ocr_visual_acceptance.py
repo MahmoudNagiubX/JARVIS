@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import ctypes
 import json
 import platform
 import re
@@ -115,6 +116,78 @@ def _candidate_model_error(model_dir: str, candidate: str) -> str | None:
         return "candidate_model_directory_unavailable"
     missing = [name for name in _candidate_model_files(candidate) if not (model_directory / name).is_file()]
     return f"candidate_model_missing:{','.join(missing)}" if missing else None
+
+
+def _candidate_model_metadata(model_dir: str, candidate: str) -> list[dict[str, object]]:
+    model_directory = Path(model_dir) / "model"
+    return [
+        {"name": name, "size_bytes": (model_directory / name).stat().st_size}
+        for name in _candidate_model_files(candidate)
+    ]
+
+
+def _process_memory_snapshot() -> dict[str, int] | None:
+    """Return a bounded current-process working-set snapshot on Windows.
+
+    This is evaluation-only evidence. It deliberately reports process-level
+    working set and peak working set rather than retaining any screenshot,
+    OCR text, or model object reference.
+    """
+    if platform.system().casefold() != "windows":
+        return None
+
+    from ctypes import wintypes
+
+    class _ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("page_fault_count", wintypes.DWORD),
+            ("peak_working_set_size", ctypes.c_size_t),
+            ("working_set_size", ctypes.c_size_t),
+            ("quota_peak_paged_pool_usage", ctypes.c_size_t),
+            ("quota_paged_pool_usage", ctypes.c_size_t),
+            ("quota_peak_non_paged_pool_usage", ctypes.c_size_t),
+            ("quota_non_paged_pool_usage", ctypes.c_size_t),
+            ("pagefile_usage", ctypes.c_size_t),
+            ("peak_pagefile_usage", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    get_current_process = kernel32.GetCurrentProcess
+    get_current_process.argtypes = []
+    get_current_process.restype = wintypes.HANDLE
+    get_process_memory_info = psapi.GetProcessMemoryInfo
+    get_process_memory_info.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ProcessMemoryCounters),
+        wintypes.DWORD,
+    ]
+    get_process_memory_info.restype = wintypes.BOOL
+
+    counters = _ProcessMemoryCounters()
+    counters.cb = ctypes.sizeof(counters)
+    if not get_process_memory_info(get_current_process(), ctypes.byref(counters), counters.cb):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return {
+        "working_set_bytes": int(counters.working_set_size),
+        "peak_working_set_bytes": int(counters.peak_working_set_size),
+        "pagefile_usage_bytes": int(counters.pagefile_usage),
+        "peak_pagefile_usage_bytes": int(counters.peak_pagefile_usage),
+    }
+
+
+def _safe_process_memory_snapshot() -> dict[str, int] | None:
+    try:
+        return _process_memory_snapshot()
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _memory_delta(before: dict[str, int] | None, after: dict[str, int] | None) -> int | None:
+    if before is None or after is None:
+        return None
+    return after["working_set_bytes"] - before["working_set_bytes"]
 
 
 def _char_recall(expected: str, actual: str) -> float:
@@ -260,9 +333,12 @@ def _configure_candidate(runtime, model_dir: str, candidate: str, timing: dict[s
         reader_factory=reader_factory,
         model_dir=model_dir,
     )
+    model_metadata = _candidate_model_metadata(model_dir, candidate)
     return {
         "model_readiness_before_first_call": readiness,
         "model_files": list(_candidate_model_files(candidate)),
+        "model_file_sizes": model_metadata,
+        "model_footprint_bytes": sum(item["size_bytes"] for item in model_metadata),
         "reader_languages": languages,
     }
 
@@ -305,8 +381,14 @@ async def _run_once(model_dir: str, candidate: str) -> dict:
     runtime, identity, device, context = await _new_harness(model_dir)
     proc: subprocess.Popen | None = None
     timing: dict[str, object] = {}
+    memory_before_candidate = _safe_process_memory_snapshot()
     try:
         result.update(_configure_candidate(runtime, model_dir, candidate, timing))
+        result["memory_footprint"] = {
+            "available": memory_before_candidate is not None,
+            "before_candidate": memory_before_candidate,
+            "model_footprint_bytes": result.get("model_footprint_bytes"),
+        }
         proc = launch_owned_fixture(
             FIXTURE_HOST_SCRIPT,
             nonce=nonce,
@@ -316,12 +398,19 @@ async def _run_once(model_dir: str, candidate: str) -> dict:
             result["error"] = error
             return result
 
+        memory_before_ocr = _safe_process_memory_snapshot()
         t0 = time.perf_counter()
         with _network_guard():
             cold_read = await runtime.tool_service.execute(
                 "computer.visual.read", {"action": "ocr_window", "window_ref": window_ref}, context,
             )
         cold_latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+        memory_after_cold = _safe_process_memory_snapshot()
+        result["memory_footprint"].update({
+            "before_first_ocr": memory_before_ocr,
+            "after_cold_ocr": memory_after_cold,
+            "working_set_delta_after_cold_bytes": _memory_delta(memory_before_ocr, memory_after_cold),
+        })
         if cold_read.status.value != "completed":
             result["ocr_window"] = {
                 "status": cold_read.status.value,
@@ -339,6 +428,11 @@ async def _run_once(model_dir: str, candidate: str) -> dict:
                 "computer.visual.read", {"action": "ocr_window", "window_ref": window_ref}, context,
             )
         warm_latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+        memory_after_warm = _safe_process_memory_snapshot()
+        result["memory_footprint"].update({
+            "after_warm_ocr": memory_after_warm,
+            "working_set_delta_after_warm_bytes": _memory_delta(memory_before_ocr, memory_after_warm),
+        })
         window_output = window_read.output or {}
         result["ocr_window"] = {
             "status": window_read.status.value,
@@ -410,11 +504,23 @@ async def _main(run_count: int, model_dir: str, candidate: str = "combined_ar_en
         print(f"-- OCR physical acceptance run {index + 1}/{run_count} --", file=sys.stderr)
         runs.append(await _run_once(model_dir, candidate))
     any_network_violation = next((r["network_violation"] for r in runs if r.get("network_violation")), None)
+    memory_records = [r.get("memory_footprint", {}) for r in runs]
     summary = {
         "candidate": candidate,
         "runs": len(runs),
         "network_access_ever_attempted": any_network_violation is not None,
         "network_violation_detail": any_network_violation,
+        "model_footprint_bytes": next(
+            (r.get("model_footprint_bytes") for r in runs if r.get("model_footprint_bytes") is not None),
+            None,
+        ),
+        "memory_footprint_available_all": bool(runs) and all(record.get("available") for record in memory_records),
+        "working_set_delta_after_cold_bytes": [
+            record.get("working_set_delta_after_cold_bytes") for record in memory_records
+        ],
+        "working_set_delta_after_warm_bytes": [
+            record.get("working_set_delta_after_warm_bytes") for record in memory_records
+        ],
         "ocr_window_completed": sum(1 for r in runs if r.get("ocr_window", {}).get("status") == "completed"),
         "english_ready_matches": sum(1 for r in runs if r.get("english_ready", {}).get("matched_exactly")),
         "arabic_greeting_matches": sum(1 for r in runs if r.get("arabic_greeting", {}).get("matched_exactly")),

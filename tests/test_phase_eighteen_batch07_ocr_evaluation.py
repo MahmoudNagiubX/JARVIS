@@ -76,6 +76,35 @@ class Batch07OcrEvaluationScoringTests(unittest.TestCase):
                 "candidate_model_missing:english_g2.pth",
             )
 
+    def test_candidate_model_metadata_reports_explicit_disk_footprint(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="jarvis_batch07_ocr_models_") as raw_root:
+            root = Path(raw_root)
+            model_dir = root / "model"
+            (root / "user_network").mkdir()
+            model_dir.mkdir()
+            (model_dir / "craft_mlt_25k.pth").write_bytes(b"craft")
+            (model_dir / "arabic.pth").write_bytes(b"arabic-weight")
+
+            metadata = self.runner._candidate_model_metadata(raw_root, "combined_ar_en")
+
+            self.assertEqual(
+                metadata,
+                [
+                    {"name": "craft_mlt_25k.pth", "size_bytes": 5},
+                    {"name": "arabic.pth", "size_bytes": 13},
+                ],
+            )
+
+    def test_memory_delta_is_explicit_and_handles_unavailable_snapshots(self) -> None:
+        self.assertEqual(
+            self.runner._memory_delta(
+                {"working_set_bytes": 100},
+                {"working_set_bytes": 175},
+            ),
+            75,
+        )
+        self.assertIsNone(self.runner._memory_delta(None, {"working_set_bytes": 175}))
+
 
 if __name__ == "__main__":
     unittest.main()
