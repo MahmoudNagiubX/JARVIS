@@ -27,10 +27,30 @@ class Batch07OcrEvaluationScoringTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.runner = _load_runner()
 
-    def test_character_recall_is_bounded_and_ignores_whitespace(self) -> None:
-        self.assertEqual(self.runner._char_recall("JARVIS OCR", "JARMIS   OCR"), 0.889)
-        self.assertEqual(self.runner._char_recall("", "anything"), 1.0)
+    def test_character_recall_is_sequence_aware_and_normalizes_unicode_whitespace(self) -> None:
+        cases = (
+            ("JARVIS OCR", "JARVIS OCR", 1.0),
+            ("JARVIS OCR", "  JARVIS\tOCR\n", 1.0),
+            ("abc", "abxc", 0.75),
+            ("abc", "ac", 0.667),
+            ("abc", "axc", 0.667),
+        )
+        for expected, actual, similarity in cases:
+            with self.subTest(expected=expected, actual=actual):
+                self.assertEqual(self.runner._char_recall(expected, actual), similarity)
+
+        self.assertLess(self.runner._char_recall("abc", "acb"), 1.0)
+        self.assertLess(self.runner._char_recall("abc", "cba"), 1.0)
+        self.assertEqual(self.runner._char_recall("", ""), 1.0)
+        self.assertEqual(self.runner._char_recall("", "anything"), 0.0)
         self.assertEqual(self.runner._char_recall("Arabic", ""), 0.0)
+        self.assertEqual(
+            self.runner._char_recall(
+                self.runner.LABEL_ARABIC_GREETING,
+                f"\t{self.runner.LABEL_ARABIC_GREETING}\n",
+            ),
+            1.0,
+        )
 
     def test_region_scoring_preserves_actual_text_and_best_recall(self) -> None:
         regions = [
@@ -43,11 +63,14 @@ class Batch07OcrEvaluationScoringTests(unittest.TestCase):
         self.assertEqual(scored["expected"], "JARVIS OCR fixture ready")
         self.assertEqual(scored["actual_text"], "JARMIS OCR fixture ready")
         self.assertEqual(scored["confidence"], 0.46)
-        self.assertEqual(scored["normalized_character_recall"], 0.952)
+        self.assertEqual(scored["normalized_character_recall"], 0.958)
         self.assertFalse(scored["matched_exactly"])
 
     def test_candidate_names_are_explicit_and_bounded(self) -> None:
-        self.assertEqual(self.runner.OCR_CANDIDATES, ("combined_ar_en", "english_only"))
+        self.assertEqual(
+            self.runner.OCR_CANDIDATES,
+            ("combined_ar_en", "english_only", "combined_then_english"),
+        )
         with self.assertRaises(ValueError):
             self.runner._validate_candidate("free_form_router")
 
@@ -60,6 +83,51 @@ class Batch07OcrEvaluationScoringTests(unittest.TestCase):
             self.runner._candidate_model_files("english_only"),
             ("craft_mlt_25k.pth", "english_g2.pth"),
         )
+        self.assertEqual(
+            self.runner._candidate_model_files("combined_then_english"),
+            ("craft_mlt_25k.pth", "arabic.pth", "english_g2.pth"),
+        )
+
+    def test_combined_then_english_merge_preserves_arabic_and_chooses_better_latin(self) -> None:
+        def region(x: int, text: str, confidence: float) -> tuple[list[list[int]], str, float]:
+            return ([[x, 0], [x + 20, 0], [x + 20, 10], [x, 10]], text, confidence)
+
+        merged = self.runner._merge_combined_then_english_regions(
+            [
+                region(0, "\u0645\u0631\u062d\u0628\u0627", 0.96),
+                region(50, "JARV1S", 0.40),
+            ],
+            [
+                region(0, "MARHABA", 0.99),
+                region(50, "JARVIS", 0.85),
+                region(100, "EXTRA", 0.70),
+            ],
+        )
+
+        self.assertEqual([item[1] for item in merged], ["\u0645\u0631\u062d\u0628\u0627", "JARVIS", "EXTRA"])
+
+    def test_combined_then_english_reader_runs_exactly_two_passes(self) -> None:
+        class Reader:
+            def __init__(self, text: str, confidence: float) -> None:
+                self.text = text
+                self.confidence = confidence
+                self.calls = 0
+
+            def readtext(self, _image: object, *, detail: int) -> list[tuple[list[list[int]], str, float]]:
+                self.calls += 1
+                return [([[0, 0], [20, 0], [20, 10], [0, 10]], self.text, self.confidence)]
+
+        combined = Reader("JARV1S", 0.4)
+        english = Reader("JARVIS", 0.9)
+        timing: dict[str, object] = {}
+        wrapper = self.runner._CombinedThenEnglishReader(combined, lambda: english, timing)
+
+        result = wrapper.readtext(object())
+
+        self.assertEqual(combined.calls, 1)
+        self.assertEqual(english.calls, 1)
+        self.assertEqual(result[0][1], "JARVIS")
+        self.assertEqual(timing["candidate_pass_records"][0]["pass_count"], 2)
 
     def test_candidate_model_error_fails_closed_for_missing_weight(self) -> None:
         with tempfile.TemporaryDirectory(prefix="jarvis_batch07_ocr_models_") as raw_root:

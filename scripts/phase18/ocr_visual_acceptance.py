@@ -13,10 +13,11 @@ already-provisioned, offline EasyOCR model directory (see
 
     <isolated-venv>/python scripts/phase18/ocr_visual_acceptance.py --model-dir <path> --out <results.json> --runs 3
 
-Batch 07's evaluation-only candidate switch is bounded to
-``combined_ar_en`` (the accepted production reader) and ``english_only``
-(an explicitly provisioned comparison reader). It does not alter production
-configuration or create a model-driven language router:
+Batch 08's evaluation-only candidate switch is bounded to
+``combined_ar_en`` (the accepted production reader), ``english_only`` (an
+explicitly provisioned comparison reader), and ``combined_then_english`` (a
+runner-local two-pass comparison). It does not alter production configuration
+or create a model-driven language router:
 
     <isolated-venv>/python scripts/phase18/ocr_visual_acceptance.py --candidate english_only --model-dir <path> --out <results.json> --runs 3
 
@@ -84,10 +85,11 @@ LABEL_ARABIC_SETTINGS = "الإعدادات"
 LABEL_MIXED_SETTINGS = "JARVIS الإعدادات"
 LABEL_ENGLISH_ONLY = "JARVIS OCR FIXTURE"
 
-OCR_CANDIDATES = ("combined_ar_en", "english_only")
+OCR_CANDIDATES = ("combined_ar_en", "english_only", "combined_then_english")
 CANDIDATE_MODEL_FILES = {
     "combined_ar_en": ("craft_mlt_25k.pth", "arabic.pth"),
     "english_only": ("craft_mlt_25k.pth", "english_g2.pth"),
+    "combined_then_english": ("craft_mlt_25k.pth", "arabic.pth", "english_g2.pth"),
 }
 
 
@@ -190,19 +192,182 @@ def _memory_delta(before: dict[str, int] | None, after: dict[str, int] | None) -
     return after["working_set_bytes"] - before["working_set_bytes"]
 
 
+def _warm_latency_gate_passes(run: dict, candidate: str) -> bool:
+    key = "warm_two_pass_latency_ms" if candidate == "combined_then_english" else "warm_latency_ms"
+    value = run.get("ocr_window", {}).get(key)
+    return isinstance(value, (int, float)) and value <= 3000
+
+
 def _char_recall(expected: str, actual: str) -> float:
-    expected_norm = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", expected)).strip()
-    actual_norm = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", actual)).strip()
-    expected_chars = list(expected_norm.replace(" ", ""))
-    remaining = list(actual_norm.replace(" ", ""))
-    if not expected_chars:
+    expected_norm = _normalize_scored_text(expected)
+    actual_norm = _normalize_scored_text(actual)
+    if not expected_norm and not actual_norm:
         return 1.0
-    matched = 0
-    for character in expected_chars:
-        if character in remaining:
-            remaining.remove(character)
-            matched += 1
-    return round(matched / len(expected_chars), 3)
+    longest = max(len(expected_norm), len(actual_norm))
+    if not longest:
+        return 0.0
+    distance = _levenshtein_distance(expected_norm, actual_norm)
+    return round(1.0 - distance / longest, 3)
+
+
+def _normalize_scored_text(value: str) -> str:
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", str(value))).strip()
+
+
+def _levenshtein_distance(left: str, right: str) -> int:
+    if len(left) < len(right):
+        left, right = right, left
+    if not right:
+        return len(left)
+    previous = list(range(len(right) + 1))
+    for left_index, left_character in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_character in enumerate(right, start=1):
+            current.append(
+                min(
+                    current[-1] + 1,
+                    previous[right_index] + 1,
+                    previous[right_index - 1] + (left_character != right_character),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def _bbox_rect(bbox: object) -> tuple[float, float, float, float] | None:
+    try:
+        points = list(bbox)  # type: ignore[arg-type]
+        coordinates = [(float(point[0]), float(point[1])) for point in points]
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not coordinates:
+        return None
+    xs = [point[0] for point in coordinates]
+    ys = [point[1] for point in coordinates]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _bbox_overlap_ratio(left: object, right: object) -> float:
+    left_rect = _bbox_rect(left)
+    right_rect = _bbox_rect(right)
+    if left_rect is None or right_rect is None:
+        return 0.0
+    left_x1, left_y1, left_x2, left_y2 = left_rect
+    right_x1, right_y1, right_x2, right_y2 = right_rect
+    intersection = max(0.0, min(left_x2, right_x2) - max(left_x1, right_x1)) * max(
+        0.0, min(left_y2, right_y2) - max(left_y1, right_y1)
+    )
+    left_area = max(0.0, left_x2 - left_x1) * max(0.0, left_y2 - left_y1)
+    right_area = max(0.0, right_x2 - right_x1) * max(0.0, right_y2 - right_y1)
+    smaller_area = min(left_area, right_area)
+    return intersection / smaller_area if smaller_area else 0.0
+
+
+def _region_confidence(region: tuple[object, object, object]) -> float:
+    try:
+        value = float(region[2])
+    except (TypeError, ValueError):
+        return 0.0
+    return value if value == value and value not in (float("inf"), float("-inf")) else 0.0
+
+
+def _contains_arabic(text: object) -> bool:
+    return any(
+        "\u0600" <= character <= "\u06ff"
+        or "\u0750" <= character <= "\u077f"
+        or "\u08a0" <= character <= "\u08ff"
+        for character in str(text)
+    )
+
+
+def _merge_combined_then_english_regions(
+    combined_regions: list[tuple[object, object, object]],
+    english_regions: list[tuple[object, object, object]],
+) -> list[tuple[object, object, object]]:
+    """Merge the two fixed reader passes without adding a router or backend."""
+    merged = list(combined_regions)
+    for english_region in english_regions:
+        overlaps = [
+            (_bbox_overlap_ratio(english_region[0], existing[0]), index)
+            for index, existing in enumerate(merged)
+        ]
+        overlap, index = max(overlaps, default=(0.0, -1))
+        if overlap < 0.5 or index < 0:
+            merged.append(english_region)
+            continue
+        existing = merged[index]
+        if _contains_arabic(existing[1]):
+            continue
+        if _region_confidence(english_region) > _region_confidence(existing):
+            merged[index] = english_region
+    return merged
+
+
+def _combined_quality_check(
+    regions: list[tuple[object, object, object]],
+) -> tuple[bool, str]:
+    if not regions:
+        return True, "combined_pass_empty"
+    if not any(_contains_arabic(region[1]) for region in regions):
+        return True, "combined_pass_missing_arabic_script"
+    if not any(any("A" <= character <= "Z" or "a" <= character <= "z" for character in str(region[1])) for region in regions):
+        return True, "combined_pass_missing_latin_script"
+    if any(_region_confidence(region) < 0.90 for region in regions):
+        return True, "combined_pass_low_confidence"
+    return False, "combined_pass_acceptable"
+
+
+class _CombinedThenEnglishReader:
+    """Evaluation-only reader wrapper for exactly two local EasyOCR passes."""
+
+    def __init__(self, combined_reader: object, english_factory, timing: dict[str, object]) -> None:
+        self._combined_reader = combined_reader
+        self._english_factory = english_factory
+        self._english_reader: object | None = None
+        self._timing = timing
+
+    def readtext(self, image: object, *, detail: int = 1) -> list[tuple[object, object, object]]:
+        pass_started = time.perf_counter()
+        combined_regions = list(self._combined_reader.readtext(image, detail=detail))  # type: ignore[attr-defined]
+        combined_latency_ms = round((time.perf_counter() - pass_started) * 1000, 1)
+        run_second_pass, quality_reason = _combined_quality_check(combined_regions)
+        self._timing["candidate_quality_check"] = {
+            "second_pass_requested": run_second_pass,
+            "reason": quality_reason,
+        }
+        english_regions: list[tuple[object, object, object]] = []
+        english_latency_ms: float | None = None
+        if self._english_reader is None:
+            if run_second_pass:
+                reader_started = time.perf_counter()
+                self._english_reader = self._english_factory()
+                self._timing["english_reader_cold_init_ms"] = round((time.perf_counter() - reader_started) * 1000, 1)
+        if run_second_pass:
+            started = time.perf_counter()
+            english_regions = list(self._english_reader.readtext(image, detail=detail))  # type: ignore[union-attr]
+            english_latency_ms = round((time.perf_counter() - started) * 1000, 1)
+        records = self._timing.setdefault("candidate_pass_records", [])
+        pass_count = 2 if run_second_pass else 1
+        record = {
+            "pass_count": pass_count,
+            "passes": [{"reader": "combined_ar_en", "latency_ms": combined_latency_ms}],
+            "total_pass_latency_ms": round((time.perf_counter() - pass_started) * 1000, 1),
+        }
+        if run_second_pass:
+            record["passes"].append({"reader": "english_only", "latency_ms": english_latency_ms})
+            record["total_two_pass_latency_ms"] = record["total_pass_latency_ms"]
+        if isinstance(records, list):
+            records.append(record)
+        self._timing["reader_provenance"] = [{"reader": "combined_ar_en", "languages": ["ar", "en"]}]
+        if run_second_pass:
+            self._timing["reader_provenance"].append({"reader": "english_only", "languages": ["en"]})
+        merged = _merge_combined_then_english_regions(combined_regions, english_regions)
+        english_region_ids = {id(region) for region in english_regions}
+        self._timing["last_region_sources"] = [
+            "english_only" if id(region) in english_region_ids else "combined_ar_en"
+            for region in merged
+        ]
+        return merged
 
 
 def _score_expected_region(regions: list[dict], expected: str) -> dict:
@@ -229,7 +394,7 @@ def _score_expected_region(regions: list[dict], expected: str) -> dict:
         }
     return {
         "expected": expected,
-        "matched_exactly": best[3] == expected,
+        "matched_exactly": _normalize_scored_text(best[3]) == _normalize_scored_text(expected),
         "normalized_character_recall": best[0],
         "confidence": best[4],
         "actual_text": best[3],
@@ -280,9 +445,10 @@ def _configure_candidate(runtime, model_dir: str, candidate: str, timing: dict[s
     """Install one explicit evaluation reader behind the production adapter.
 
     This is runner-only configuration: Candidate A calls the accepted
-    production factory, while Candidate B constructs an English-only reader
-    with the same explicit offline directories. No candidate is model- or
-    network-routed dynamically by the product runtime.
+    production factory, Candidate B constructs an English-only reader, and
+    Candidate C composes exactly those two explicit readers for one image.
+    No candidate is model- or network-routed dynamically by the product
+    runtime.
     """
     candidate = _validate_candidate(candidate)
     model_error = _candidate_model_error(model_dir, candidate)
@@ -308,24 +474,34 @@ def _configure_candidate(runtime, model_dir: str, candidate: str, timing: dict[s
 
         return create_reader
 
+    def create_english_reader():
+        import easyocr
+
+        return easyocr.Reader(
+            ["en"],
+            gpu=False,
+            verbose=False,
+            model_storage_directory=str(model_root / "model"),
+            user_network_directory=str(model_root / "user_network"),
+            download_enabled=False,
+        )
+
     if candidate == "combined_ar_en":
         reader_factory = timed_factory(base_adapter._default_reader_factory)
         languages = ["ar", "en"]
-    else:
-        import easyocr
-
-        def create_english_reader():
-            return easyocr.Reader(
-                ["en"],
-                gpu=False,
-                verbose=False,
-                model_storage_directory=str(model_root / "model"),
-                user_network_directory=str(model_root / "user_network"),
-                download_enabled=False,
-            )
-
+    elif candidate == "english_only":
         reader_factory = timed_factory(create_english_reader)
         languages = ["en"]
+    else:
+        def create_combined_then_english_reader():
+            return _CombinedThenEnglishReader(
+                base_adapter._default_reader_factory(),
+                create_english_reader,
+                timing,
+            )
+
+        reader_factory = timed_factory(create_combined_then_english_reader)
+        languages = [["ar", "en"], ["en"]]
 
     controller.visual_ocr_adapter = EasyOcrVisualAdapter(
         base_adapter.perception_provider,
@@ -443,10 +619,34 @@ async def _run_once(model_dir: str, candidate: str) -> dict:
             "truncated": window_output.get("truncated"),
             "region_count": len(window_output.get("regions") or []),
         }
+        if candidate == "combined_then_english":
+            pass_records = timing.get("candidate_pass_records", [])
+            first_record = pass_records[0] if isinstance(pass_records, list) and pass_records else {}
+            last_record = pass_records[-1] if isinstance(pass_records, list) and pass_records else {}
+            result["ocr_window"].update({
+                "cold_two_pass_latency_ms": cold_latency_ms,
+                "warm_two_pass_latency_ms": warm_latency_ms,
+                "cold_recognition_two_pass_latency_ms": first_record.get("total_two_pass_latency_ms"),
+                "warm_recognition_two_pass_latency_ms": last_record.get("total_two_pass_latency_ms"),
+                "quality_check": timing.get("candidate_quality_check"),
+                "reader_provenance": timing.get("reader_provenance", []),
+                "pass_records": pass_records,
+            })
         regions = window_output.get("regions") or []
+        region_sources = timing.get("last_region_sources", [])
         result["recognized_regions"] = [
-            {"text": region.get("text"), "confidence": region.get("confidence")}
-            for region in regions
+            {
+                "text": region.get("text"),
+                "confidence": region.get("confidence"),
+                **(
+                    {"source_pass": region_sources[index]}
+                    if candidate == "combined_then_english"
+                    and isinstance(region_sources, list)
+                    and index < len(region_sources)
+                    else {}
+                ),
+            }
+            for index, region in enumerate(regions)
         ]
 
         for key, expected in (
@@ -542,7 +742,7 @@ async def _main(run_count: int, model_dir: str, candidate: str = "combined_ar_en
             and r.get("mixed_settings", {}).get("arabic_substring_preserved")
         ),
         "warm_latency_gate_pass_runs": sum(
-            1 for r in runs if r.get("ocr_window", {}).get("warm_latency_ms", float("inf")) <= 3000
+            1 for r in runs if _warm_latency_gate_passes(r, candidate)
         ),
         "ocr_element_arabic_greeting_matches": sum(1 for r in runs if r.get("ocr_element_arabic_greeting", {}).get("matched_exactly")),
         "fixture_child_confirmed_exited_all": bool(runs) and all(r.get("fixture_child_confirmed_exited") for r in runs),
