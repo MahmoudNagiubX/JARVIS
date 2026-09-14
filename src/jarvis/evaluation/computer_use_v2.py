@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from ..authority.identity.service import EnrollmentGrant
-from ..contracts import ComputerAction
+from ..contracts import ComputerAction, DesktopWindow, VisualRegion
 from ..contracts.semantic_ui import SemanticBounds, SemanticElementSnapshot, SemanticResult
 from .service import EvaluationCase, RegressionSuite
 
@@ -105,6 +105,48 @@ class _FakeSemanticAdapter:
     async def select(self, element_ref: str) -> SemanticResult:
         self.select_calls.append(element_ref)
         return SemanticResult("succeeded", {"element": _snapshot(element_ref), "verified": True})
+
+
+class _MultiWindowSemanticAdapter(_FakeSemanticAdapter):
+    """Small deterministic child-window seam for Batch 07 cases.
+
+    The real multi-window breadth is exercised by the owned Win32 fixture. The
+    evaluation cases only need to prove that a child reference remains tied to
+    its child window and that a transition refuses the old approval; they do
+    not duplicate a GUI or a second evaluation provider.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.child_live = True
+        self.last_target_window: str | None = None
+
+    async def list_windows(self, device_id: str) -> SemanticResult:
+        del device_id
+        return SemanticResult("succeeded", {
+            "windows": (
+                DesktopWindow("window-primary", "JARVIS primary", "jarvis-fixture", 71, "Fixture", VisualRegion(0, 0, 100, 100), True, True),
+                DesktopWindow("window-dialog-1", "JARVIS owned dialog", "jarvis-fixture", 71, "FixtureDialog", VisualRegion(10, 10, 100, 100), True, False),
+            ),
+            "filtered_count": 0,
+        })
+
+    async def resolve_actionable_target(self, element_ref: str) -> SemanticResult:
+        if not self.child_live:
+            return SemanticResult("failed", error_code="uia_element_stale")
+        self.last_target_window = "window-dialog-1"
+        return SemanticResult("succeeded", {
+            "element": _snapshot(element_ref, "window-dialog-1", name="Dialog Action"),
+            "reference_expires_at": datetime.now(UTC) + timedelta(seconds=45),
+        })
+
+    async def invoke(self, element_ref: str) -> SemanticResult:
+        self.invoke_calls.append(element_ref)
+        return SemanticResult("succeeded", {
+            "element": _snapshot(element_ref, "window-dialog-1", name="Dialog Action"),
+            "verified": True,
+            "verification_reason": "fixture_child_postcondition",
+        })
 
 
 async def _new_runtime_context(*, file_access_roots: tuple[str, ...] = ()) -> SimpleNamespace:
@@ -1357,6 +1399,68 @@ async def _case_drag_recovery_budget_shared_across_both_grounding_calls(_context
         await ctx.runtime.shutdown()
 
 
+# -- 47. an owned child-window target remains on the child authority path --
+
+async def _case_owned_child_window_target_is_discovered_and_acted(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    adapter = _MultiWindowSemanticAdapter()
+    ctx.runtime.computer_actions.controller.local.semantic_adapter = adapter
+    try:
+        listed = await ctx.runtime.tool_service.execute(
+            "computer.semantic.read", {"action": "list_windows"}, ctx.context,
+        )
+        refs = {item["window_ref"] for item in listed.output.get("windows", [])}
+        requested = await ctx.runtime.tool_service.execute(
+            "computer.semantic.act",
+            {"action": "invoke", "element_ref": "element-dialog-action"},
+            ctx.context,
+        )
+        if requested.status.value != "approval_required" or requested.approval_id is None:
+            return False
+        decided = await ctx.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, ctx.identity.identity_id, ctx.context,
+        )
+        return (
+            listed.status.value == "completed"
+            and refs == {"window-primary", "window-dialog-1"}
+            and decided.status.value == "completed"
+            and adapter.last_target_window == "window-dialog-1"
+            and adapter.invoke_calls == ["element-dialog-action"]
+        )
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 48. a child-window transition refuses an old consequential approval --
+
+async def _case_owned_child_window_transition_refuses_old_approval(_context: Any) -> bool:
+    ctx = await _new_runtime_context()
+    adapter = _MultiWindowSemanticAdapter()
+    ctx.runtime.computer_actions.controller.local.semantic_adapter = adapter
+    try:
+        requested = await ctx.runtime.tool_service.execute(
+            "computer.semantic.act",
+            {"action": "invoke", "element_ref": "element-dialog-action"},
+            ctx.context,
+        )
+        if requested.status.value != "approval_required" or requested.approval_id is None:
+            return False
+        # Simulates the fixture-owned dialog being destroyed/recreated after
+        # approval was issued. The same named control in the new generation is
+        # deliberately not substituted for the old opaque reference.
+        adapter.child_live = False
+        decided = await ctx.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, ctx.identity.identity_id, ctx.context,
+        )
+        return (
+            decided.status.value == "denied"
+            and decided.error_code == "uia_element_stale"
+            and adapter.invoke_calls == []
+        )
+    finally:
+        await ctx.runtime.shutdown()
+
+
 def build_suite() -> RegressionSuite:
     cases = (
         EvaluationCase("cuv2-01", "semantic read uses canonical authority", "computer_use_v2", _case_semantic_read_canonical),
@@ -1405,11 +1509,14 @@ def build_suite() -> RegressionSuite:
         EvaluationCase("cuv2-44", "semantic invoke followed by disappearance is never re-invoked", "computer_use_v2", _case_recovery_never_retries_invoke_after_disappearance),
         EvaluationCase("cuv2-45", "exhausted recovery budget produces a clean typed failure", "computer_use_v2", _case_recovery_budget_exhausted_clean_typed_failure),
         EvaluationCase("cuv2-46", "one drag recovery budget shared across pre-focus/post-focus grounding", "computer_use_v2", _case_drag_recovery_budget_shared_across_both_grounding_calls),
+        EvaluationCase("cuv2-47", "owned child-window target is discovered and acted through canonical approval", "computer_use_v2", _case_owned_child_window_target_is_discovered_and_acted),
+        EvaluationCase("cuv2-48", "owned child-window transition refuses the old approval", "computer_use_v2", _case_owned_child_window_transition_refuses_old_approval),
     )
     return RegressionSuite(
         SUITE_NAME, cases,
         "Deterministic Computer Use V2 product acceptance contracts (Phase 18 Workstream A Batch 02 Milestone 2, "
         "extended by Batch 04 Milestone 1 with grounded drag and text-input contracts, and Batch 05 Milestone 1 "
-        "with read-only local OCR visual grounding contracts). No GUI/live Windows dependency; every case runs "
+        "with read-only local OCR visual grounding contracts, and Batch 07 with owned child-window transition "
+        "contracts). No GUI/live Windows dependency; every case runs "
         "against fakes at the OS/provider boundary.",
     )

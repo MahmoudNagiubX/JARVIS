@@ -1,7 +1,7 @@
 """Bounded process boundary for Phase 18 owned physical fixtures.
 
 This development-only helper is intentionally narrower than a general
-process launcher. It accepts only the four repository-owned Win32 fixture
+process launcher. It accepts only the five repository-owned Win32 fixture
 hosts, invokes them with the current Python interpreter, and cleans up only
 the exact ``Popen`` object returned by the launch.
 """
@@ -19,11 +19,13 @@ ALLOWED_FIXTURE_NAMES = frozenset({
     "uia_text_fixture_host.py",
     "uia_ocr_fixture_host.py",
     "uia_recovery_fixture_host.py",
+    "uia_multi_window_fixture_host.py",
 })
 POSITIONED_FIXTURE_NAMES = frozenset({
     "uia_fixture_host.py",
     "uia_text_fixture_host.py",
     "uia_ocr_fixture_host.py",
+    "uia_multi_window_fixture_host.py",
 })
 STDIN_PIPE_FIXTURE_NAMES = frozenset({"uia_recovery_fixture_host.py"})
 

@@ -30,6 +30,7 @@ OCR_FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_ocr_fixture_host.p
 OCR_ACCEPTANCE_RUNNER_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "ocr_visual_acceptance.py"
 PROVISION_SCRIPT = REPO_ROOT / "scripts" / "setup" / "provision_easyocr_models.py"
 RECOVERY_FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_recovery_fixture_host.py"
+MULTI_WINDOW_FIXTURE_SCRIPT = REPO_ROOT / "scripts" / "phase18" / "uia_multi_window_fixture_host.py"
 OWNED_PROCESS_HELPER = REPO_ROOT / "scripts" / "phase18" / "owned_fixture_process.py"
 
 
@@ -60,21 +61,22 @@ class OwnedFixtureSourceSafetyTests(unittest.TestCase):
             self.assertNotIn(forbidden, source)
 
     def test_fixture_host_contains_no_owner_application_dependency(self) -> None:
-        for script in (FIXTURE_SCRIPT, TEXT_FIXTURE_SCRIPT):
+        for script in (FIXTURE_SCRIPT, TEXT_FIXTURE_SCRIPT, MULTI_WINDOW_FIXTURE_SCRIPT):
             source = script.read_text(encoding="utf-8").casefold()
             for forbidden in ("msedge", "notepad.exe", "calc.exe", "chrome.exe"):
                 self.assertNotIn(forbidden, source)
 
     def test_fixture_host_has_no_network_or_file_dialog_calls(self) -> None:
-        for script in (FIXTURE_SCRIPT, TEXT_FIXTURE_SCRIPT):
+        for script in (FIXTURE_SCRIPT, TEXT_FIXTURE_SCRIPT, MULTI_WINDOW_FIXTURE_SCRIPT):
             source = script.read_text(encoding="utf-8").casefold()
-            for forbidden in ("socket", "urllib", "http", "getopenfilename", "getsavefilename"):
+            for forbidden in ("socket", "urllib", "http", "getopenfilename", "getsavefilename", "shell_execute", "createprocess"):
                 self.assertNotIn(forbidden, source)
 
     def test_fixture_not_imported_by_production_bootstrap(self) -> None:
         bootstrap_source = (REPO_ROOT / "src" / "jarvis" / "bootstrap.py").read_text(encoding="utf-8")
         self.assertNotIn("uia_fixture_host", bootstrap_source)
         self.assertNotIn("uia_text_fixture_host", bootstrap_source)
+        self.assertNotIn("uia_multi_window_fixture_host", bootstrap_source)
         self.assertNotIn("computer_use_acceptance", bootstrap_source)
 
     def test_fixture_not_imported_anywhere_under_src(self) -> None:
@@ -82,13 +84,14 @@ class OwnedFixtureSourceSafetyTests(unittest.TestCase):
             source = path.read_text(encoding="utf-8")
             self.assertNotIn("uia_fixture_host", source, f"unexpected reference in {path}")
             self.assertNotIn("uia_text_fixture_host", source, f"unexpected reference in {path}")
+            self.assertNotIn("uia_multi_window_fixture_host", source, f"unexpected reference in {path}")
             self.assertNotIn("owned_fixture_process", source, f"unexpected reference in {path}")
             self.assertNotIn("scripts.phase18", source, f"unexpected reference in {path}")
 
     def test_runner_and_fixture_are_syntactically_standalone_scripts(self) -> None:
         # Confirms these parse as plain scripts (no package-relative imports
         # that would only work if pulled into the production package).
-        for script in (RUNNER_SCRIPT, FIXTURE_SCRIPT, TEXT_FIXTURE_SCRIPT, OWNED_PROCESS_HELPER):
+        for script in (RUNNER_SCRIPT, FIXTURE_SCRIPT, TEXT_FIXTURE_SCRIPT, MULTI_WINDOW_FIXTURE_SCRIPT, OWNED_PROCESS_HELPER):
             tree = ast.parse(script.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and node.level and node.level > 0:
@@ -207,8 +210,22 @@ class OwnedFixtureLaunchBoundaryTests(unittest.TestCase):
                 TEXT_FIXTURE_SCRIPT.name,
                 OCR_FIXTURE_SCRIPT.name,
                 RECOVERY_FIXTURE_SCRIPT.name,
+                MULTI_WINDOW_FIXTURE_SCRIPT.name,
             }),
         )
+
+    def test_multi_window_fixture_is_positionable_only_with_bounded_coordinates(self) -> None:
+        sentinel = object()
+        with unittest.mock.patch.object(self.module.subprocess, "Popen", return_value=sentinel) as popen:
+            result = self.module.launch_owned_fixture(
+                MULTI_WINDOW_FIXTURE_SCRIPT,
+                nonce="00000000-0000-4000-8000-000000000001",
+                x=140,
+                y=160,
+            )
+
+        self.assertIs(result, sentinel)
+        self.assertEqual(popen.call_args.args[0][-4:], ["--x", "140", "--y", "160"])
 
     def test_active_physical_runners_have_no_broad_process_kill(self) -> None:
         for script in (RUNNER_SCRIPT, OCR_ACCEPTANCE_RUNNER_SCRIPT):
@@ -570,6 +587,41 @@ class RecoveryFixtureSourceSafetyTests(unittest.TestCase):
         scenario_source = source[start:end]
         self.assertIn("terminate_owned_fixture(proc)", scenario_source)
         self.assertIn("fixture_child_confirmed_exited", scenario_source)
+
+
+class MultiWindowFixtureSourceSafetyTests(unittest.TestCase):
+    """Batch 07 Milestone 2: the fifth fixture remains an owned, standalone
+    Win32 process and exposes only fixture-authored multi-window state."""
+
+    def test_fixture_declares_nonce_bound_primary_and_dialog_titles(self) -> None:
+        source = MULTI_WINDOW_FIXTURE_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("JARVIS-CUV2-MULTI-FIXTURE-", source)
+        self.assertIn("JARVIS-CUV2-MULTI-DIALOG-", source)
+        self.assertIn("--nonce", source)
+
+    def test_fixture_has_no_network_clipboard_file_dialog_or_shell_surface(self) -> None:
+        tree = ast.parse(MULTI_WINDOW_FIXTURE_SCRIPT.read_text(encoding="utf-8"))
+        module_docstring = ast.get_docstring(tree) or ""
+        source = MULTI_WINDOW_FIXTURE_SCRIPT.read_text(encoding="utf-8").replace(module_docstring, "").casefold()
+        for forbidden in (
+            "socket", "urllib", "http", "clipboard", "openclipboard",
+            "getopenfilename", "getsavefilename", "shell_execute", "createprocess",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_fixture_is_not_production_imported(self) -> None:
+        bootstrap_source = (REPO_ROOT / "src" / "jarvis" / "bootstrap.py").read_text(encoding="utf-8")
+        self.assertNotIn("uia_multi_window_fixture_host", bootstrap_source)
+        for path in (REPO_ROOT / "src").rglob("*.py"):
+            self.assertNotIn("uia_multi_window_fixture_host", path.read_text(encoding="utf-8"), str(path))
+
+    def test_runner_contains_all_five_bounded_scenarios(self) -> None:
+        source = RUNNER_SCRIPT.read_text(encoding="utf-8")
+        for scenario in (
+            "owned_dialog_discovery", "dialog_action", "stale_dialog_target",
+            "approval_window_transition", "focus_window_transition",
+        ):
+            self.assertIn(scenario, source)
 
 
 if __name__ == "__main__":

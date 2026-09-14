@@ -13,7 +13,8 @@ likely lost one unsaved tab) means this runner, from Batch 03 onward, NEVER
 uses an owner-installed general application (Notepad, Edge/Chrome, VS Code,
 terminal, Explorer, Calculator, or any other pre-existing app) as its
 acceptance fixture - only a fully JARVIS-owned native Win32 process this
-runner itself launches (`scripts/phase18/uia_fixture_host.py`).
+runner itself launches one of the allowlisted native Win32 fixtures under
+`scripts/phase18/`.
 
 Safety rules:
 
@@ -63,6 +64,7 @@ from owned_fixture_process import launch_owned_fixture, terminate_owned_fixture
 FIXTURE_HOST_SCRIPT = Path(__file__).resolve().with_name("uia_fixture_host.py")
 TEXT_FIXTURE_HOST_SCRIPT = Path(__file__).resolve().with_name("uia_text_fixture_host.py")
 RECOVERY_FIXTURE_HOST_SCRIPT = Path(__file__).resolve().with_name("uia_recovery_fixture_host.py")
+MULTI_WINDOW_FIXTURE_HOST_SCRIPT = Path(__file__).resolve().with_name("uia_multi_window_fixture_host.py")
 
 _KNOWN_STATUS_VALUES = {"idle", "invoked", "toggle:on", "toggle:off", "selected:Alpha", "selected:Beta", "selected:Gamma"}
 _KNOWN_TEXT_FIXTURE_STATUS_VALUES = {"idle", "drag:accepted", "drag:rejected"}
@@ -110,6 +112,68 @@ async def _find_exact_fixture_window(runtime, context, title: str) -> tuple[str 
         if len(matches) == 1:
             return matches[0]["window_ref"], None
     return None, "fixture_window_not_found"
+
+
+async def _find_exact_owned_fixture_window(
+    runtime, context, title: str, process_id: int,
+) -> tuple[str | None, str | None]:
+    """Find one exact nonce title and require the runner-owned child PID.
+
+    The enumeration remains transient. Only the opaque reference and a
+    bounded reason leave this helper; no window list or title is persisted in
+    the acceptance summary.
+    """
+    for _ in range(20):
+        await asyncio.sleep(1.0)
+        listed = await runtime.tool_service.execute("computer.semantic.read", {"action": "list_windows"}, context)
+        if listed.status.value != "completed":
+            continue
+        title_matches = [w for w in listed.output.get("windows", []) if w.get("title") == title]
+        if len(title_matches) > 1:
+            return None, "fixture_title_collision"
+        if len(title_matches) == 1:
+            match = title_matches[0]
+            window_ref = match.get("window_ref")
+            provider = getattr(getattr(runtime.computer_actions.controller, "local", None), "perception_provider", None)
+            verifier = getattr(provider, "window_belongs_to_process", None)
+            if not isinstance(window_ref, str) or not callable(verifier) or not verifier(window_ref, process_id):
+                return None, "fixture_process_mismatch"
+            return window_ref, None
+    return None, "fixture_window_not_found"
+
+
+async def _exact_window_present(runtime, context, title: str) -> bool:
+    """One bounded, read-only exact-title presence check.
+
+    Any exact nonce collision is treated as present so the close assertion
+    cannot pass by ignoring an unrelated window with the same title.
+    """
+    listed = await runtime.tool_service.execute("computer.semantic.read", {"action": "list_windows"}, context)
+    if listed.status.value != "completed":
+        return True
+    return any(w.get("title") == title for w in listed.output.get("windows", []))
+
+
+async def _focused_named_element(runtime, context, window_ref: str, names: set[str]) -> bool:
+    found = await runtime.tool_service.execute(
+        "computer.semantic.read", {"action": "find_elements", "window_ref": window_ref, "control_type": "ButtonControl"}, context,
+    )
+    if found.status.value != "completed":
+        return False
+    return any(
+        match.get("name") in names and bool(match.get("focused"))
+        for match in found.output.get("matches", [])
+    )
+
+
+async def _status_name_present(runtime, context, window_ref: str, expected: str) -> bool:
+    """Read one exact fixture-authored status name in one window scope."""
+    found = await runtime.tool_service.execute(
+        "computer.semantic.read",
+        {"action": "find_elements", "window_ref": window_ref, "control_type": "TextControl", "name": expected},
+        context,
+    )
+    return found.status.value == "completed" and bool(found.output.get("matches"))
 
 
 # Windows' SetForegroundWindow foreground-activation gate is time/input-
@@ -643,6 +707,217 @@ async def _run_recovery_fixture_scenarios() -> dict:
         await runtime.shutdown()
 
 
+async def _run_multi_window_fixture_scenarios() -> dict:
+    """Batch 07 Milestone 2 - five bounded scenarios against one owned
+    primary window and its nonce-bound owned dialog.
+
+    The dialog is recreated between the stale-target and approval-binding
+    checks. Every transition is observed through the canonical semantic read
+    path, and native keyboard actions are grounded by the target window
+    reference. The runner records only bounded statuses, reasons, and
+    booleans; window enumerations and raw references remain transient.
+    """
+    scenario: dict = {"fixture": "owned_win32_multi_window_fixture", "attempted": True}
+    if not MULTI_WINDOW_FIXTURE_HOST_SCRIPT.exists():
+        scenario["attempted"] = False
+        scenario["skip_reason"] = "multi_window_fixture_host_script_missing"
+        return scenario
+
+    nonce = str(uuid.uuid4())
+    primary_title = f"JARVIS-CUV2-MULTI-FIXTURE-{nonce}"
+    runtime, identity, device, context = await _new_harness()
+    proc: subprocess.Popen | None = None
+    try:
+        proc = launch_owned_fixture(MULTI_WINDOW_FIXTURE_HOST_SCRIPT, nonce=nonce, x=140, y=140)
+        owned_pid = int(proc.pid)
+        primary_ref, error = await _find_exact_owned_fixture_window(runtime, context, primary_title, owned_pid)
+        if primary_ref is None:
+            scenario["error"] = error
+            return scenario
+        scenario["primary_process_owned"] = True
+
+        # Scenario A: observe the primary, open the fixture-authored dialog,
+        # then discover exactly one same-process child title.
+        open_ref = await _find_one(runtime, context, primary_ref, "ButtonControl", "Open Owned Dialog")
+        if open_ref is None:
+            scenario["owned_dialog_discovery"] = {"status": "open_target_not_found"}
+        else:
+            open_status, _verified, _output = await _approve_and_run(
+                runtime, identity, context, "computer.semantic.act",
+                {"action": "invoke", "element_ref": open_ref},
+            )
+            primary_status_matches = await _status_name_present(runtime, context, primary_ref, "dialog:open")
+            dialog_title = f"JARVIS-CUV2-MULTI-DIALOG-{nonce}-GEN-0"
+            dialog_ref, dialog_error = await _find_exact_owned_fixture_window(runtime, context, dialog_title, owned_pid)
+            scenario["owned_dialog_discovery"] = {
+                "status": open_status,
+                "primary_status_matches_expected": primary_status_matches,
+                "exact_owned_dialog_found": dialog_ref is not None,
+                "error": dialog_error,
+            }
+
+        dialog_title = f"JARVIS-CUV2-MULTI-DIALOG-{nonce}-GEN-0"
+        dialog_ref, dialog_error = await _find_exact_owned_fixture_window(runtime, context, dialog_title, owned_pid)
+        if dialog_ref is None:
+            scenario.setdefault("owned_dialog_discovery", {})["error"] = dialog_error
+            return scenario
+
+        # Scenario B: semantic targeting inside the owned dialog followed by
+        # an independent read of the fixture's own post-state label.
+        dialog_action_ref = await _find_one(runtime, context, dialog_ref, "ButtonControl", "Dialog Action")
+        if dialog_action_ref is None:
+            scenario["dialog_action"] = {"status": "action_target_not_found"}
+        else:
+            action_status, _verified, _output = await _approve_and_run(
+                runtime, identity, context, "computer.semantic.act",
+                {"action": "invoke", "element_ref": dialog_action_ref},
+            )
+            dialog_status = await _status_name_present(runtime, context, dialog_ref, "dialog:acted")
+            scenario["dialog_action"] = {
+                "status": action_status,
+                "independent_status_matches_expected": dialog_status,
+                "independent_post_state_matches_expected": dialog_status,
+            }
+
+        # Scenario C: recreate the dialog with a new title generation and
+        # prove the old element reference is refused rather than substituted.
+        recreate_ref = await _find_one(runtime, context, dialog_ref, "ButtonControl", "Recreate Dialog")
+        if recreate_ref is None or dialog_action_ref is None:
+            scenario["stale_dialog_target"] = {"status": "recreate_target_not_found"}
+        else:
+            recreate_status, _verified, _output = await _approve_and_run(
+                runtime, identity, context, "computer.semantic.act",
+                {"action": "invoke", "element_ref": recreate_ref},
+            )
+            generation_one_title = f"JARVIS-CUV2-MULTI-DIALOG-{nonce}-GEN-1"
+            generation_one_ref, generation_one_error = await _find_exact_owned_fixture_window(
+                runtime, context, generation_one_title, owned_pid,
+            )
+            stale = await runtime.tool_service.execute(
+                "computer.semantic.act", {"action": "invoke", "element_ref": dialog_action_ref}, context,
+            )
+            scenario["stale_dialog_target"] = {
+                "recreate_status": recreate_status,
+                "new_generation_owned": generation_one_ref is not None,
+                "new_generation_error": generation_one_error,
+                "old_target_status": stale.status.value,
+                "old_target_error_code": stale.error_code,
+                "old_target_refused": stale.status.value != "approval_required" and stale.error_code in {
+                    "uia_element_stale", "uia_window_stale", "uia_element_ambiguous",
+                },
+            }
+
+        generation_one_title = f"JARVIS-CUV2-MULTI-DIALOG-{nonce}-GEN-1"
+        generation_one_ref, generation_one_error = await _find_exact_owned_fixture_window(
+            runtime, context, generation_one_title, owned_pid,
+        )
+        if generation_one_ref is None:
+            scenario.setdefault("stale_dialog_target", {})["error"] = generation_one_error
+            return scenario
+
+        # Scenario D: bind a consequential native action to generation 1,
+        # recreate to generation 2 before approval, and confirm no input
+        # reaches the new same-named control.
+        consequential_ref = await _find_one(runtime, context, generation_one_ref, "ButtonControl", "Consequential Target")
+        recreate_ref = await _find_one(runtime, context, generation_one_ref, "ButtonControl", "Recreate Dialog")
+        requested = None
+        if consequential_ref is not None and recreate_ref is not None:
+            requested = await runtime.tool_service.execute(
+                "computer.pointer.act",
+                {"action": "left_click_element", "element_ref": consequential_ref},
+                context,
+            )
+        if requested is None or requested.status.value != "approval_required" or requested.approval_id is None:
+            scenario["approval_window_transition"] = {
+                "status": "approval_not_issued" if requested is None else requested.status.value,
+                "error_code": None if requested is None else requested.error_code,
+            }
+        else:
+            mutation_status, _verified, _output = await _approve_and_run(
+                runtime, identity, context, "computer.semantic.act",
+                {"action": "invoke", "element_ref": recreate_ref},
+            )
+            generation_two_title = f"JARVIS-CUV2-MULTI-DIALOG-{nonce}-GEN-2"
+            generation_two_ref, generation_two_error = await _find_exact_owned_fixture_window(
+                runtime, context, generation_two_title, owned_pid,
+            )
+            decided = await runtime.tool_service.decide_and_resume(
+                requested.approval_id, True, identity.identity_id, context,
+            )
+            generation_two_status = (
+                await _status_name_present(runtime, context, generation_two_ref, "dialog:ready")
+                if generation_two_ref is not None else None
+            )
+            scenario["approval_window_transition"] = {
+                "mutation_status": mutation_status,
+                "new_generation_owned": generation_two_ref is not None,
+                "new_generation_error": generation_two_error,
+                "decide_status": decided.status.value,
+                "decide_error_code": decided.error_code,
+                "old_target_refused_before_input": decided.status.value == "denied" and decided.error_code in {
+                    "approval_target_changed", "uia_element_stale", "uia_window_stale",
+                },
+                "new_target_status_matches_ready": generation_two_status,
+                "zero_input_reached_new_target": generation_two_status is True,
+            }
+
+        generation_two_title = f"JARVIS-CUV2-MULTI-DIALOG-{nonce}-GEN-2"
+        generation_two_ref, generation_two_error = await _find_exact_owned_fixture_window(
+            runtime, context, generation_two_title, owned_pid,
+        )
+        if generation_two_ref is None:
+            scenario.setdefault("approval_window_transition", {})["error"] = generation_two_error
+            return scenario
+
+        # Scenario E: move focus using the intended owned window reference,
+        # read focus independently inside that scope, then transition back to
+        # the primary window and repeat the check.
+        dialog_key_status, _verified, _output = await _approve_and_run(
+            runtime, identity, context, "computer.keyboard.key",
+            {"window_ref": generation_two_ref, "key": "tab"},
+        )
+        dialog_focus_observed = await _focused_named_element(
+            runtime, context, generation_two_ref, {"Dialog Action", "Consequential Target", "Recreate Dialog", "Close Dialog", "Dialog Focus Target"},
+        )
+        main_key_status, _verified, _output = await _approve_and_run(
+            runtime, identity, context, "computer.keyboard.key",
+            {"window_ref": primary_ref, "key": "tab"},
+        )
+        main_focus_observed = await _focused_named_element(
+            runtime, context, primary_ref, {"Open Owned Dialog", "Main Focus Target"},
+        )
+        scenario["focus_window_transition"] = {
+            "dialog_key_status": dialog_key_status,
+            "dialog_focus_observed": dialog_focus_observed,
+            "main_key_status": main_key_status,
+            "main_focus_observed": main_focus_observed,
+            "fresh_window_targets_used": dialog_key_status == "completed" and main_key_status == "completed",
+        }
+
+        # Deterministic close/return path: semantic close, independent main
+        # status read-back, and one exact absence check for the dialog title.
+        close_ref = await _find_one(runtime, context, generation_two_ref, "ButtonControl", "Close Dialog")
+        if close_ref is None:
+            scenario["close_return"] = {"status": "close_target_not_found"}
+        else:
+            close_status, _verified, _output = await _approve_and_run(
+                runtime, identity, context, "computer.semantic.act",
+                {"action": "invoke", "element_ref": close_ref},
+            )
+            main_status_matches = await _status_name_present(runtime, context, primary_ref, "dialog:closed")
+            scenario["close_return"] = {
+                "status": close_status,
+                "main_status_matches_expected": main_status_matches,
+                "dialog_absent_after_close": not await _exact_window_present(runtime, context, generation_two_title),
+                "returned_to_primary": main_status_matches,
+            }
+        return scenario
+    finally:
+        if proc is not None:
+            scenario["fixture_child_confirmed_exited"] = terminate_owned_fixture(proc)
+        await runtime.shutdown()
+
+
 def _virtual_desktop_metrics() -> tuple[int, int, int, int, int]:
     import ctypes
     user32 = ctypes.WinDLL("user32.dll")
@@ -721,6 +996,7 @@ async def _run_once() -> dict:
         "owned_fixture": await _run_owned_fixture_scenarios(),
         "text_drag_fixture": await _run_text_drag_fixture_scenarios(),
         "recovery_fixture": await _run_recovery_fixture_scenarios(),
+        "multi_window_fixture": await _run_multi_window_fixture_scenarios(),
         "non_primary_monitor": await _run_non_primary_monitor_scenario(),
     }
 
@@ -746,6 +1022,9 @@ def _summarize(runs: list[dict]) -> dict:
 
     def recovery_attempted(run: dict) -> bool:
         return bool(run["recovery_fixture"].get("attempted"))
+
+    def multi_attempted(run: dict) -> bool:
+        return bool(run.get("multi_window_fixture", {}).get("attempted"))
 
     return {
         "runs": len(runs),
@@ -778,6 +1057,13 @@ def _summarize(runs: list[dict]) -> dict:
         "recovery_approval_identity_change_refused": rate(lambda r: r["recovery_fixture"].get("approval_identity_change", {}).get("refused_before_any_input") if recovery_attempted(r) else None),
         "recovery_approval_identity_change_zero_input_delivered": rate(lambda r: r["recovery_fixture"].get("approval_identity_change", {}).get("zero_input_delivered") if recovery_attempted(r) else None),
         "recovery_fixture_child_confirmed_exited": rate(lambda r: r["recovery_fixture"].get("fixture_child_confirmed_exited") if recovery_attempted(r) else None),
+        "multi_window_owned_dialog_discovery": rate(lambda r: r.get("multi_window_fixture", {}).get("owned_dialog_discovery", {}).get("exact_owned_dialog_found") if multi_attempted(r) else None),
+        "multi_window_dialog_action": rate(lambda r: r.get("multi_window_fixture", {}).get("dialog_action", {}).get("independent_post_state_matches_expected") if multi_attempted(r) else None),
+        "multi_window_stale_dialog_target_refused": rate(lambda r: r.get("multi_window_fixture", {}).get("stale_dialog_target", {}).get("old_target_refused") if multi_attempted(r) else None),
+        "multi_window_approval_transition_refused": rate(lambda r: r.get("multi_window_fixture", {}).get("approval_window_transition", {}).get("old_target_refused_before_input") if multi_attempted(r) else None),
+        "multi_window_focus_transition": rate(lambda r: (r.get("multi_window_fixture", {}).get("focus_window_transition", {}).get("dialog_focus_observed") and r.get("multi_window_fixture", {}).get("focus_window_transition", {}).get("main_focus_observed")) if multi_attempted(r) else None),
+        "multi_window_close_return": rate(lambda r: (r.get("multi_window_fixture", {}).get("close_return", {}).get("dialog_absent_after_close") and r.get("multi_window_fixture", {}).get("close_return", {}).get("returned_to_primary")) if multi_attempted(r) else None),
+        "multi_window_fixture_child_confirmed_exited": rate(lambda r: r.get("multi_window_fixture", {}).get("fixture_child_confirmed_exited") if multi_attempted(r) else None),
     }
 
 

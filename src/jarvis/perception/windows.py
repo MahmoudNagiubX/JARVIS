@@ -127,6 +127,24 @@ class WindowsDesktopProvider:
             raise ValueError("sensitive_window_denied")
         return hwnd
 
+    def window_belongs_to_process(self, window_ref: str, process_id: int) -> bool:
+        """Freshly verify an opaque window reference against an exact PID.
+
+        This is an internal evaluation/grounding predicate, not a new window
+        reference authority and not a model-facing field. It reuses the
+        existing reference store and privacy validation, then reads the live
+        owner PID from the same HWND that the canonical provider resolved.
+        """
+        if type(process_id) is not int or process_id <= 0:
+            return False
+        try:
+            hwnd = self.validate_input_window(window_ref)
+        except ValueError:
+            return False
+        current_process_id = wintypes.DWORD()
+        self._user32.GetWindowThreadProcessId(hwnd, ctypes.byref(current_process_id))
+        return int(current_process_id.value) == process_id
+
     def window_action(self, window_ref: str, operation: str) -> bool:
         if not self.available:
             return False
