@@ -108,6 +108,18 @@ _RECEIPT_REASONS = frozenset(
         "brave_path_not_allowlisted",
         "owner_id_invalid",
         "device_id_invalid",
+        "calculator_launch_failed",
+        "calculator_window_not_found",
+        "calculator_window_ambiguous",
+        "calculator_process_not_allowlisted",
+        "calculator_focus_not_verified",
+        "calculator_ui_provider_unavailable",
+        "calculator_control_not_found",
+        "calculator_control_ambiguous",
+        "calculator_action_not_completed",
+        "calculator_readback_unavailable",
+        "calculator_result_mismatch",
+        "calculator_result_verified",
     }
 )
 
@@ -165,6 +177,8 @@ class OwnerToolSession(Protocol):
 
     async def execute_tool(self, name: str, arguments: Mapping[str, object]) -> object: ...
 
+    async def execute_computer_action(self, action: str, arguments: Mapping[str, object]) -> object: ...
+
     async def decide_tool(self, approval_id: str, approved: bool) -> object: ...
 
     async def close(self) -> None: ...
@@ -175,6 +189,181 @@ ScenarioHandler = Callable[
     Awaitable[Mapping[str, object]],
 ]
 SessionFactory = Callable[[OwnerSessionConfig], Awaitable[OwnerToolSession | None]]
+
+
+_CALCULATOR_PROCESS_NAMES = frozenset({
+    "calc.exe",
+    "calculatorapp.exe",
+    "applicationframehost.exe",
+})
+_CALCULATOR_TITLE = "calculator"
+_CALCULATOR_BUTTON_NAMES = {
+    "clear": ("Clear", "Clear all"),
+    "1": ("One", "1"),
+    "7": ("Seven", "7"),
+    "multiply": ("Multiply by", "Multiply"),
+    "2": ("Two", "2"),
+    "3": ("Three", "3"),
+    "equals": ("Equals", "="),
+}
+_CALCULATOR_WINDOW_ATTEMPTS = 20
+_CALCULATOR_WINDOW_DELAY_SECONDS = 0.5
+
+
+def _result_status(result: object) -> str:
+    status = getattr(result, "status", None)
+    return str(getattr(status, "value", status))
+
+
+def _result_output(result: object) -> Mapping[str, object]:
+    output = getattr(result, "output", None)
+    return output if isinstance(output, Mapping) else {}
+
+
+def _result_error(result: object) -> str | None:
+    error = getattr(result, "error_code", None)
+    return error if isinstance(error, str) else None
+
+
+async def _calculator_window_observation(session: OwnerToolSession) -> tuple[dict[str, object] | None, str | None]:
+    """Return one exact Calculator window without selecting a similar target."""
+
+    last_error = "calculator_window_not_found"
+    for attempt in range(_CALCULATOR_WINDOW_ATTEMPTS):
+        result = await session.execute_tool("computer.semantic.read", {"action": "list_windows"})
+        if _result_status(result) != "completed":
+            error = _result_error(result)
+            if error in {"uia_not_available", "windows_backend_unavailable", "satellite_offline"}:
+                return None, "calculator_ui_provider_unavailable"
+            last_error = "calculator_ui_provider_unavailable"
+        else:
+            windows = _result_output(result).get("windows", ())
+            if not isinstance(windows, (list, tuple)):
+                return None, "calculator_ui_provider_unavailable"
+            title_matches = [
+                window for window in windows
+                if isinstance(window, Mapping)
+                and str(window.get("title", "")).strip().casefold() == _CALCULATOR_TITLE
+            ]
+            matches = [
+                window for window in title_matches
+                if str(window.get("process_name", "")).strip().casefold() in _CALCULATOR_PROCESS_NAMES
+            ]
+            if len(matches) > 1:
+                return None, "calculator_window_ambiguous"
+            if len(matches) == 1:
+                window_ref = matches[0].get("window_ref")
+                if isinstance(window_ref, str) and window_ref.startswith("window-"):
+                    return dict(matches[0]), None
+                return None, "calculator_ui_provider_unavailable"
+            if title_matches:
+                return None, "calculator_process_not_allowlisted"
+        if attempt + 1 < _CALCULATOR_WINDOW_ATTEMPTS:
+            await asyncio.sleep(_CALCULATOR_WINDOW_DELAY_SECONDS)
+    return None, last_error
+
+
+async def _calculator_button(session: OwnerToolSession, window_ref: str, button: str) -> tuple[str | None, str | None]:
+    """Resolve exactly one allowlisted Calculator button by semantic name."""
+
+    for name in _CALCULATOR_BUTTON_NAMES[button]:
+        result = await session.execute_tool(
+            "computer.semantic.read",
+            {"action": "find_elements", "window_ref": window_ref, "control_type": "ButtonControl", "name": name},
+        )
+        if _result_status(result) != "completed":
+            return None, "calculator_ui_provider_unavailable"
+        matches = _result_output(result).get("matches", ())
+        if not isinstance(matches, (list, tuple)):
+            return None, "calculator_ui_provider_unavailable"
+        if len(matches) > 1:
+            return None, "calculator_control_ambiguous"
+        if len(matches) == 1:
+            element_ref = matches[0].get("element_ref") if isinstance(matches[0], Mapping) else None
+            if isinstance(element_ref, str) and element_ref.startswith("element-"):
+                return element_ref, None
+            return None, "calculator_ui_provider_unavailable"
+    return None, "calculator_control_not_found"
+
+
+async def _approved_calculator_invoke(session: OwnerToolSession, element_ref: str) -> str | None:
+    requested = await session.execute_tool(
+        "computer.semantic.act", {"action": "invoke", "element_ref": element_ref},
+    )
+    if _result_status(requested) != "approval_required":
+        return "calculator_action_not_completed"
+    approval_id = getattr(requested, "approval_id", None)
+    if not isinstance(approval_id, str) or not approval_id:
+        return "calculator_action_not_completed"
+    decided = await session.decide_tool(approval_id, True)
+    if _result_status(decided) != "completed":
+        return "calculator_action_not_completed"
+    return None
+
+
+async def _calculator_result_verified(session: OwnerToolSession, window_ref: str) -> tuple[bool, str]:
+    """Verify 391 from a fresh semantic read, never from action self-report."""
+
+    result = await session.execute_tool(
+        "computer.semantic.read", {"action": "find_elements", "window_ref": window_ref, "control_type": "TextControl"},
+    )
+    if _result_status(result) != "completed":
+        return False, "calculator_readback_unavailable"
+    matches = _result_output(result).get("matches", ())
+    if not isinstance(matches, (list, tuple)):
+        return False, "calculator_readback_unavailable"
+    for match in matches:
+        if not isinstance(match, Mapping):
+            continue
+        element_ref = match.get("element_ref")
+        if not isinstance(element_ref, str) or not element_ref.startswith("element-"):
+            continue
+        text_result = await session.execute_tool(
+            "computer.semantic.read", {"action": "get_text", "element_ref": element_ref},
+        )
+        if _result_status(text_result) == "completed" and _result_output(text_result).get("text") == "391":
+            return True, "calculator_result_verified"
+    return False, "calculator_result_mismatch"
+
+
+async def _run_calculator_scenario(
+    session: OwnerToolSession,
+    _scenario: str,
+    _nonce: str,
+    _config: OwnerSessionConfig,
+) -> Mapping[str, object]:
+    """Run 17 x 23 through the real Calculator UI and independently read it back."""
+
+    launched = await session.execute_computer_action("open_application", {"application": "calculator"})
+    if _result_status(launched) != "succeeded":
+        return {"status": "FAILED", "reason": "calculator_launch_failed", "attempted": True, "verified": False}
+
+    window, error = await _calculator_window_observation(session)
+    if window is None:
+        return {"status": "FAILED", "reason": error or "calculator_window_not_found", "attempted": True, "verified": False}
+    window_ref = window["window_ref"]
+    focused = await session.execute_computer_action("focus_window", {"window_ref": window_ref})
+    if _result_status(focused) != "succeeded":
+        return {"status": "FAILED", "reason": "calculator_focus_not_verified", "attempted": True, "verified": False}
+    focused_window, error = await _calculator_window_observation(session)
+    if focused_window is None or focused_window.get("window_ref") != window_ref or focused_window.get("active") is not True:
+        return {"status": "FAILED", "reason": "calculator_focus_not_verified", "attempted": True, "verified": False}
+
+    for button in ("clear", "1", "7", "multiply", "2", "3", "equals"):
+        element_ref, error = await _calculator_button(session, window_ref, button)
+        if element_ref is None:
+            return {"status": "FAILED", "reason": error or "calculator_control_not_found", "attempted": True, "verified": False}
+        error = await _approved_calculator_invoke(session, element_ref)
+        if error is not None:
+            return {"status": "FAILED", "reason": error, "attempted": True, "verified": False}
+
+    verified, reason = await _calculator_result_verified(session, window_ref)
+    return {
+        "status": "PASS" if verified else "FAILED",
+        "reason": reason,
+        "attempted": True,
+        "verified": verified,
+    }
 
 
 def _digest(value: str) -> str:
@@ -365,6 +554,19 @@ class ProductionToolSession:
     async def execute_tool(self, name: str, arguments: Mapping[str, object]) -> object:
         return await self._runtime.tool_service.execute(name, dict(arguments), self._context)
 
+    async def execute_computer_action(self, action: str, arguments: Mapping[str, object]) -> object:
+        """Use the existing typed computer service for safe app launch/focus."""
+
+        from jarvis.contracts import ComputerAction
+
+        return await self._runtime.computer_actions.execute(
+            ComputerAction(action, dict(arguments), False),
+            self._identity,
+            self._device,
+            session_id=self._context.session_id,
+            correlation_id=f"{self._context.correlation_id}-{uuid.uuid4().hex[:12]}",
+        )
+
     async def decide_tool(self, approval_id: str, approved: bool) -> object:
         return await self._runtime.tool_service.decide_and_resume(
             approval_id, approved, self._identity.identity_id, self._context,
@@ -410,7 +612,7 @@ class RealWorldAcceptanceRunner:
     ) -> None:
         self._env = os.environ if env is None else env
         self._session_factory = session_factory or _new_production_session
-        self._handlers = dict(handlers or {})
+        self._handlers = dict({"RW-CALC-001": _run_calculator_scenario} if handlers is None else handlers)
 
     async def run(self, scenario: str, *, runs: int = 1) -> dict[str, object]:
         if not 1 <= runs <= 3:

@@ -13,6 +13,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -256,3 +257,126 @@ class RunnerBehaviorTests(unittest.IsolatedAsyncioTestCase):
             self.module.classify_login_state(True, security_challenge=True).status,
             self.module.OWNER_LOGIN_REQUIRED,
         )
+
+
+class CalculatorScenarioTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.module = _load_runner()
+
+    async def test_calculator_handler_uses_exact_ui_and_independent_readback(self) -> None:
+        module = self.module
+
+        class Session:
+            def __init__(self) -> None:
+                self.window_active = False
+                self.computer_actions: list[tuple[str, dict[str, object]]] = []
+                self.tool_calls: list[tuple[str, dict[str, object]]] = []
+                self.decisions: list[tuple[str, bool]] = []
+
+            async def execute_computer_action(self, action: str, arguments: dict[str, object]):
+                self.computer_actions.append((action, arguments))
+                if action == "focus_window":
+                    self.window_active = True
+                return SimpleNamespace(status="succeeded", output={}, error_code=None, verified=True)
+
+            async def execute_tool(self, name: str, arguments: dict[str, object]):
+                self.tool_calls.append((name, arguments))
+                if name == "computer.semantic.read":
+                    action = arguments.get("action")
+                    if action == "list_windows":
+                        return SimpleNamespace(
+                            status="completed",
+                            output={
+                                "windows": [{
+                                    "window_ref": "window-calculator",
+                                    "title": "Calculator",
+                                    "process_name": "CalculatorApp.exe",
+                                    "active": self.window_active,
+                                }],
+                            },
+                            error_code=None,
+                        )
+                    if action == "find_elements":
+                        control_type = arguments.get("control_type")
+                        name_filter = arguments.get("name")
+                        if control_type == "ButtonControl":
+                            refs = {
+                                "Clear": "element-clear",
+                                "One": "element-one",
+                                "Seven": "element-seven",
+                                "Multiply by": "element-multiply",
+                                "Two": "element-two",
+                                "Three": "element-three",
+                                "Equals": "element-equals",
+                            }
+                            ref = refs.get(name_filter)
+                            matches = [{"element_ref": ref}] if ref else []
+                            return SimpleNamespace(status="completed", output={"matches": matches}, error_code=None)
+                        if control_type == "TextControl":
+                            return SimpleNamespace(
+                                status="completed",
+                                output={"matches": [{"element_ref": "element-display", "name": "391"}]},
+                                error_code=None,
+                            )
+                    if action == "get_text":
+                        return SimpleNamespace(status="completed", output={"text": "391"}, error_code=None)
+                if name == "computer.semantic.act":
+                    return SimpleNamespace(status="approval_required", approval_id="approval-calculator", output={}, error_code=None)
+                raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+            async def decide_tool(self, approval_id: str, approved: bool):
+                self.decisions.append((approval_id, approved))
+                return SimpleNamespace(status="completed", output={}, error_code=None, verified=False)
+
+        session = Session()
+        result = await module._run_calculator_scenario(
+            session, "RW-CALC-001", "JARVIS_E2E_TEST_NONCE", module.OwnerSessionConfig(True, owner_id="owner", device_id="device"),
+        )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertTrue(result["verified"])
+        self.assertEqual([action for action, _ in session.computer_actions], ["open_application", "focus_window"])
+        self.assertEqual(len(session.decisions), 7)
+        self.assertTrue(all(approved for _, approved in session.decisions))
+
+    async def test_calculator_handler_refuses_exact_window_ambiguity_before_input(self) -> None:
+        module = self.module
+
+        class Session:
+            def __init__(self) -> None:
+                self.input_calls = 0
+
+            async def execute_computer_action(self, action: str, _arguments: dict[str, object]):
+                if action == "open_application":
+                    return SimpleNamespace(status="succeeded", output={}, error_code=None, verified=True)
+                if action == "focus_window":
+                    raise AssertionError("ambiguous Calculator windows must not be focused")
+                raise AssertionError(f"unexpected computer action: {action}")
+
+            async def execute_tool(self, name: str, arguments: dict[str, object]):
+                if name == "computer.semantic.read" and arguments.get("action") == "list_windows":
+                    return SimpleNamespace(
+                        status="completed",
+                        output={
+                            "windows": [
+                                {"window_ref": "window-calculator-1", "title": "Calculator", "process_name": "CalculatorApp.exe", "active": False},
+                                {"window_ref": "window-calculator-2", "title": "Calculator", "process_name": "CalculatorApp.exe", "active": False},
+                            ],
+                        },
+                        error_code=None,
+                    )
+                self.input_calls += 1
+                raise AssertionError("ambiguous window must stop before semantic input")
+
+            async def decide_tool(self, _approval_id: str, _approved: bool):
+                self.input_calls += 1
+                raise AssertionError("ambiguous window must stop before approval")
+
+        result = await module._run_calculator_scenario(
+            Session(), "RW-CALC-001", "JARVIS_E2E_TEST_NONCE", module.OwnerSessionConfig(True, owner_id="owner", device_id="device"),
+        )
+
+        self.assertEqual(result["status"], "FAILED")
+        self.assertFalse(result["verified"])
+        self.assertEqual(result.get("sends", 0), 0)
