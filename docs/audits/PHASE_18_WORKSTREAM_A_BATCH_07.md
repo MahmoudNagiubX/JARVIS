@@ -183,6 +183,8 @@ An earlier fail-closed M2 checkpoint reported `fixture_process_mismatch` because
 
 ### 7.3 Final gap and restriction truth
 
+- `R18B06-001`: `RESOLVED` for this batch scope; the root contract and central fixture-launch boundary enforce owned, nonce-scoped, exact-child physical acceptance.
+- `R18B06-002`: `EVALUATED_NO_CHANGE`; no bounded candidate passed all live OCR gates, so the accepted bilingual baseline remains in production and the quality limitation remains `GAP-0103: PARTIAL`.
 - `GAP-0101`: `RESOLVED`.
 - `GAP-0102`: `PARTIAL`.
 - `GAP-0103`: `PARTIAL` (read-only OCR; M1 retained the current bilingual baseline after no candidate passed all live gates).
