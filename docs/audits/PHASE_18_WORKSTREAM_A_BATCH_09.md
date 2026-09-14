@@ -7,7 +7,8 @@ account, browser profile, inbox, chat, document, or media session was touched.
 **Repository:** `MahmoudNagiubX/JARVIS`
 **Branch:** `feature/phase-18-computer-use-v2`
 **Required starting HEAD:** `33302eccc9337c47a83f3d98a10293356575e70c`
-**Final checkpoint:** `ca1cbe32c3246c8495cb65f4deba9dc72f2e4921`
+**T0 implementation checkpoint:** `ca1cbe32c3246c8495cb65f4deba9dc72f2e4921`
+**T1 implementation checkpoint:** `89724436d7eec228374b39de8b7a33092fb5d872`
 **Origin feature:** matches final checkpoint
 **Origin main:** `54b67ba396ec45180f1b60ea472ef94a9`
 
