@@ -1,15 +1,17 @@
 # Phase 18 Workstream A - Batch 09 Audit
 
-**Status:** T0 PASS; T1 implemented; T2 is pending the required fresh Codex
-session after the narrow `AGENTS.md` clarification. No owner application,
-account, browser profile, inbox, chat, document, or media session was touched.
+**Status:** T0 PASS; T1 implemented; T2 Calculator orchestration is implemented
+but its physical gate is pending explicit owner-session configuration. Brave is
+`NOT_CONFIGURED`. No owner application, account, browser profile, inbox, chat,
+document, or media session was touched.
 
 **Repository:** `MahmoudNagiubX/JARVIS`
 **Branch:** `feature/phase-18-computer-use-v2`
 **Required starting HEAD:** `33302eccc9337c47a83f3d98a10293356575e70c`
 **T0 implementation checkpoint:** `ca1cbe32c3246c8495cb65f4deba9dc72f2e4921`
 **T1 implementation checkpoint:** `89724436d7eec228374b39de8b7a33092fb5d872`
-**Origin feature:** matches final checkpoint
+**T2 Calculator implementation checkpoint:** `a8947878813733e06cc30affe7f5f91bc950c881`
+**Origin feature:** matches current checkpoint
 **Origin main:** `54b67ba396ec45180f1b60ea472ef94a9`
 
 ## 1. T0 profile and fix
@@ -118,23 +120,51 @@ therefore reports `OWNER_SESSION_E2E_DISABLED` or `NOT_CONFIGURED` and performs
 no owner-side action until explicit local configuration and a reviewed
 production adapter are available.
 
-T1 tests: `tests/test_phase_eighteen_real_world_boundary.py` - 12 passed.
+T1 boundary tests: `tests/test_phase_eighteen_real_world_boundary.py` - 14
+passed after the Calculator slice was added.
 
-## 5. Verification checkpoint
+## 5. T2 Calculator runner slice
+
+The default handler for `RW-CALC-001` now exercises the existing typed
+`ComputerActionService` for allowlisted Calculator launch/focus, then uses the
+existing semantic read/action tool path for the UI. It requires:
+
+- exactly one opaque window with title `Calculator` and an allowlisted
+  Calculator process name;
+- exact semantic button grounding for `Clear`, `One`, `Seven`, `Multiply by`,
+  `Two`, `Three`, and `Equals`, with ambiguity refused;
+- one approval decision for each consequential semantic invoke; and
+- a fresh semantic text readback that independently finds and reads `391`.
+
+The handler never trusts the action's self-reported verification and returns
+`FAILED` on ambiguous windows/controls, unavailable UIA, focus drift, approval
+failure, or result mismatch. It is unit-tested through an injected session seam;
+it has not been physically run against an owner session.
+
+The explicit runner was invoked for `RW-CALC-001` and `RW-BRAVE-001` with
+`--runs 3` in the current environment. Both returned
+`OWNER_SESSION_E2E_DISABLED`, completed zero runs, and reported zero external
+writes/sends because `JARVIS_E2E_ENABLE_OWNER_SESSION` and owner identity
+configuration are unset. Calculator was discoverable as a local Windows
+executable, but no application was opened by this acceptance run. Brave is
+`NOT_CONFIGURED`: `brave.exe` was not present and no launcher, installer,
+Playwright adapter, or provenance change was made.
+
+## 6. Verification checkpoint
 
 - `python -m pytest tests/test_phase_eighteen_visual_ocr.py -q` - 65 passed.
 - `python -m pytest tests/test_phase_eighteen_evaluation_suite.py tests/test_phase_eighteen_visual_ocr.py tests/test_phase_eighteen_native_input.py -q` - 170 passed.
-- `python -m pytest tests/test_phase_eighteen_real_world_boundary.py -q` - 12 passed.
+- `python -m pytest tests/test_phase_eighteen_real_world_boundary.py -q` - 14 passed.
 - `python -m py_compile scripts/phase18/real_world_computer_use_acceptance.py` - pass.
 - `git diff --check` - pass at each checkpoint.
-- The T0 fix was committed and pushed; remote feature verification matched the
-  final checkpoint.
+- The T0 fix, T1 boundary, and T2 Calculator slice were committed and pushed;
+  remote feature verification matched the current checkpoint.
 
-## 6. Remaining Batch 09 gates
+## 7. Remaining Batch 09 gates
 
-T2-T6 remain pending. Per the task contract, T2 must begin in a fresh Codex
-session after the `AGENTS.md` clarification is reloaded. Brave is not present
-on PATH and no owner Notion, Spotify, Discord, WhatsApp, or browser-session
-configuration is present in this environment. No login automation, credential
-inspection, arbitrary recipient selection, owner-history inspection, raw
-screenshot persistence, or Playwright/Browser V2 scope expansion was performed.
+The physical T2 gate remains pending: Calculator requires three clean
+owner-authorized runs and Brave requires three clean host/focus runs, with zero
+wrong targets and zero unsafe focus bypasses. T3-T6 also remain pending. No
+login automation, credential inspection, arbitrary recipient selection,
+owner-history inspection, raw screenshot persistence, or Playwright/Browser V2
+scope expansion was performed.

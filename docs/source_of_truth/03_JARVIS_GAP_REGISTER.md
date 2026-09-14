@@ -96,6 +96,14 @@ adds only the explicit, opt-in owner-session runner boundary; it does not
 claim broader real-app acceptance. See
 `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_09.md`.
 
+**Batch 09 T2:** the owner-session runner now contains a bounded Calculator
+handler that launches/focuses through `ComputerActionService`, grounds exact
+semantic controls through the existing read/action path, requires approval for
+each invoke, and independently reads back `391`. The handler is unit-tested but
+has not been physically run because owner-session opt-in and identity
+configuration are unset. Brave remains `NOT_CONFIGURED`; no live browser
+adapter or launcher change was made.
+
 On-demand GDI capture and optional local OCR are implemented. Visual fallback
 still follows the UIA-first rule; the Batch 08 visual action is deliberately
 bounded to one OCR-grounded left click and remains physically pending on the
@@ -152,9 +160,12 @@ approval-drift, and post-input-uncertainty contracts. The owned-fixture
 physical runner remains a foundation rather than the broad real-app matrix
 named by this gap. **Batch 09 T1** adds the finite, hard-opt-in owner-session
 runner with privacy-safe receipts and no automatic startup/pytest/CI trigger;
-owner scenarios remain unexecuted until their production adapter and local
-configuration are ready. `GAP-0105` remains `PARTIAL`; no full
-multi-application acceptance claim is made.
+the default Calculator scenario handler now provides the first bounded
+real-application orchestration slice through the canonical typed services, with
+exact semantic grounding and independent result readback. The handler is
+unit-tested only; physical owner-session runs remain unexecuted until local
+configuration and required live adapters are ready. `GAP-0105` remains
+`PARTIAL`; no full multi-application acceptance claim is made.
 
 ### GAP-0106 — Multi-monitor/DPI/secure-desktop behavior needs explicit proof
 **Status:** `PARTIAL`  

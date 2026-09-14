@@ -133,9 +133,14 @@ cleanup, and the fix is pushed as `ca1cbe3`. T1 added the finite
 `scripts/phase18/real_world_computer_use_acceptance.py` owner-session boundary
 with the exact opt-in gate, allowlisted scenario IDs, first-party URL and
 destination validation, login-required stop behavior, and privacy-safe
-receipts. No owner application or account was touched in T0/T1. T2 is pending
-the required fresh Codex session after the narrow `AGENTS.md` clarification;
-the broader real-app matrix remains unproven.
+receipts. No owner application or account was touched in T0/T1. **T2
+checkpoint (2026-09-15):** the default `RW-CALC-001` handler now orchestrates
+allowlisted Calculator launch/focus through `ComputerActionService`, exact
+semantic button grounding with per-action approval, and independent `391`
+readback; its boundary tests pass, but the physical 3/3 gate is pending because
+owner-session opt-in and identity configuration are unset. Brave is
+`NOT_CONFIGURED` because no Brave executable or live browser adapter is
+configured. The broader real-app matrix remains unproven.
 
 Deliver:
 - product-owned UIA target/inspection/action layer;
