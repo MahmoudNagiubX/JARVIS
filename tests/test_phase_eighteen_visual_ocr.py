@@ -168,6 +168,10 @@ class AdapterUnitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result2.status, "failed")
         self.assertEqual(result2.error_code, "visual_ocr_not_available")
 
+    def test_visual_reference_ttl_stays_within_reviewed_bound(self) -> None:
+        self.assertGreaterEqual(VISUAL_REF_TTL_SECONDS, 15)
+        self.assertLessEqual(VISUAL_REF_TTL_SECONDS, 30)
+
     async def test_sensitive_window_denied_before_capture(self) -> None:
         provider = _FakeWindowProvider()
         provider.deny_reason = "sensitive_window_denied"
@@ -464,6 +468,19 @@ class VisualActuationGroundingTests(unittest.IsolatedAsyncioTestCase):
         reader.results = [
             ([[0, 0], [40, 0], [40, 20], [0, 20]], "Apply", 0.91),
             ([[5, 0], [45, 0], [45, 20], [5, 20]], "Apply", 0.92),
+        ]
+        result = await adapter.resolve_visual_ref(visual_ref)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "visual_target_ambiguous")
+
+    async def test_two_same_text_candidates_in_bounded_visual_context_are_ambiguous(self) -> None:
+        provider = _ActuationWindowProvider()
+        reader = _FakeReader([([[0, 0], [40, 0], [40, 20], [0, 20]], "Apply", 0.91)])
+        adapter = _adapter(provider, _FakeSemanticAdapter(), reader)
+        visual_ref = await self._observe(adapter)
+        reader.results = [
+            ([[0, 0], [40, 0], [40, 20], [0, 20]], "Apply", 0.91),
+            ([[100, 0], [140, 0], [140, 20], [100, 20]], "Apply", 0.92),
         ]
         result = await adapter.resolve_visual_ref(visual_ref)
         self.assertEqual(result.status, "failed")

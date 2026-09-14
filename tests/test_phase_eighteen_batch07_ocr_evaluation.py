@@ -74,6 +74,23 @@ class Batch07OcrEvaluationScoringTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.runner._validate_candidate("free_form_router")
 
+    def test_visual_target_matching_returns_only_opaque_refs(self) -> None:
+        regions = [
+            {"visual_ref": "visual-first", "text": "VISUAL APPLY", "confidence": 0.98},
+            {"visual_ref": "visual-other", "text": "other", "confidence": 0.99},
+        ]
+        self.assertEqual(
+            self.runner._visual_ref_matches(regions, " visual\tapply "),
+            ["visual-first"],
+        )
+
+    def test_visual_actuation_main_is_explicitly_three_run_gated(self) -> None:
+        source = RUNNER_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("_visual_actuation_main", source)
+        self.assertIn('"three_clean_physical_iterations"', source)
+        self.assertIn('"visual_target_ambiguous"', source)
+        self.assertIn('"native_input_injection_failed"', source)
+
     def test_candidate_model_files_are_explicit(self) -> None:
         self.assertEqual(
             self.runner._candidate_model_files("combined_ar_en"),

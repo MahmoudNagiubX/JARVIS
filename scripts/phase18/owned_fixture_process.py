@@ -28,6 +28,7 @@ POSITIONED_FIXTURE_NAMES = frozenset({
     "uia_multi_window_fixture_host.py",
 })
 STDIN_PIPE_FIXTURE_NAMES = frozenset({"uia_recovery_fixture_host.py"})
+OCR_FIXTURE_VARIANTS = frozenset({"duplicate_visual_target"})
 
 
 class OwnedFixtureError(ValueError):
@@ -61,8 +62,13 @@ def launch_owned_fixture(
     x: int | None = None,
     y: int | None = None,
     stdin_pipe: bool = False,
+    visual_variant: str | None = None,
 ) -> subprocess.Popen:
-    """Launch an allowlisted fixture with bounded, typed arguments only."""
+    """Launch an allowlisted fixture with bounded, typed arguments only.
+
+    The sole variant is an explicit mode of the repository-owned OCR fixture;
+    it is not a general command-line escape hatch.
+    """
     script = resolve_owned_fixture(script_path)
     try:
         normalized_nonce = str(uuid.UUID(nonce))
@@ -76,10 +82,25 @@ def launch_owned_fixture(
         raise OwnedFixtureError("fixture_position_not_supported")
     if stdin_pipe and script.name not in STDIN_PIPE_FIXTURE_NAMES:
         raise OwnedFixtureError("fixture_stdin_pipe_not_supported")
+    if visual_variant is not None:
+        if script.name != "uia_ocr_fixture_host.py" or visual_variant not in OCR_FIXTURE_VARIANTS:
+            raise OwnedFixtureError("fixture_visual_variant_not_supported")
 
-    argv = [sys.executable, str(script), "--nonce", normalized_nonce]
+    # Some Windows venv launchers keep a shim process and re-exec the GUI
+    # child. The OCR acceptance runner must bind the nonce window to the
+    # actual launched PID, so use the venv's underlying interpreter for this
+    # stdlib-only fixture when it is available. Other fixtures retain the
+    # historical current-interpreter path.
+    executable = sys.executable
+    if script.name == "uia_ocr_fixture_host.py":
+        base_executable = getattr(sys, "_base_executable", None)
+        if isinstance(base_executable, str) and Path(base_executable).is_file():
+            executable = base_executable
+    argv = [executable, str(script), "--nonce", normalized_nonce]
     if x is not None and y is not None:
         argv.extend(("--x", str(x), "--y", str(y)))
+    if visual_variant == "duplicate_visual_target":
+        argv.append("--duplicate-visual-target")
     return subprocess.Popen(
         argv,
         stdin=subprocess.PIPE if stdin_pipe else subprocess.DEVNULL,

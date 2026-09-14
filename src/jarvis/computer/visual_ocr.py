@@ -77,13 +77,16 @@ PROVIDER_NAME = "local-easyocr"
 MAX_REGIONS = 100
 MAX_TEXT_PER_REGION = 512
 MAX_TOTAL_TEXT = 12_000
-# Within the task's reviewed 15-30 second range.
-VISUAL_REF_TTL_SECONDS = 20
+# At the upper end of the task's reviewed 15-30 second range so the
+# approval-bound visual path can complete its bounded OCR revalidations on a
+# CPU-only host without extending the reference after issuance.
+VISUAL_REF_TTL_SECONDS = 30
 MAX_VISUAL_REFS = 500
 # Fixed, reviewed actuation confidence gate. This is deliberately not a
 # dynamic threshold derived from the current frame or candidate count.
 VISUAL_ACTUATION_MIN_CONFIDENCE = 0.60
 VISUAL_SPATIAL_IOU_MIN = 0.20
+VISUAL_SPATIAL_CONTEXT_MAX_CENTER_DISTANCE = 180
 
 # Batch 06 (R18B05-001): the exact two EasyOCR 1.7.2 model weight files a
 # `Reader(["ar", "en"], detect_network="craft")` construction requires -
@@ -660,12 +663,19 @@ def _spatially_continuous(previous: VisualBounds, current: VisualBounds) -> bool
     right = min(previous.x + previous.width, current.x + current.width)
     bottom = min(previous.y + previous.height, current.y + current.height)
     intersection = max(0, right - left) * max(0, bottom - top)
-    if intersection <= 0:
-        return False
-    previous_area = previous.width * previous.height
-    current_area = current.width * current.height
-    union = previous_area + current_area - intersection
-    return union > 0 and intersection / union >= VISUAL_SPATIAL_IOU_MIN
+    if intersection > 0:
+        previous_area = previous.width * previous.height
+        current_area = current.width * current.height
+        union = previous_area + current_area - intersection
+        if union > 0 and intersection / union >= VISUAL_SPATIAL_IOU_MIN:
+            return True
+    previous_center_x = previous.x + previous.width / 2
+    previous_center_y = previous.y + previous.height / 2
+    current_center_x = current.x + current.width / 2
+    current_center_y = current.y + current.height / 2
+    delta_x = previous_center_x - current_center_x
+    delta_y = previous_center_y - current_center_y
+    return delta_x * delta_x + delta_y * delta_y <= VISUAL_SPATIAL_CONTEXT_MAX_CENTER_DISTANCE ** 2
 
 
 def _bbox_to_bounds(bbox: Any, origin_x: int, origin_y: int) -> VisualBounds:

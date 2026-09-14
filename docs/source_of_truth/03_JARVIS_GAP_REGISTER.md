@@ -78,9 +78,25 @@ General mouse click/move/drag/drop and arbitrary bounded hotkeys/keys/paste are 
 **Batch 08 M0:** `PARTIAL` (unchanged). The evaluation-only OCR runner now uses a sequence-aware NFKC/whitespace-normalized Levenshtein similarity. Its bounded `combined_then_english` comparison was physically measured through the owned OCR fixture but failed the required English-similarity and all-three-run warm two-pass gates, so `OCR_BOUNDED_TWO_PASS_EVALUATION_NO_CHANGE` was recorded and DEC-048 remains unchanged. Visual actuation is still absent until the separately gated M1/M2 work.
 
 ### GAP-0103 — Visual grounding/OCR/local vision not production-active
-**Status:** `PARTIAL` (read-only OCR only - no visual actuation)
+**Status:** `PARTIAL` (bounded visual actuation implemented; happy-path physical acceptance pending)
 
-On-demand GDI capture exists, but OCR/local vision/visual target selection remain provider work. Evaluate UIA first; visual fallback only when semantics fail.
+**Batch 08 M1/M2 current truth:** `computer.visual.act` now accepts only an
+opaque window-origin `visual_ref` and routes through the existing target-aware
+approval, fresh OCR/source revalidation, foreground verification, and one
+native left-click batch. The owned OCR fixture now has a real `GO` button,
+fixture-owned status read-back, and an allowlisted duplicate-target variant.
+Physical acceptance is `PARTIAL`: stale-target refusal, duplicate ambiguity,
+approval-target drift refusal, and post-input uncertainty are each 3/3 with
+zero network attempts and exact child cleanup; the real happy-path click is
+0/3 because the CPU-only host expires the ref during slow OCR/revalidation
+and cannot verify foreground activation. No fallback to same-text lookup,
+raw coordinates, UIA element lookup, or automatic post-input retry is used.
+See `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_08.md`.
+
+On-demand GDI capture and optional local OCR are implemented. Visual fallback
+still follows the UIA-first rule; the Batch 08 visual action is deliberately
+bounded to one OCR-grounded left click and remains physically pending on the
+real happy path.
 
 **Batch 04 Milestone 2 (evidence-first OCR backend evaluation):** `OCR_BACKEND_EVALUATION_BLOCKED` — stays `OPEN`, not `PARTIAL`, per the task's own explicit instruction not to force a provider merely to finish the milestone. Two candidates were evaluated in an isolated Python 3.12.10 venv (never the project's own `.venv`, never installed as a JARVIS dependency) against a JARVIS-owned synthetic English/Arabic/mixed fixture corpus, using only local, no-API-key, no-cloud backends:
 - **PaddleOCR 3.7.0 + paddlepaddle 3.3.1** (primary candidate, PP-OCRv5, CPU-only): fails hard. Every single prediction call raises a reproducible `NotImplementedError: (Unimplemented) ConvertPirAttribute2RuntimeAttribute not support [...] onednn_instruction.cc`, deep inside PaddlePaddle's own CPU oneDNN executor on this machine. Not resolved by disabling oneDNN (`FLAGS_use_mkldnn` env var, and `paddle.set_flags` programmatically) or by downgrading paddlepaddle to 2.6.2 (which instead breaks paddleocr 3.7.0's own required API surface). This is a genuine PaddlePaddle CPU-inference incompatibility on this hardware/OS/version combination, not a JARVIS or benchmark-script defect.
@@ -109,6 +125,13 @@ Build per-action verification, re-observation, stale-target recovery, moved-wind
 
 **Batch 06 (Milestones 0 and 2):** `PARTIAL` (advanced, still narrow) — Milestone 0 closed R18B05-003: `drag_element_to_element`'s two grounding calls (pre-focus, post-focus) previously each owned an independent one-retry allowance, so a single drag could consume up to two separate bounded recovery cycles; a new `_RecoveryBudget` object is now created once per drag action and threaded through both calls, so at most one recovery cycle fires per action regardless of which grounding call needs it. Proven by 3 new deterministic unit tests (`tests/test_phase_eighteen_native_input.py::RecoveryBudgetScopeTests`) and 1 new `computer_use_v2` evaluation case (cuv2-46, 46 total) through the real tool/service path. Milestone 2 adds a fourth owned Win32 fixture (`scripts/phase18/uia_recovery_fixture_host.py`) accepting a small deterministic MOVE/REPLACE command channel over its own stdin, and two new physical acceptance scenarios in `scripts/phase18/computer_use_acceptance.py` (`_run_recovery_fixture_scenarios`), both **3/3 clean runs**: a target relocated before input still receives the action correctly, at its fresh bounds, with its identity preserved (`recovery_relocation_click_succeeds`/`recovery_relocation_fresh_bounds_used`); a target replaced with a genuinely different strong identity after an approval request causes `decide()`'s existing fresh re-check to refuse the approval outright with zero input delivered (`recovery_approval_identity_change_refused`/`recovery_approval_identity_change_zero_input_delivered`) - no recovery leniency at the approval layer, confirmed live, not only in fakes. A genuinely successful bounded-recovery cycle (fail-then-succeed against the *same* identity) and recovery-budget-exhaustion were deliberately left to the existing deterministic suites rather than physically reproduced - landing a live action's internal grounding calls inside a millisecond-scale window relative to an external fixture command cannot be done without uncontrolled process racing, which the task's own instructions explicitly permit leaving to deterministic injection. Consequential-uncertainty (partial injection failure after input begins) likewise stays with the existing deterministic injected-adapter harness (`RecoveryTests.test_recovery_never_fires_after_sendinput_has_begun`, `test_drag_partial_injection_failure_after_recovered_grounding_still_never_retries`), per the task's explicit instruction to use it for this specific scenario. See `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_06.md` §2.3/§4 for full evidence. Still explicitly absent, by design: any autonomous multi-app replanning/recovery loop and any second planner/authority - full GAP-0104 closure remains out of scope.
 
+**Batch 08 M2:** `PARTIAL` (advanced, still bounded). Visual target
+staleness, duplicate-target ambiguity, approval-target drift, and
+post-input uncertainty now have production-path safeguards and owned-fixture
+evidence. The implementation has no autonomous multi-app replanning loop and
+does not retry after input begins; the real visual happy path remains
+`PHYSICAL_PENDING`.
+
 ### GAP-0105 — Computer-use evaluation suite is missing
 **Status:** `PARTIAL`  
 Create repeatable NIGHTFURY tasks across Notepad, Explorer, Settings, Calculator, VS Code, terminal, browser, dialogs, clipboard, drag/drop, multi-window and failure recovery. Record success, steps, replans, wrong actions, latency, grounding source/confidence, and verification evidence.  
@@ -119,6 +142,15 @@ Create repeatable NIGHTFURY tasks across Notepad, Explorer, Settings, Calculator
 **Batch 06 (Milestones 0-2):** `PARTIAL` — the suite grew from 45 to 46 cases (cuv2-46: one drag recovery budget shared across pre-focus/post-focus grounding, R18B05-003). A third owned Win32 fixture (`uia_ocr_fixture_host.py`, Arabic/mixed OCR acceptance) and a fourth (`uia_recovery_fixture_host.py`, deterministic MOVE/REPLACE bounded-recovery acceptance) were added, both driven through dedicated physical runners with real production tool paths, 3/3 clean runs each. Still a four-fixture foundation, not the broad real-app matrix named in this gap's original scope - do not read this as GAP-0105 closure.
 
 **Batch 08 M0:** `PARTIAL` (unchanged). The corrected evaluator was re-run for three clean A/B/C configurations; no production OCR routing or input behavior changed. The full measurements and failed Candidate C gates are in `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_08.md`.
+
+**Batch 08 M1/M2:** the deterministic Computer Use V2 suite now contains 53
+cases, including approval-gated visual click, stale-refusal, ambiguity,
+approval-drift, and post-input-uncertainty contracts. The owned-fixture
+physical runner is intentionally still a foundation rather than the broad
+real-app matrix named by this gap: B/C/D/E are 3/3, while the real A happy
+path is 0/3 because the CPU-only host expires the visual reference before
+foreground-safe input begins. `GAP-0105` remains `PARTIAL`; no full
+multi-application acceptance claim is made.
 
 ### GAP-0106 — Multi-monitor/DPI/secure-desktop behavior needs explicit proof
 **Status:** `PARTIAL`  

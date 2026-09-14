@@ -112,6 +112,19 @@ two-pass gates, so the exact result is
 M1/M2 are the next separately gated slices. The deterministic suite is at 48
 cases after Batch 07.
 
+**Batch 08 M1/M2 result (2026-09-14):** M1 added the bounded
+`computer.visual.act` left-click path behind the existing approval and native
+input authorities. M2 added a real fixture-authored visual button/status
+postcondition and an allowlisted duplicate-target variant. The final offline
+three-run physical receipt is `PARTIAL`: stale-target, duplicate-ambiguity,
+approval-drift, and post-input-uncertainty safeguards are each 3/3, with zero
+network attempts and exact child cleanup; the real happy-path click is 0/3
+because the CPU-only host expires the visual reference during slow OCR/
+revalidation before foreground-safe input can begin. The three-clean-run
+gate is therefore false, GAP-0103 advances only to bounded visual actuation,
+and no Batch 09 work starts. See
+`docs/audits/PHASE_18_WORKSTREAM_A_BATCH_08.md`.
+
 Deliver:
 - product-owned UIA target/inspection/action layer;
 - benchmark `winapp ui` versus direct UIA implementation;

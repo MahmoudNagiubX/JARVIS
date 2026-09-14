@@ -143,6 +143,30 @@ class OwnedFixtureLaunchBoundaryTests(unittest.TestCase):
         self.assertEqual(popen.call_args.kwargs["stderr"], self.module.subprocess.DEVNULL)
         self.assertTrue(popen.call_args.kwargs["text"])
 
+    def test_only_the_owned_ocr_fixture_accepts_the_bounded_duplicate_variant(self) -> None:
+        sentinel = object()
+        with unittest.mock.patch.object(self.module.subprocess, "Popen", return_value=sentinel) as popen:
+            result = self.module.launch_owned_fixture(
+                OCR_FIXTURE_SCRIPT,
+                nonce="00000000-0000-4000-8000-000000000001",
+                visual_variant="duplicate_visual_target",
+            )
+
+        self.assertIs(result, sentinel)
+        self.assertEqual(popen.call_args.args[0][-1], "--duplicate-visual-target")
+        with self.assertRaises(self.module.OwnedFixtureError):
+            self.module.launch_owned_fixture(
+                FIXTURE_SCRIPT,
+                nonce="00000000-0000-4000-8000-000000000001",
+                visual_variant="duplicate_visual_target",
+            )
+        with self.assertRaises(self.module.OwnedFixtureError):
+            self.module.launch_owned_fixture(
+                OCR_FIXTURE_SCRIPT,
+                nonce="00000000-0000-4000-8000-000000000001",
+                visual_variant="arbitrary_command_line",
+            )
+
     def test_rejects_absolute_path_outside_fixture_area(self) -> None:
         with self.assertRaises(self.module.OwnedFixtureError):
             self.module.resolve_owned_fixture(Path(sys.executable))
@@ -485,6 +509,20 @@ class OcrFixtureSourceSafetyTests(unittest.TestCase):
             self.assertNotIn("uia_ocr_fixture_host", source, f"unexpected reference in {path}")
             self.assertNotIn("ocr_visual_acceptance", source, f"unexpected reference in {path}")
 
+    def test_fixture_has_one_real_visual_button_and_fixture_owned_status(self) -> None:
+        source = OCR_FIXTURE_SCRIPT.read_text(encoding="utf-8")
+        for required in (
+            '"BUTTON"',
+            "VISUAL_ACTION_LABEL",
+            "VISUAL_STATUS_READY",
+            "VISUAL_STATUS_APPLIED",
+            "WM_COMMAND",
+            "BN_CLICKED",
+            "--duplicate-visual-target",
+        ):
+            self.assertIn(required, source)
+        self.assertNotIn("SendInput", source)
+
     def test_provisioning_script_never_actually_imported_under_src(self) -> None:
         # `provision_easyocr_models` IS legitimately mentioned in prose
         # inside `visual_ocr.py`'s own docstring/comments (pointing a
@@ -517,6 +555,15 @@ class OcrFixtureSourceSafetyTests(unittest.TestCase):
     def test_runner_never_reads_owner_clipboard(self) -> None:
         source = OCR_ACCEPTANCE_RUNNER_SCRIPT.read_text(encoding="utf-8").casefold()
         self.assertNotIn("clipboard", source)
+
+    def test_visual_runner_uses_opaque_refs_and_has_no_coordinate_action_fields(self) -> None:
+        source = OCR_ACCEPTANCE_RUNNER_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("--visual-actuation", source)
+        self.assertIn('"computer.visual.read"', source)
+        self.assertIn('"computer.visual.act"', source)
+        self.assertIn('"visual_ref": visual_ref', source)
+        for forbidden in ('"x":', '"y":', '"bounds":', '"element_ref": visual_ref'):
+            self.assertNotIn(forbidden, source)
 
     def test_runner_has_no_owner_application_dependency(self) -> None:
         source = OCR_ACCEPTANCE_RUNNER_SCRIPT.read_text(encoding="utf-8").casefold()

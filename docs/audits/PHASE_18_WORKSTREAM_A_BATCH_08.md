@@ -1,6 +1,6 @@
 # Phase 18 Workstream A — Batch 08 Audit
 
-**Status:** M0 complete with normal no-change result; M1/M2 pending
+**Status:** M0 and M1 complete; M2 implemented with bounded refusal/uncertainty evidence, but the real happy-path physical click remains pending
 
 **Repository:** `MahmoudNagiubX/JARVIS`
 
@@ -100,7 +100,7 @@ The three skips are the expected optional `easyocr`, `torch`, and
 `torchvision` checks in the repository's normal development environment; the
 physical measurements used the disposable environment listed above.
 
-## 7. Remaining Batch 08 work
+## 7. Historical milestone scope
 
 M1 must add only the bounded `left_click_visual` action through the existing
 ComputerActionService, with opaque visual-ref/source-window approval binding,
@@ -109,3 +109,88 @@ and no model-facing geometry. M2 must extend the owned fixture and prove the
 required A–E stale/ambiguous/drift/uncertain-input scenarios three clean times
 each. Until those milestones complete, visual actuation is not implemented or
 physically accepted.
+
+## 8. M1 bounded visual actuation
+
+M1 added one production action, `computer.visual.act`, for the existing
+`left_click_visual` capability. The action stays behind the existing
+`ComputerActionService`, `PermissionEngine`, durable approval engine, audit,
+and `WindowsNativeInputAdapter` boundaries. It accepts only an opaque
+window-origin `visual_ref`; the private OCR binding retains source identity,
+text digest, confidence, spatial continuity, and expiry, while model-facing
+results and approval previews contain no OCR geometry or raw coordinates.
+
+The action path is:
+
+```text
+computer.visual.read -> opaque visual_ref -> computer.visual.act
+-> target-aware approval -> fresh OCR/source revalidation
+-> foreground verification -> one native move + one left-down/left-up batch
+```
+
+Element-origin visual references remain denied in favor of semantic UIA
+targeting. A changed source, changed text, stale reference, low confidence,
+or ambiguous same-text target fails closed before input. Native delivery is
+always reported unverified; no automatic retry occurs after the input batch
+begins. The deterministic evaluation suite now contains 53 cases (`cuv2-49`
+through `cuv2-53` cover approval, stale content, ambiguity, source drift, and
+post-input uncertainty).
+
+M1 implementation was pushed in commit `3291c44`.
+
+## 9. M2 owned-fixture visual-actuation evidence
+
+M2 extended the existing `scripts/phase18/uia_ocr_fixture_host.py` with one
+real Win32 `BUTTON` labelled `GO` and a fixture-owned `STATIC` status label.
+The parent handles the button's real `WM_COMMAND`/`BN_CLICKED` notification;
+the status changes from `VISUAL STATUS READY` to `VISUAL STATUS APPLIED` only
+after a delivered click. The duplicate-target mode creates a second real
+`GO` button and is allowlisted only through
+`scripts/phase18/owned_fixture_process.py`. No IPC, network, clipboard,
+owner-application dependency, or fixture-side `SendInput` was added.
+
+The physical runner uses exact nonce-title plus provider-verified child-PID
+ownership, terminates only the returned child, and confirms exact-title window
+absence. It forwards only opaque refs from `computer.visual.read` to
+`computer.visual.act`; raw OCR text and bounds remain transient. The visual
+reference TTL is 30 seconds, the upper end of the reviewed 15-30 second range,
+and is never extended by approval or revalidation.
+
+Final physical command (isolated offline EasyOCR environment):
+
+```text
+python scripts/phase18/ocr_visual_acceptance.py --visual-actuation --runs 3 --candidate combined_ar_en --model-dir <provisioned-model-dir> --out <temporary-json>
+```
+
+Final three-run result from the temporary JSON receipt:
+
+| Scenario | Result | Independent evidence |
+|---|---:|---|
+| A happy visual left click | 0/3 | `visual_ref_expired` during the slow CPU OCR/approval revalidation path; no native input or status change |
+| B stale visual target | 3/3 | old ref refused with `window_ref_expired`; zero input; recreated fixture status stayed ready |
+| C duplicate visual labels | 3/3 | two OCR matches; `visual_target_ambiguous`; zero input; status stayed ready |
+| D approval target drift | 3/3 | recreated same-title child refused old approval with `window_ref_expired`; no migration; zero input |
+| E post-input uncertainty | 3/3 | injected adapter recorded two batches (one move, one partial click); `native_input_injection_failed`; exactly one click-batch attempt |
+
+Across all three runs the scoped network guard recorded zero attempts and
+all owned fixture children exited with exact-title cleanup confirmed. The
+required `three_clean_physical_iterations` gate is false solely because A is
+not physically green. A separate host diagnostic also showed that the
+evaluation session cannot verify foreground activation for the owned fixture;
+the production path correctly refuses rather than sending input to an
+uncertain target.
+
+## 10. Final Batch 08 verification and verdict
+
+- focused M1/M2 tests: **240 passed, 5 subtests** (fresh behavior run);
+- full repository suite: **880 passed, 3 skipped, 41 subtests** (fresh run on
+  the final production/test code; the three skips are the expected optional
+  OCR-package checks in the normal interpreter);
+- `python -m compileall src tests scripts -q`: pass;
+- `git diff --check`: pass;
+- final verdict: `PARTIAL` - bounded OCR-grounded visual left-click is
+  implemented and its stale/ambiguity/drift/uncertainty safeguards are
+  physically evidenced, but the real happy-path 3/3 click-delivery and
+  independent status gate remains `PHYSICAL_PENDING`.
+
+No Batch 09 work is started. DEC-048 remains unchanged.

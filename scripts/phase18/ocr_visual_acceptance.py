@@ -47,6 +47,8 @@ Safety rules (same discipline as `computer_use_acceptance.py`):
 - results (including Arabic/mixed text) are always written to a UTF-8 file
   (`--out`), never printed as raw Unicode to a Windows console (the
   default `cp1252` codec cannot encode Arabic and crashes on print()).
+- the visual-actuation mode permits only its fixed two-attempt pre-input
+  focus-race recovery; it never retries after native input begins.
 
 No retry-until-green loop: a run that fails is reported as failed.
 """
@@ -84,6 +86,9 @@ LABEL_ARABIC_GREETING = "مرحبا يا جارفيس"
 LABEL_ARABIC_SETTINGS = "الإعدادات"
 LABEL_MIXED_SETTINGS = "JARVIS الإعدادات"
 LABEL_ENGLISH_ONLY = "JARVIS OCR FIXTURE"
+VISUAL_ACTION_LABEL = "GO"
+VISUAL_STATUS_READY = "VISUAL STATUS READY"
+VISUAL_STATUS_APPLIED = "VISUAL STATUS APPLIED"
 
 OCR_CANDIDATES = ("combined_ar_en", "english_only", "combined_then_english")
 CANDIDATE_MODEL_FILES = {
@@ -533,6 +538,185 @@ async def _find_exact_fixture_window(runtime, context, title: str) -> tuple[str 
     return None, "fixture_window_not_found"
 
 
+async def _find_exact_owned_fixture_window(
+    runtime, context, title: str, process_id: int,
+) -> tuple[str | None, str | None]:
+    """Find one exact nonce title and require the runner-owned child PID.
+
+    Window enumeration stays transient. Only the opaque window reference and
+    a bounded failure reason leave this helper; the physical visual runner
+    never persists a window list, title, PID, or HWND.
+    """
+    for _ in range(40):
+        await asyncio.sleep(0.5)
+        listed = await runtime.tool_service.execute(
+            "computer.semantic.read", {"action": "list_windows"}, context,
+        )
+        if listed.status.value != "completed":
+            continue
+        title_matches = [w for w in listed.output.get("windows", []) if w.get("title") == title]
+        if len(title_matches) > 1:
+            return None, "fixture_title_collision"
+        if len(title_matches) == 1:
+            window_ref = title_matches[0].get("window_ref")
+            provider = getattr(runtime.computer_actions.controller.local, "perception_provider", None)
+            verifier = getattr(provider, "window_belongs_to_process", None)
+            if not isinstance(window_ref, str) or not callable(verifier):
+                return None, "fixture_process_verifier_unavailable"
+            if not verifier(window_ref, process_id):
+                return None, "fixture_process_verifier_failed"
+            return window_ref, None
+    return None, "fixture_window_not_found"
+
+
+async def _wait_for_exact_fixture_absence(runtime, context, title: str) -> bool:
+    """Wait for one exact nonce title to disappear after owned termination."""
+    for _ in range(40):
+        listed = await runtime.tool_service.execute(
+            "computer.semantic.read", {"action": "list_windows"}, context,
+        )
+        if listed.status.value == "completed":
+            if not any(w.get("title") == title for w in listed.output.get("windows", [])):
+                return True
+        await asyncio.sleep(0.25)
+    return False
+
+
+def _visual_ref_matches(regions: object, expected: str) -> list[str]:
+    """Select visual refs from the current OCR result without retaining OCR.
+
+    The text is inspected only in memory to identify the fixture-authored
+    control. The returned refs are opaque and are the only values forwarded to
+    `computer.visual.act`; no element lookup or geometry is involved.
+    """
+    if not isinstance(regions, list):
+        return []
+    expected_norm = _normalize_visual_target_text(expected)
+    matches: list[str] = []
+    for region in regions:
+        if not isinstance(region, dict):
+            continue
+        visual_ref = region.get("visual_ref")
+        text = region.get("text")
+        if (
+            isinstance(visual_ref, str)
+            and visual_ref.startswith("visual-")
+            and _normalize_visual_target_text(text or "") == expected_norm
+        ):
+            matches.append(visual_ref)
+    return matches
+
+
+def _normalize_visual_target_text(value: object) -> str:
+    """Apply one fixed OCR glyph normalization for the fixture's GO label.
+
+    This is only initial target selection; the opaque ref still binds to the
+    exact production OCR digest and is re-resolved without fuzzy matching.
+    """
+    return _normalize_scored_text(value).casefold().replace("0", "o")
+
+
+async def _status_name_present(runtime, context, window_ref: str, expected: str) -> bool:
+    """Independently read one exact fixture-authored status label."""
+    found = await runtime.tool_service.execute(
+        "computer.semantic.read",
+        {
+            "action": "find_elements",
+            "window_ref": window_ref,
+            "control_type": "TextControl",
+            "name": expected,
+        },
+        context,
+    )
+    return found.status.value == "completed" and bool(found.output.get("matches"))
+
+
+async def _visual_read(runtime, context, window_ref: str):
+    """Read through the production visual tool under the offline guard."""
+    with _network_guard():
+        return await runtime.tool_service.execute(
+            "computer.visual.read", {"action": "ocr_window", "window_ref": window_ref}, context,
+        )
+
+
+async def _visual_request(runtime, context, visual_ref: str):
+    """Issue one bounded visual action request; never retries the request."""
+    with _network_guard():
+        return await runtime.tool_service.execute(
+            "computer.visual.act",
+            {"action": "left_click_visual", "visual_ref": visual_ref},
+            context,
+        )
+
+
+async def _visual_decide(runtime, identity, context, approval_id: str):
+    """Resume one approval exactly once, under the offline guard."""
+    with _network_guard():
+        return await runtime.tool_service.decide_and_resume(
+            approval_id, True, identity.identity_id, context,
+        )
+
+
+_VISUAL_PREINPUT_FOCUS_RETRIES = 2
+_VISUAL_PREINPUT_FOCUS_RETRY_DELAY_SECONDS = 0.5
+
+
+async def _visual_request_and_decide(runtime, identity, context, visual_ref: str):
+    """Run one visual approval path with bounded pre-input focus recovery.
+
+    Only ``window_focus_not_verified`` is retried, and every retry happens
+    after an approval was consumed but before the native adapter accepted any
+    input. A native injection failure or any other result returns immediately;
+    this helper never retries after a move/click batch has begun.
+    """
+    requested = None
+    decided = None
+    for attempt in range(_VISUAL_PREINPUT_FOCUS_RETRIES):
+        requested = await _visual_request(runtime, context, visual_ref)
+        approval_id = getattr(requested, "approval_id", None)
+        if _status_value(requested) != "approval_required" or not isinstance(approval_id, str):
+            return requested, None
+        decided = await _visual_decide(runtime, identity, context, approval_id)
+        if _error_value(decided) != "window_focus_not_verified":
+            return requested, decided
+        if attempt + 1 < _VISUAL_PREINPUT_FOCUS_RETRIES:
+            await asyncio.sleep(_VISUAL_PREINPUT_FOCUS_RETRY_DELAY_SECONDS)
+    assert requested is not None
+    return requested, decided
+
+
+def _status_value(result: object | None) -> str | None:
+    if result is None:
+        return None
+    status = getattr(result, "status", None)
+    return getattr(status, "value", str(status)) if status is not None else None
+
+
+def _error_value(result: object | None) -> str | None:
+    error_code = getattr(result, "error_code", None)
+    return error_code if isinstance(error_code, str) else None
+
+
+def _visual_action_record(requested: object, decided: object | None = None) -> dict[str, object]:
+    """Project one action to bounded statuses/reasons only."""
+    record: dict[str, object] = {
+        "request_status": _status_value(requested),
+        "request_error_code": _error_value(requested),
+        "approval_issued": _status_value(requested) == "approval_required"
+        and bool(getattr(requested, "approval_id", None)),
+    }
+    if decided is not None:
+        output = getattr(decided, "output", None)
+        record.update({
+            "decision_status": _status_value(decided),
+            "decision_error_code": _error_value(decided),
+            "delivery_reported": _status_value(decided) == "completed",
+            "reported_verified": bool(getattr(decided, "verified", False)),
+            "input_batch_accepted": bool(output.get("input_batch_accepted")) if isinstance(output, dict) else False,
+        })
+    return record
+
+
 async def _find_element(runtime, context, window_ref: str, name: str) -> str | None:
     found = await runtime.tool_service.execute(
         "computer.semantic.read",
@@ -695,6 +879,453 @@ async def _run_once(model_dir: str, candidate: str) -> dict:
         await runtime.shutdown()
 
 
+_VISUAL_STALE_OR_DRIFT_ERRORS = frozenset({
+    "visual_ref_expired",
+    "visual_ref_unknown",
+    "window_ref_expired",
+    "uia_window_stale",
+    "visual_source_identity_changed",
+    "visual_target_changed",
+})
+
+
+async def _run_visual_actuation_once(model_dir: str, candidate: str = "combined_ar_en") -> dict:
+    """Run one clean A-E visual-actuation iteration.
+
+    A, B, C, and D use only JARVIS's owned OCR fixture. B and D recreate the
+    exact child through the allowlisted launch boundary to make the original
+    opaque visual reference stale; C starts the allowlisted duplicate-target
+    fixture variant. E injects failure only at the native adapter boundary so
+    no real click is sent while the real visual resolver/controller path is
+    still exercised.
+    """
+    candidate = _validate_candidate(candidate)
+    result: dict[str, object] = {
+        "attempted": True,
+        "candidate": candidate,
+        "scenarios": {},
+    }
+    if not FIXTURE_HOST_SCRIPT.exists():
+        result["attempted"] = False
+        result["skip_reason"] = "fixture_host_script_missing"
+        return result
+
+    runtime, identity, _device, context = await _new_harness(model_dir)
+    active_proc: subprocess.Popen | None = None
+    active_title: str | None = None
+
+    async def _start_fixture(
+        *,
+        nonce: str | None = None,
+        visual_variant: str | None = None,
+    ) -> tuple[str | None, str, str, str | None]:
+        nonlocal active_proc, active_title
+        if active_proc is not None:
+            raise RuntimeError("visual_fixture_already_active")
+        fixture_nonce = nonce or str(uuid.uuid4())
+        title = f"JARVIS-CUV2-OCR-FIXTURE-{fixture_nonce}"
+        active_proc = launch_owned_fixture(
+            FIXTURE_HOST_SCRIPT,
+            nonce=fixture_nonce,
+            visual_variant=visual_variant,
+        )
+        active_title = title
+        window_ref, error = await _find_exact_owned_fixture_window(
+            runtime, context, title, int(active_proc.pid),
+        )
+        if window_ref is None:
+            terminate_owned_fixture(active_proc)
+            await _wait_for_exact_fixture_absence(runtime, context, title)
+            active_proc = None
+            active_title = None
+        return window_ref, fixture_nonce, title, error
+
+    async def _stop_fixture(title: str) -> bool:
+        nonlocal active_proc, active_title
+        proc = active_proc
+        active_proc = None
+        active_title = None
+        if proc is None:
+            return False
+        exited = terminate_owned_fixture(proc)
+        absent = await _wait_for_exact_fixture_absence(runtime, context, title)
+        return bool(exited and absent)
+
+    def _read_regions(read_result: object) -> object:
+        output = getattr(read_result, "output", None)
+        return output.get("regions") if isinstance(output, dict) else None
+
+    def _scenario_pass(scenario: dict[str, object]) -> bool:
+        return bool(scenario.get("pass"))
+
+    try:
+        try:
+            _configure_candidate(runtime, model_dir, candidate, {})
+            result["configuration_ready"] = True
+        except (RuntimeError, OSError, ValueError) as exc:
+            result["error"] = f"visual_configuration_failed:{str(exc)[:100]}"
+            return result
+
+        scenarios = result["scenarios"]
+        assert isinstance(scenarios, dict)
+
+        # Scenario A: the only actuation target comes from computer.visual.read
+        # and the effect is verified independently through the fixture status.
+        a: dict[str, object] = {"observed": False, "pass": False}
+        a_ref, _a_nonce, a_title, a_error = await _start_fixture()
+        if a_ref is not None:
+            a_read = await _visual_read(runtime, context, a_ref)
+            a_matches = _visual_ref_matches(_read_regions(a_read), VISUAL_ACTION_LABEL)
+            a["observed"] = _status_value(a_read) == "completed" and len(a_matches) == 1
+            if len(a_matches) == 1:
+                a_requested, a_decided = await _visual_request_and_decide(
+                    runtime, identity, context, a_matches[0],
+                )
+                a.update(_visual_action_record(a_requested, a_decided))
+                await asyncio.sleep(0.25)
+                a["independent_status_matches_expected"] = await _status_name_present(
+                    runtime, context, a_ref, VISUAL_STATUS_APPLIED,
+                )
+            else:
+                a["request_status"] = "not_issued"
+                a["request_error_code"] = "visual_action_target_not_unique"
+                a["approval_issued"] = False
+                a["independent_status_matches_expected"] = False
+            a["pass"] = bool(
+                a.get("observed")
+                and a.get("approval_issued")
+                and a.get("delivery_reported")
+                and a.get("input_batch_accepted")
+                and a.get("independent_status_matches_expected")
+                and not a.get("reported_verified")
+            )
+        else:
+            a["error"] = a_error
+        a["fixture_child_confirmed_exited"] = await _stop_fixture(a_title)
+        scenarios["A_happy_visual_left_click"] = a
+
+        # Scenario B: recreate the exact owned fixture after observation and
+        # send the old ref to the production resolver. A new same-title child
+        # exists, but no same-text fallback is permitted.
+        b: dict[str, object] = {"observed": False, "pass": False}
+        b_ref, b_nonce, b_title, b_error = await _start_fixture()
+        old_b_ref: str | None = None
+        old_b_stopped = False
+        b_cleanup = False
+        if b_ref is not None:
+            b_read = await _visual_read(runtime, context, b_ref)
+            b_matches = _visual_ref_matches(_read_regions(b_read), VISUAL_ACTION_LABEL)
+            old_b_ref = b_matches[0] if len(b_matches) == 1 else None
+            b["observed"] = _status_value(b_read) == "completed" and old_b_ref is not None
+            old_b_stopped = await _stop_fixture(b_title)
+            b["fixture_recreated"] = False
+            if old_b_stopped:
+                new_b_ref, _new_b_nonce, _new_b_title, b_error = await _start_fixture(nonce=b_nonce)
+                b["fixture_recreated"] = new_b_ref is not None
+                if new_b_ref is not None and old_b_ref is not None:
+                    b["new_fixture_status_unchanged"] = await _status_name_present(
+                        runtime, context, new_b_ref, VISUAL_STATUS_READY,
+                    )
+                    b_requested = await _visual_request(runtime, context, old_b_ref)
+                    b.update(_visual_action_record(b_requested))
+                    b["stale_target_refused"] = bool(
+                        _status_value(b_requested) != "approval_required"
+                        and _error_value(b_requested) in _VISUAL_STALE_OR_DRIFT_ERRORS
+                    )
+                    b["zero_input_proven"] = bool(
+                        b.get("stale_target_refused")
+                        and not b.get("approval_issued")
+                        and b.get("new_fixture_status_unchanged")
+                    )
+                b_cleanup = await _stop_fixture(_new_b_title)
+        else:
+            b["error"] = b_error
+        b.setdefault("fixture_recreated", False)
+        b.setdefault("new_fixture_status_unchanged", False)
+        b.setdefault("stale_target_refused", False)
+        b.setdefault("zero_input_proven", False)
+        b["fixture_child_confirmed_exited"] = b_cleanup
+        b["pass"] = bool(
+            b.get("observed")
+            and b.get("fixture_recreated")
+            and b.get("stale_target_refused")
+            and b.get("zero_input_proven")
+        )
+        scenarios["B_stale_visual_target"] = b
+
+        # Scenario C: both duplicate OCR labels are spatially continuous with
+        # the observed ref. The action must stop at ambiguity before approval.
+        c: dict[str, object] = {"observed": False, "pass": False}
+        c_ref, _c_nonce, c_title, c_error = await _start_fixture(
+            visual_variant="duplicate_visual_target",
+        )
+        if c_ref is not None:
+            c_read = await _visual_read(runtime, context, c_ref)
+            c_matches = _visual_ref_matches(_read_regions(c_read), VISUAL_ACTION_LABEL)
+            c["duplicate_visual_matches"] = len(c_matches)
+            c["observed"] = _status_value(c_read) == "completed" and bool(c_matches)
+            if c_matches:
+                c_requested = await _visual_request(runtime, context, c_matches[0])
+                c.update(_visual_action_record(c_requested))
+                c["new_fixture_status_unchanged"] = await _status_name_present(
+                    runtime, context, c_ref, VISUAL_STATUS_READY,
+                )
+                c["ambiguity_refused"] = bool(
+                    _status_value(c_requested) == "denied"
+                    and _error_value(c_requested) == "visual_target_ambiguous"
+                )
+                c["zero_input_proven"] = bool(
+                    c.get("ambiguity_refused")
+                    and not c.get("approval_issued")
+                    and c.get("new_fixture_status_unchanged")
+                )
+            else:
+                c["request_status"] = "not_issued"
+                c["request_error_code"] = "duplicate_visual_target_not_ocr_readable"
+                c["approval_issued"] = False
+                c["ambiguity_refused"] = False
+                c["zero_input_proven"] = False
+        else:
+            c["error"] = c_error
+        c.setdefault("duplicate_visual_matches", 0)
+        c.setdefault("new_fixture_status_unchanged", False)
+        c.setdefault("ambiguity_refused", False)
+        c.setdefault("zero_input_proven", False)
+        c["pass"] = bool(
+            c.get("observed")
+            and int(c.get("duplicate_visual_matches", 0)) >= 2
+            and c.get("ambiguity_refused")
+            and c.get("zero_input_proven")
+        )
+        c["fixture_child_confirmed_exited"] = await _stop_fixture(c_title)
+        scenarios["C_duplicate_visual_labels"] = c
+
+        # Scenario D: issue approval for the old target, recreate the exact
+        # same-title child before resume, and refuse without migrating refs.
+        d: dict[str, object] = {"observed": False, "pass": False}
+        d_ref, d_nonce, d_title, d_error = await _start_fixture()
+        old_d_ref: str | None = None
+        d_requested = None
+        d_cleanup = False
+        if d_ref is not None:
+            d_read = await _visual_read(runtime, context, d_ref)
+            d_matches = _visual_ref_matches(_read_regions(d_read), VISUAL_ACTION_LABEL)
+            old_d_ref = d_matches[0] if len(d_matches) == 1 else None
+            d["observed"] = _status_value(d_read) == "completed" and old_d_ref is not None
+            if old_d_ref is not None:
+                d_requested = await _visual_request(runtime, context, old_d_ref)
+                d["approval_issued"] = bool(
+                    _status_value(d_requested) == "approval_required"
+                    and isinstance(getattr(d_requested, "approval_id", None), str)
+                )
+            else:
+                d["approval_issued"] = False
+            d_old_stopped = await _stop_fixture(d_title)
+            d["fixture_recreated"] = False
+            d_decided = None
+            if d_old_stopped:
+                new_d_ref, _new_d_nonce, new_d_title, d_error = await _start_fixture(nonce=d_nonce)
+                d["fixture_recreated"] = new_d_ref is not None
+                if new_d_ref is not None:
+                    d["new_fixture_status_unchanged"] = await _status_name_present(
+                        runtime, context, new_d_ref, VISUAL_STATUS_READY,
+                    )
+                if d_requested is not None and isinstance(getattr(d_requested, "approval_id", None), str):
+                    d_decided = await _visual_decide(
+                        runtime, identity, context, d_requested.approval_id,
+                    )
+                    d.update(_visual_action_record(d_requested, d_decided))
+                else:
+                    d.update(_visual_action_record(d_requested or object()))
+                d["approval_target_drift_refused"] = bool(
+                    _status_value(d_decided) == "denied"
+                    and _error_value(d_decided) in _VISUAL_STALE_OR_DRIFT_ERRORS
+                )
+                d["no_migration_to_new_visual_ref"] = bool(
+                    d.get("approval_target_drift_refused")
+                    and d.get("new_fixture_status_unchanged")
+                )
+                d_cleanup = await _stop_fixture(new_d_title)
+        else:
+            d["error"] = d_error
+        d.setdefault("fixture_recreated", False)
+        d.setdefault("new_fixture_status_unchanged", False)
+        d.setdefault("approval_target_drift_refused", False)
+        d.setdefault("no_migration_to_new_visual_ref", False)
+        d["fixture_child_confirmed_exited"] = d_cleanup
+        d["pass"] = bool(
+            d.get("observed")
+            and d.get("approval_issued")
+            and d.get("fixture_recreated")
+            and d.get("approval_target_drift_refused")
+            and d.get("no_migration_to_new_visual_ref")
+        )
+        scenarios["D_approval_target_drift"] = d
+
+        # Scenario E: after the injected move batch, the click batch returns a
+        # partial count. The native adapter must report uncertainty and never
+        # send a second click batch.
+        e: dict[str, object] = {"observed": False, "pass": False}
+        e_ref, _e_nonce, e_title, e_error = await _start_fixture()
+        if e_ref is not None:
+            e_read = await _visual_read(runtime, context, e_ref)
+            e_matches = _visual_ref_matches(_read_regions(e_read), VISUAL_ACTION_LABEL)
+            e["observed"] = _status_value(e_read) == "completed" and len(e_matches) == 1
+            if len(e_matches) == 1:
+                from jarvis.computer.native_input import WindowsNativeInputAdapter
+
+                controller = runtime.computer_actions.controller.local
+                original_native = controller.native_input_adapter
+                send_batches: list[int] = []
+
+                class _InjectedFocusProvider:
+                    """Allow E to reach the injected native boundary only.
+
+                    The real window is still validated through the production
+                    provider, but this deterministic harness does not ask the
+                    host session to foreground it. Since ``send_input`` below
+                    is the recording injector, this cannot send input to the
+                    owner desktop while it proves the post-input failure path.
+                    """
+
+                    def __init__(self, delegate: object) -> None:
+                        self._delegate = delegate
+
+                    def validate_input_window(self, window_ref: str) -> int:
+                        return self._delegate.validate_input_window(window_ref)  # type: ignore[attr-defined]
+
+                    def focus_window(self, _window_ref: str) -> bool:
+                        return True
+
+                    def is_foreground(self, _hwnd: int) -> bool:
+                        return True
+
+                def _partial_send(inputs: object) -> int:
+                    count = len(inputs)  # type: ignore[arg-type]
+                    send_batches.append(count)
+                    return count if count == 1 else max(0, count - 1)
+
+                injected_native = WindowsNativeInputAdapter(
+                    _InjectedFocusProvider(original_native.window_provider),  # type: ignore[arg-type]
+                    original_native.semantic_adapter,
+                    metrics_provider=lambda: (0, 0, 1920, 1080),
+                    send_input=_partial_send,
+                    get_cursor_pos=lambda: (0, 0),
+                )
+                controller.native_input_adapter = injected_native
+                try:
+                    e_requested, e_decided = await _visual_request_and_decide(
+                        runtime, identity, context, e_matches[0],
+                    )
+                    e.update(_visual_action_record(e_requested, e_decided))
+                finally:
+                    controller.native_input_adapter = original_native
+                e["send_input_batches"] = len(send_batches)
+                e["click_batch_attempts"] = sum(1 for count in send_batches if count == 2)
+                e["input_started"] = bool(send_batches)
+                e["uncertain_outcome"] = bool(
+                    _status_value(e_decided) == "failed"
+                    and _error_value(e_decided) == "native_input_injection_failed"
+                )
+                e["no_automatic_second_click"] = e["click_batch_attempts"] == 1
+            else:
+                e["request_status"] = "not_issued"
+                e["request_error_code"] = "visual_action_target_not_unique"
+                e["approval_issued"] = False
+                e["uncertain_outcome"] = False
+                e["no_automatic_second_click"] = False
+        else:
+            e["error"] = e_error
+        e.setdefault("send_input_batches", 0)
+        e.setdefault("click_batch_attempts", 0)
+        e.setdefault("input_started", False)
+        e.setdefault("uncertain_outcome", False)
+        e.setdefault("no_automatic_second_click", False)
+        e["pass"] = bool(
+            e.get("observed")
+            and e.get("approval_issued")
+            and e.get("input_started")
+            and e.get("uncertain_outcome")
+            and e.get("no_automatic_second_click")
+        )
+        e["fixture_child_confirmed_exited"] = await _stop_fixture(e_title)
+        scenarios["E_post_input_uncertainty"] = e
+
+        result["fixture_child_confirmed_exited"] = all(
+            bool(scenario.get("fixture_child_confirmed_exited"))
+            for scenario in scenarios.values()
+            if isinstance(scenario, dict)
+        )
+        result["clean_iteration"] = bool(
+            len(scenarios) == 5
+            and all(_scenario_pass(scenario) for scenario in scenarios.values() if isinstance(scenario, dict))
+            and result["fixture_child_confirmed_exited"]
+        )
+        return result
+    except _NetworkAccessDuringOcrError as exc:
+        result["network_violation"] = str(exc)
+        result["clean_iteration"] = False
+        return result
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        result["error"] = f"visual_acceptance_failed:{str(exc)[:120]}"
+        result["clean_iteration"] = False
+        return result
+    finally:
+        if active_proc is not None and active_title is not None:
+            result["fixture_child_confirmed_exited"] = await _stop_fixture(active_title)
+        await runtime.shutdown()
+
+
+async def _visual_actuation_main(
+    run_count: int, model_dir: str, candidate: str = "combined_ar_en",
+) -> dict:
+    """Run bounded visual A-E acceptance; callers must request exactly three."""
+    candidate = _validate_candidate(candidate)
+    if platform.system().casefold() != "windows":
+        return {"error": "physical_acceptance_requires_windows"}
+    runs = []
+    for index in range(run_count):
+        print(f"-- visual actuation physical acceptance run {index + 1}/{run_count} --", file=sys.stderr)
+        runs.append(await _run_visual_actuation_once(model_dir, candidate))
+    any_network_violation = next((r["network_violation"] for r in runs if r.get("network_violation")), None)
+    scenarios = [r.get("scenarios", {}) for r in runs]
+
+    def _count(scenario_name: str, field: str) -> int:
+        return sum(
+            1
+            for run_scenarios in scenarios
+            if isinstance(run_scenarios, dict)
+            and isinstance(run_scenarios.get(scenario_name), dict)
+            and bool(run_scenarios[scenario_name].get(field))
+        )
+
+    summary = {
+        "mode": "visual_actuation",
+        "candidate": candidate,
+        "runs": len(runs),
+        "network_access_ever_attempted": any_network_violation is not None,
+        "network_violation_detail": any_network_violation,
+        "scenario_a_click_delivery": _count("A_happy_visual_left_click", "delivery_reported"),
+        "scenario_a_independent_status_matches": _count("A_happy_visual_left_click", "independent_status_matches_expected"),
+        "scenario_b_stale_refused": _count("B_stale_visual_target", "stale_target_refused"),
+        "scenario_b_zero_input_proven": _count("B_stale_visual_target", "zero_input_proven"),
+        "scenario_c_ambiguity_refused": _count("C_duplicate_visual_labels", "ambiguity_refused"),
+        "scenario_c_zero_input_proven": _count("C_duplicate_visual_labels", "zero_input_proven"),
+        "scenario_d_approval_drift_refused": _count("D_approval_target_drift", "approval_target_drift_refused"),
+        "scenario_d_no_migration_proven": _count("D_approval_target_drift", "no_migration_to_new_visual_ref"),
+        "scenario_e_uncertain_after_input": _count("E_post_input_uncertainty", "uncertain_outcome"),
+        "scenario_e_no_automatic_second_click": _count("E_post_input_uncertainty", "no_automatic_second_click"),
+        "fixture_child_confirmed_exited_all": bool(runs) and all(
+            bool(run.get("fixture_child_confirmed_exited")) for run in runs
+        ),
+        "three_clean_physical_iterations": len(runs) == 3 and all(
+            bool(run.get("clean_iteration")) for run in runs
+        ),
+    }
+    summary["verdict"] = "PASS" if summary["three_clean_physical_iterations"] else "PARTIAL"
+    return {"summary": summary, "runs": runs}
+
+
 async def _main(run_count: int, model_dir: str, candidate: str = "combined_ar_en") -> dict:
     candidate = _validate_candidate(candidate)
     if platform.system().casefold() != "windows":
@@ -756,8 +1387,19 @@ if __name__ == "__main__":
     parser.add_argument("--candidate", choices=OCR_CANDIDATES, default="combined_ar_en")
     parser.add_argument("--model-dir", required=True, help="Pre-provisioned offline EasyOCR model directory (see scripts/setup/provision_easyocr_models.py).")
     parser.add_argument("--out", required=True, help="UTF-8 JSON output path - results (including Arabic text) are never printed to the console.")
+    parser.add_argument(
+        "--visual-actuation",
+        action="store_true",
+        help="Run the bounded physical visual-actuation A-E scenarios against the owned OCR fixture.",
+    )
     args = parser.parse_args()
-    payload = asyncio.run(_main(max(1, args.runs), args.model_dir, args.candidate))
+    if args.visual_actuation and args.candidate != "combined_ar_en":
+        parser.error("--visual-actuation requires the accepted combined_ar_en candidate")
+    payload = asyncio.run(
+        _visual_actuation_main(max(1, args.runs), args.model_dir, args.candidate)
+        if args.visual_actuation
+        else _main(max(1, args.runs), args.model_dir, args.candidate)
+    )
     Path(args.out).write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     print(f"wrote {args.out}", file=sys.stderr)
     sys.exit(0 if "error" not in payload and not payload.get("summary", {}).get("network_access_ever_attempted") else 1)
