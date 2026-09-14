@@ -1,5 +1,5 @@
-"""Phase 18 Workstream A Batch 06, Milestone 1 - opt-in PHYSICAL Arabic/
-mixed OCR visual-grounding acceptance runner (GAP-0103).
+"""Phase 18 Workstream A Batch 06/07 - opt-in PHYSICAL Arabic/mixed OCR
+visual-grounding acceptance runner (GAP-0103).
 
 This is a durable development/evaluation tool, NOT part of production
 `AgentRuntime` startup - it is never imported or auto-run by the product.
@@ -12,6 +12,13 @@ already-provisioned, offline EasyOCR model directory (see
 `scripts/setup/provision_easyocr_models.py`).
 
     <isolated-venv>/python scripts/phase18/ocr_visual_acceptance.py --model-dir <path> --out <results.json> --runs 3
+
+Batch 07's evaluation-only candidate switch is bounded to
+``combined_ar_en`` (the accepted production reader) and ``english_only``
+(an explicitly provisioned comparison reader). It does not alter production
+configuration or create a model-driven language router:
+
+    <isolated-venv>/python scripts/phase18/ocr_visual_acceptance.py --candidate english_only --model-dir <path> --out <results.json> --runs 3
 
 Safety rules (same discipline as `computer_use_acceptance.py`):
 
@@ -28,6 +35,9 @@ Safety rules (same discipline as `computer_use_acceptance.py`):
   real `ComputerActionService` -> `WindowsNativeComputerController` ->
   `EasyOcrVisualAdapter` path - never a direct `easyocr` call bypassing
   product code;
+- candidate readers remain local/offline and use explicit model directories;
+  Candidate B requires the separately provisioned `english_g2.pth` weight;
+  neither candidate accepts a free-form language or model parameter;
 - network access is structurally proven impossible, not just assumed: each
   `computer.visual.read` call runs with `socket.socket.connect` patched to
   raise immediately if ever invoked - the whole OCR pipeline (capture,
@@ -47,10 +57,12 @@ import asyncio
 import contextlib
 import json
 import platform
+import re
 import socket
 import subprocess
 import sys
 import time
+import unicodedata
 import uuid
 from pathlib import Path
 
@@ -71,12 +83,84 @@ LABEL_ARABIC_SETTINGS = "الإعدادات"
 LABEL_MIXED_SETTINGS = "JARVIS الإعدادات"
 LABEL_ENGLISH_ONLY = "JARVIS OCR FIXTURE"
 
+OCR_CANDIDATES = ("combined_ar_en", "english_only")
+CANDIDATE_MODEL_FILES = {
+    "combined_ar_en": ("craft_mlt_25k.pth", "arabic.pth"),
+    "english_only": ("craft_mlt_25k.pth", "english_g2.pth"),
+}
+
 
 class _NetworkAccessDuringOcrError(RuntimeError):
     """Raised by the network-block guard if any code reachable from a
     `computer.visual.read` call ever attempts a real socket connection -
     proves the OCR pipeline made zero network access attempts for real,
     not merely that its own offline-gate logic looks correct in isolation."""
+
+
+def _validate_candidate(candidate: str) -> str:
+    if candidate not in OCR_CANDIDATES:
+        raise ValueError(f"unsupported OCR candidate: {candidate}")
+    return candidate
+
+
+def _candidate_model_files(candidate: str) -> tuple[str, ...]:
+    return CANDIDATE_MODEL_FILES[_validate_candidate(candidate)]
+
+
+def _candidate_model_error(model_dir: str, candidate: str) -> str | None:
+    root = Path(model_dir)
+    model_directory = root / "model"
+    user_network_directory = root / "user_network"
+    if not model_directory.is_dir() or not user_network_directory.is_dir():
+        return "candidate_model_directory_unavailable"
+    missing = [name for name in _candidate_model_files(candidate) if not (model_directory / name).is_file()]
+    return f"candidate_model_missing:{','.join(missing)}" if missing else None
+
+
+def _char_recall(expected: str, actual: str) -> float:
+    expected_norm = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", expected)).strip()
+    actual_norm = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", actual)).strip()
+    expected_chars = list(expected_norm.replace(" ", ""))
+    remaining = list(actual_norm.replace(" ", ""))
+    if not expected_chars:
+        return 1.0
+    matched = 0
+    for character in expected_chars:
+        if character in remaining:
+            remaining.remove(character)
+            matched += 1
+    return round(matched / len(expected_chars), 3)
+
+
+def _score_expected_region(regions: list[dict], expected: str) -> dict:
+    best: tuple[float, float, int, str, object] | None = None
+    for index, region in enumerate(regions):
+        actual = str(region.get("text", ""))
+        if not actual:
+            continue
+        recall = _char_recall(expected, actual)
+        try:
+            confidence = float(region.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        candidate = (recall, confidence, -index, actual, region.get("confidence"))
+        if best is None or candidate[:3] > best[:3]:
+            best = candidate
+    if best is None:
+        return {
+            "expected": expected,
+            "matched_exactly": False,
+            "normalized_character_recall": 0.0,
+            "confidence": None,
+            "actual_text": None,
+        }
+    return {
+        "expected": expected,
+        "matched_exactly": best[3] == expected,
+        "normalized_character_recall": best[0],
+        "confidence": best[4],
+        "actual_text": best[3],
+    }
 
 
 @contextlib.contextmanager
@@ -119,6 +203,70 @@ async def _new_harness(model_dir: str):
     return runtime, identity, device, context
 
 
+def _configure_candidate(runtime, model_dir: str, candidate: str, timing: dict[str, object]) -> dict[str, object]:
+    """Install one explicit evaluation reader behind the production adapter.
+
+    This is runner-only configuration: Candidate A calls the accepted
+    production factory, while Candidate B constructs an English-only reader
+    with the same explicit offline directories. No candidate is model- or
+    network-routed dynamically by the product runtime.
+    """
+    candidate = _validate_candidate(candidate)
+    model_error = _candidate_model_error(model_dir, candidate)
+    if model_error is not None:
+        raise RuntimeError(model_error)
+
+    from jarvis.computer.visual_ocr import EasyOcrVisualAdapter
+
+    controller = runtime.computer_actions.controller.local
+    base_adapter = controller.visual_ocr_adapter
+    readiness = base_adapter._models_ready()
+    if readiness is not None:
+        raise RuntimeError(readiness)
+
+    model_root = Path(model_dir)
+
+    def timed_factory(factory):
+        def create_reader():
+            started = time.perf_counter()
+            reader = factory()
+            timing["reader_cold_init_ms"] = round((time.perf_counter() - started) * 1000, 1)
+            return reader
+
+        return create_reader
+
+    if candidate == "combined_ar_en":
+        reader_factory = timed_factory(base_adapter._default_reader_factory)
+        languages = ["ar", "en"]
+    else:
+        import easyocr
+
+        def create_english_reader():
+            return easyocr.Reader(
+                ["en"],
+                gpu=False,
+                verbose=False,
+                model_storage_directory=str(model_root / "model"),
+                user_network_directory=str(model_root / "user_network"),
+                download_enabled=False,
+            )
+
+        reader_factory = timed_factory(create_english_reader)
+        languages = ["en"]
+
+    controller.visual_ocr_adapter = EasyOcrVisualAdapter(
+        base_adapter.perception_provider,
+        base_adapter.semantic_adapter,
+        reader_factory=reader_factory,
+        model_dir=model_dir,
+    )
+    return {
+        "model_readiness_before_first_call": readiness,
+        "model_files": list(_candidate_model_files(candidate)),
+        "reader_languages": languages,
+    }
+
+
 async def _find_exact_fixture_window(runtime, context, title: str) -> tuple[str | None, str | None]:
     for _ in range(20):
         await asyncio.sleep(1.0)
@@ -144,15 +292,9 @@ async def _find_element(runtime, context, window_ref: str, name: str) -> str | N
     return found.output["matches"][0]["element_ref"]
 
 
-def _region_text_for(regions: list[dict], expected: str) -> dict | None:
-    for region in regions:
-        if region.get("text", "").strip() == expected:
-            return region
-    return None
-
-
-async def _run_once(model_dir: str) -> dict:
-    result: dict = {"attempted": True}
+async def _run_once(model_dir: str, candidate: str) -> dict:
+    candidate = _validate_candidate(candidate)
+    result: dict = {"attempted": True, "candidate": candidate}
     if not FIXTURE_HOST_SCRIPT.exists():
         result["attempted"] = False
         result["skip_reason"] = "fixture_host_script_missing"
@@ -162,7 +304,9 @@ async def _run_once(model_dir: str) -> dict:
     title = f"JARVIS-CUV2-OCR-FIXTURE-{nonce}"
     runtime, identity, device, context = await _new_harness(model_dir)
     proc: subprocess.Popen | None = None
+    timing: dict[str, object] = {}
     try:
+        result.update(_configure_candidate(runtime, model_dir, candidate, timing))
         proc = launch_owned_fixture(
             FIXTURE_HOST_SCRIPT,
             nonce=nonce,
@@ -172,9 +316,23 @@ async def _run_once(model_dir: str) -> dict:
             result["error"] = error
             return result
 
-        adapter = runtime.computer_actions.controller.local.visual_ocr_adapter
-        result["model_readiness_before_first_call"] = adapter._models_ready()
+        t0 = time.perf_counter()
+        with _network_guard():
+            cold_read = await runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_window", "window_ref": window_ref}, context,
+            )
+        cold_latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+        if cold_read.status.value != "completed":
+            result["ocr_window"] = {
+                "status": cold_read.status.value,
+                "error_code": cold_read.error_code,
+                "cold_latency_ms": cold_latency_ms,
+                "warm_latency_ms": None,
+            }
+            return result
 
+        # The first call above includes reader construction. This second call
+        # measures the normal warm path and supplies the scored observation.
         t0 = time.perf_counter()
         with _network_guard():
             window_read = await runtime.tool_service.execute(
@@ -185,11 +343,17 @@ async def _run_once(model_dir: str) -> dict:
         result["ocr_window"] = {
             "status": window_read.status.value,
             "error_code": window_read.error_code,
+            "reader_cold_init_ms": timing.get("reader_cold_init_ms"),
+            "cold_latency_ms": cold_latency_ms,
             "warm_latency_ms": warm_latency_ms,
             "truncated": window_output.get("truncated"),
             "region_count": len(window_output.get("regions") or []),
         }
         regions = window_output.get("regions") or []
+        result["recognized_regions"] = [
+            {"text": region.get("text"), "confidence": region.get("confidence")}
+            for region in regions
+        ]
 
         for key, expected in (
             ("english_ready", LABEL_READY),
@@ -198,13 +362,10 @@ async def _run_once(model_dir: str) -> dict:
             ("mixed_settings", LABEL_MIXED_SETTINGS),
             ("english_only", LABEL_ENGLISH_ONLY),
         ):
-            match = _region_text_for(regions, expected)
-            result[key] = {
-                "expected": expected,
-                "matched_exactly": match is not None,
-                "confidence": match.get("confidence") if match else None,
-                "actual_text": (match or {}).get("text"),
-            }
+            result[key] = _score_expected_region(regions, expected)
+        result["mixed_settings"]["arabic_substring_preserved"] = any(
+            LABEL_ARABIC_SETTINGS in str(region.get("text", "")) for region in regions
+        )
 
         # -- ocr_element cross-check: crop to just the Arabic greeting label --
         element_ref = await _find_element(runtime, context, window_ref, LABEL_ARABIC_GREETING)
@@ -218,10 +379,14 @@ async def _run_once(model_dir: str) -> dict:
             element_output = element_read.output or {}
             element_regions = element_output.get("regions") or []
             result["ocr_element_arabic_greeting"] = {
+                **_score_expected_region(element_regions, LABEL_ARABIC_GREETING),
                 "status": element_read.status.value,
                 "warm_latency_ms": element_latency_ms,
-                "matched_exactly": _region_text_for(element_regions, LABEL_ARABIC_GREETING) is not None,
                 "region_count": len(element_regions),
+                "recognized_regions": [
+                    {"text": region.get("text"), "confidence": region.get("confidence")}
+                    for region in element_regions
+                ],
             }
         else:
             result["ocr_element_arabic_greeting"] = {"status": "element_not_found"}
@@ -236,15 +401,17 @@ async def _run_once(model_dir: str) -> dict:
         await runtime.shutdown()
 
 
-async def _main(run_count: int, model_dir: str) -> dict:
+async def _main(run_count: int, model_dir: str, candidate: str = "combined_ar_en") -> dict:
+    candidate = _validate_candidate(candidate)
     if platform.system().casefold() != "windows":
         return {"error": "physical_acceptance_requires_windows"}
     runs = []
     for index in range(run_count):
         print(f"-- OCR physical acceptance run {index + 1}/{run_count} --", file=sys.stderr)
-        runs.append(await _run_once(model_dir))
+        runs.append(await _run_once(model_dir, candidate))
     any_network_violation = next((r["network_violation"] for r in runs if r.get("network_violation")), None)
     summary = {
+        "candidate": candidate,
         "runs": len(runs),
         "network_access_ever_attempted": any_network_violation is not None,
         "network_violation_detail": any_network_violation,
@@ -254,6 +421,23 @@ async def _main(run_count: int, model_dir: str) -> dict:
         "arabic_settings_matches": sum(1 for r in runs if r.get("arabic_settings", {}).get("matched_exactly")),
         "mixed_settings_matches": sum(1 for r in runs if r.get("mixed_settings", {}).get("matched_exactly")),
         "english_only_matches": sum(1 for r in runs if r.get("english_only", {}).get("matched_exactly")),
+        "arabic_exact_gate_pass_runs": sum(
+            1 for r in runs
+            if r.get("arabic_greeting", {}).get("matched_exactly")
+            and r.get("arabic_settings", {}).get("matched_exactly")
+        ),
+        "english_recall_gate_pass_runs": sum(
+            1 for r in runs
+            if all(r.get(key, {}).get("normalized_character_recall", 0.0) >= 0.90 for key in ("english_ready", "english_only"))
+        ),
+        "mixed_recall_gate_pass_runs": sum(
+            1 for r in runs
+            if r.get("mixed_settings", {}).get("normalized_character_recall", 0.0) >= 0.80
+            and r.get("mixed_settings", {}).get("arabic_substring_preserved")
+        ),
+        "warm_latency_gate_pass_runs": sum(
+            1 for r in runs if r.get("ocr_window", {}).get("warm_latency_ms", float("inf")) <= 3000
+        ),
         "ocr_element_arabic_greeting_matches": sum(1 for r in runs if r.get("ocr_element_arabic_greeting", {}).get("matched_exactly")),
         "fixture_child_confirmed_exited_all": bool(runs) and all(r.get("fixture_child_confirmed_exited") for r in runs),
     }
@@ -263,10 +447,11 @@ async def _main(run_count: int, model_dir: str) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--candidate", choices=OCR_CANDIDATES, default="combined_ar_en")
     parser.add_argument("--model-dir", required=True, help="Pre-provisioned offline EasyOCR model directory (see scripts/setup/provision_easyocr_models.py).")
     parser.add_argument("--out", required=True, help="UTF-8 JSON output path - results (including Arabic text) are never printed to the console.")
     args = parser.parse_args()
-    payload = asyncio.run(_main(max(1, args.runs), args.model_dir))
+    payload = asyncio.run(_main(max(1, args.runs), args.model_dir, args.candidate))
     Path(args.out).write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     print(f"wrote {args.out}", file=sys.stderr)
     sys.exit(0 if "error" not in payload and not payload.get("summary", {}).get("network_access_ever_attempted") else 1)
