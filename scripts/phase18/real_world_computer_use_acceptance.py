@@ -108,6 +108,7 @@ _RECEIPT_REASONS = frozenset(
         "brave_path_not_allowlisted",
         "owner_id_invalid",
         "device_id_invalid",
+        "calculator_not_configured",
         "calculator_launch_failed",
         "calculator_window_not_found",
         "calculator_window_ambiguous",
@@ -336,6 +337,8 @@ async def _run_calculator_scenario(
 
     launched = await session.execute_computer_action("open_application", {"application": "calculator"})
     if _result_status(launched) != "succeeded":
+        if _result_error(launched) == "application_not_installed":
+            return {"status": NOT_CONFIGURED, "reason": "calculator_not_configured", "attempted": False, "verified": False}
         return {"status": "FAILED", "reason": "calculator_launch_failed", "attempted": True, "verified": False}
 
     window, error = await _calculator_window_observation(session)

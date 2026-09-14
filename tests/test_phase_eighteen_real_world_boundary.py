@@ -340,6 +340,32 @@ class CalculatorScenarioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(session.decisions), 7)
         self.assertTrue(all(approved for _, approved in session.decisions))
 
+    async def test_calculator_absence_is_not_configured(self) -> None:
+        module = self.module
+
+        class Session:
+            async def execute_computer_action(self, action: str, _arguments: dict[str, object]):
+                self.assert_action(action)
+                return SimpleNamespace(status="failed", output={}, error_code="application_not_installed")
+
+            def assert_action(self, action: str) -> None:
+                if action != "open_application":
+                    raise AssertionError(f"unexpected computer action: {action}")
+
+            async def execute_tool(self, _name: str, _arguments: dict[str, object]):
+                raise AssertionError("missing Calculator must stop before semantic reads")
+
+            async def decide_tool(self, _approval_id: str, _approved: bool):
+                raise AssertionError("missing Calculator must stop before approval")
+
+        result = await module._run_calculator_scenario(
+            Session(), "RW-CALC-001", "JARVIS_E2E_TEST_NONCE", module.OwnerSessionConfig(True, owner_id="owner", device_id="device"),
+        )
+
+        self.assertEqual(result["status"], module.NOT_CONFIGURED)
+        self.assertEqual(result["reason"], "calculator_not_configured")
+        self.assertFalse(result["verified"])
+
     async def test_calculator_handler_refuses_exact_window_ambiguity_before_input(self) -> None:
         module = self.module
 
