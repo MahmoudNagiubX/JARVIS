@@ -10,7 +10,7 @@ document, or media session was touched.
 **Required starting HEAD:** `33302eccc9337c47a83f3d98a10293356575e70c`
 **T0 implementation checkpoint:** `ca1cbe32c3246c8495cb65f4deba9dc72f2e4921`
 **T1 implementation checkpoint:** `89724436d7eec228374b39de8b7a33092fb5d872`
-**T2 Calculator implementation checkpoint:** `a8947878813733e06cc30affe7f5f91bc950c881`
+**T2 Calculator implementation checkpoint:** `5a42e5f`
 **Origin feature:** matches current checkpoint
 **Origin main:** `54b67ba396ec45180f1b60ea472ef94a9`
 
@@ -120,7 +120,7 @@ therefore reports `OWNER_SESSION_E2E_DISABLED` or `NOT_CONFIGURED` and performs
 no owner-side action until explicit local configuration and a reviewed
 production adapter are available.
 
-T1 boundary tests: `tests/test_phase_eighteen_real_world_boundary.py` - 14
+T1 boundary tests: `tests/test_phase_eighteen_real_world_boundary.py` - 15
 passed after the Calculator slice was added.
 
 ## 5. T2 Calculator runner slice
@@ -154,9 +154,14 @@ Playwright adapter, or provenance change was made.
 
 - `python -m pytest tests/test_phase_eighteen_visual_ocr.py -q` - 65 passed.
 - `python -m pytest tests/test_phase_eighteen_evaluation_suite.py tests/test_phase_eighteen_visual_ocr.py tests/test_phase_eighteen_native_input.py -q` - 170 passed.
-- `python -m pytest tests/test_phase_eighteen_real_world_boundary.py -q` - 14 passed.
-- `python -m py_compile scripts/phase18/real_world_computer_use_acceptance.py` - pass.
+- `python -m pytest tests/test_phase_eighteen_real_world_boundary.py -q` - 15 passed.
+- `python -m pytest tests -q` - 896 passed, 3 skipped, 41 subtests passed; the
+  skips are the known optional EasyOCR/Torch/Torchvision interpreter dependencies.
+- `python -m compileall src tests scripts -q` - pass.
 - `git diff --check` - pass at each checkpoint.
+- The opt-in-without-identity Calculator probe returned
+  `NOT_CONFIGURED/owner_runtime_identity_not_configured`, with zero completed
+  runs and zero external writes/sends.
 - The T0 fix, T1 boundary, and T2 Calculator slice were committed and pushed;
   remote feature verification matched the current checkpoint.
 
