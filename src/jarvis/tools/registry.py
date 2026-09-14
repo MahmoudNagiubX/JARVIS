@@ -491,6 +491,18 @@ def register_computer_tools(
             return await execute_action("visual_ocr_element", {"element_ref": element_ref}, arguments, context)
         return ToolResult(ToolResultStatus.DENIED, error_code="visual_read_action_invalid")
 
+    async def visual_act(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        if arguments.get("action") != "left_click_visual":
+            return ToolResult(ToolResultStatus.DENIED, error_code="visual_act_action_invalid")
+        if set(arguments) - {"action", "visual_ref", "target_device_id"}:
+            return ToolResult(ToolResultStatus.DENIED, error_code="visual_act_parameters_invalid")
+        visual_ref = arguments.get("visual_ref")
+        if not isinstance(visual_ref, str) or not visual_ref.startswith("visual-"):
+            return ToolResult(ToolResultStatus.DENIED, error_code="visual_ref_required")
+        # ComputerActionService owns the consequential approval. The outer
+        # tool is only a typed entry boundary, matching pointer/semantic act.
+        return await execute_action("left_click_visual", {"visual_ref": visual_ref}, arguments, context)
+
     registry.register(ToolSpec(
         "tool-computer-audio-adjust-v1", "computer.audio.adjust", "1", "Adjust local Windows audio by bounded media-key steps.",
         "safe", "tool.request", frozenset({"computer.input"}), 10.0, True, audio,
@@ -666,6 +678,27 @@ def register_computer_tools(
             "additionalProperties": False,
         },
         retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-visual-act-v1", "computer.visual.act", "1",
+        "Perform exactly one bounded left click on a previously observed, window-origin visual reference. "
+        "The reference is revalidated through the existing local GDI/OCR path, the source window is "
+        "focused, and the click is delivered through bounded native Windows input. No raw coordinates, "
+        "OCR text, screenshot, HWND, or arbitrary click count is accepted. Element-origin visual refs "
+        "are refused in favor of semantic UI Automation. Consequential - requires owner approval. "
+        "Delivery is never proof that the application's intended state changed.",
+        "safe", "tool.request", frozenset({"computer.input"}), 20.0, False, visual_act,
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["left_click_visual"]},
+                "visual_ref": {"type": "string", "maxLength": 100},
+                "target_device_id": {"type": "string", "maxLength": 200},
+            },
+            "required": ["action", "visual_ref"],
+            "additionalProperties": False,
+        },
+        argument_retention=ToolResultRetention.EPHEMERAL,
     ))
 
 

@@ -29,11 +29,13 @@ from jarvis.computer.visual_ocr import (
     OCR_DETECTION_MODEL_FILENAME,
     OCR_RECOGNITION_MODEL_FILENAME,
     VISUAL_REF_TTL_SECONDS,
+    VISUAL_ACTUATION_MIN_CONFIDENCE,
     EasyOcrVisualAdapter,
 )
 from jarvis.contracts import ComputerAction, ToolContext
 from jarvis.contracts.perception import VisualRegion
 from jarvis.contracts.semantic_ui import SemanticBounds, SemanticElementSnapshot, SemanticResult
+from jarvis.contracts.visual_ui import VisualBounds
 
 
 def _unreachable_reader(*_args: object, **_kwargs: object) -> None:
@@ -81,6 +83,41 @@ class _FakeWindowProvider:
         if self.capture_error is not None:
             raise self.capture_error
         return self.frame
+
+
+class _ActuationWindowProvider(_FakeWindowProvider):
+    """Trusted-window seam for visual actuation tests.
+
+    The ordinary OCR fakes intentionally omit ``describe_window`` so the
+    read-only tests do not accidentally grow a production identity
+    dependency. Actuation must use a fresh, stable source-window identity.
+    """
+
+    def __init__(self, *, identity_digest: str = "source-digest-1") -> None:
+        super().__init__()
+        self.identity_digest = identity_digest
+        self.title = "Owned visual fixture"
+        self.process_name = "jarvis-fixture.exe"
+        self.focus_calls: list[str] = []
+        self.foreground = True
+
+    def describe_window(self, window_ref: str) -> dict[str, object]:
+        from datetime import UTC, datetime, timedelta
+
+        return {
+            "window_ref": window_ref,
+            "title": self.title,
+            "process_name": self.process_name,
+            "expires_at": datetime.now(UTC) + timedelta(seconds=45),
+            "identity_digest": self.identity_digest,
+        }
+
+    def focus_window(self, window_ref: str) -> bool:
+        self.focus_calls.append(window_ref)
+        return True
+
+    def is_foreground(self, hwnd: int) -> bool:
+        return self.foreground
 
 
 class _FakeSemanticAdapter:
@@ -309,6 +346,175 @@ class AdapterUnitTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("visual_capture_failed", result.error_code)
 
 
+class VisualActuationGroundingTests(unittest.IsolatedAsyncioTestCase):
+    """Batch 08 M1: deterministic tests for the internal visual resolver.
+
+    These tests exercise only in-memory frames and an injected OCR reader.
+    They never call native input and never persist raw OCR or geometry.
+    """
+
+    def _make(
+        self,
+        *,
+        confidence: float = 0.91,
+        text: str = "Apply",
+        provider: _ActuationWindowProvider | None = None,
+    ) -> tuple[_ActuationWindowProvider, _FakeReader, EasyOcrVisualAdapter]:
+        provider = provider or _ActuationWindowProvider()
+        reader = _FakeReader([([[0, 0], [40, 0], [40, 20], [0, 20]], text, confidence)])
+        adapter = _adapter(provider, _FakeSemanticAdapter(), reader)
+        return provider, reader, adapter
+
+    async def _observe(self, adapter: EasyOcrVisualAdapter) -> str:
+        result = await adapter.ocr_window("window-1")
+        self.assertEqual(result.status, "succeeded")
+        return result.output["regions"][0]["visual_ref"]
+
+    async def test_ref_records_source_identity_normalized_digest_confidence_and_origin(self) -> None:
+        provider, _reader, adapter = self._make(text="  Apply\t now  ")
+        visual_ref = await self._observe(adapter)
+        entry = adapter._visual_refs[visual_ref]
+        self.assertEqual(entry.source_window_identity_digest, provider.identity_digest)
+        self.assertEqual(entry.normalized_text_digest, adapter._visual_refs[visual_ref].text_digest)
+        self.assertEqual(entry.confidence, 0.91)
+        self.assertEqual(entry.origin_kind, "window")
+        self.assertIsInstance(entry.bounds, VisualBounds)
+        self.assertIsNotNone(entry.observed_at)
+
+    async def test_visual_ref_resolves_one_fresh_candidate_without_exposing_geometry(self) -> None:
+        _provider, _reader, adapter = self._make()
+        visual_ref = await self._observe(adapter)
+        resolved = await adapter.resolve_visual_ref(visual_ref)
+        self.assertEqual(resolved.status, "succeeded")
+        assert resolved.target is not None
+        self.assertEqual(resolved.target.visual_ref, visual_ref)
+        self.assertEqual(resolved.target.bounds, VisualBounds(10, 20, 40, 20))
+        self.assertNotIn("bounds", json.dumps(resolved.public_output(), default=str))
+        self.assertNotIn("text", json.dumps(resolved.public_output(), default=str))
+
+    async def test_unknown_visual_ref_is_typed_and_never_captured(self) -> None:
+        provider, _reader, adapter = self._make()
+        result = await adapter.resolve_visual_ref("visual-unknown")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "visual_ref_unknown")
+        self.assertEqual(provider.captured_calls, [])
+
+    async def test_expired_visual_ref_is_removed_and_typed(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        _provider, _reader, adapter = self._make()
+        visual_ref = await self._observe(adapter)
+        adapter._visual_refs[visual_ref].expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        result = await adapter.resolve_visual_ref(visual_ref)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "visual_ref_expired")
+        self.assertNotIn(visual_ref, adapter._visual_refs)
+
+    async def test_element_origin_is_rejected_in_favor_of_semantic_target(self) -> None:
+        provider = _ActuationWindowProvider()
+        semantic = _FakeSemanticAdapter(bounds=SemanticBounds(10, 20, 40, 20))
+        reader = _FakeReader()
+        adapter = _adapter(provider, semantic, reader)
+        result = await adapter.ocr_element("element-1")
+        self.assertEqual(result.status, "succeeded")
+        visual_ref = result.output["regions"][0]["visual_ref"]
+        resolved = await adapter.resolve_visual_ref(visual_ref)
+        self.assertEqual(resolved.status, "denied")
+        self.assertEqual(resolved.error_code, "visual_semantic_target_preferred")
+        self.assertEqual(provider.captured_calls, [("active_window", "window-1")])
+
+    async def test_low_confidence_ref_is_rejected_before_fresh_capture(self) -> None:
+        provider, _reader, adapter = self._make(confidence=VISUAL_ACTUATION_MIN_CONFIDENCE - 0.01)
+        visual_ref = await self._observe(adapter)
+        provider.captured_calls.clear()
+        result = await adapter.resolve_visual_ref(visual_ref)
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "visual_target_confidence_too_low")
+        self.assertEqual(provider.captured_calls, [])
+
+    async def test_source_identity_change_is_rejected_before_matching_text(self) -> None:
+        provider, _reader, adapter = self._make()
+        visual_ref = await self._observe(adapter)
+        provider.identity_digest = "source-digest-recycled"
+        result = await adapter.resolve_visual_ref(visual_ref)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "visual_source_identity_changed")
+
+    async def test_changed_text_has_no_same_text_or_nearby_fallback(self) -> None:
+        provider, reader, adapter = self._make()
+        visual_ref = await self._observe(adapter)
+        reader.results = [([[0, 0], [40, 0], [40, 20], [0, 20]], "Cancel", 0.95)]
+        result = await adapter.resolve_visual_ref(visual_ref)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "visual_target_text_changed")
+
+    async def test_same_text_far_away_is_not_a_spatial_fallback(self) -> None:
+        _provider, reader, adapter = self._make()
+        visual_ref = await self._observe(adapter)
+        reader.results = [([[400, 400], [440, 400], [440, 420], [400, 420]], "Apply", 0.95)]
+        result = await adapter.resolve_visual_ref(visual_ref)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "visual_target_not_found")
+
+    async def test_two_spatially_continuous_same_text_candidates_are_ambiguous(self) -> None:
+        provider = _ActuationWindowProvider()
+        reader = _FakeReader([([[0, 0], [40, 0], [40, 20], [0, 20]], "Apply", 0.91)])
+        adapter = _adapter(provider, _FakeSemanticAdapter(), reader)
+        visual_ref = await self._observe(adapter)
+        reader.results = [
+            ([[0, 0], [40, 0], [40, 20], [0, 20]], "Apply", 0.91),
+            ([[5, 0], [45, 0], [45, 20], [5, 20]], "Apply", 0.92),
+        ]
+        result = await adapter.resolve_visual_ref(visual_ref)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "visual_target_ambiguous")
+
+    async def test_candidate_below_threshold_is_not_accepted_on_revalidation(self) -> None:
+        _provider, reader, adapter = self._make()
+        visual_ref = await self._observe(adapter)
+        reader.results = [([[0, 0], [40, 0], [40, 20], [0, 20]], "Apply", 0.59)]
+        result = await adapter.resolve_visual_ref(visual_ref)
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.error_code, "visual_target_confidence_too_low")
+
+    async def test_spatially_continuous_move_resolves_the_fresh_bounds(self) -> None:
+        _provider, reader, adapter = self._make()
+        visual_ref = await self._observe(adapter)
+        reader.results = [([[4, 2], [44, 2], [44, 22], [4, 22]], "Apply", 0.95)]
+        result = await adapter.resolve_visual_ref(visual_ref)
+        self.assertEqual(result.status, "succeeded")
+        assert result.target is not None
+        self.assertEqual(result.target.bounds, VisualBounds(14, 22, 40, 20))
+
+    async def test_revalidation_preserves_binding_identity_after_a_small_move(self) -> None:
+        _provider, reader, adapter = self._make()
+        visual_ref = await self._observe(adapter)
+        first = await adapter.resolve_visual_ref(visual_ref)
+        assert first.target is not None
+        reader.results = [([[3, 1], [43, 1], [43, 21], [3, 21]], "Apply", 0.95)]
+        second = await adapter.revalidate_visual_ref(visual_ref, first.target)
+        self.assertEqual(second.status, "succeeded")
+        assert second.target is not None
+        self.assertEqual(second.target.source_window_identity_digest, first.target.source_window_identity_digest)
+        self.assertEqual(second.target.normalized_text_digest, first.target.normalized_text_digest)
+
+    async def test_revalidation_rejects_binding_source_drift(self) -> None:
+        provider, _reader, adapter = self._make()
+        visual_ref = await self._observe(adapter)
+        first = await adapter.resolve_visual_ref(visual_ref)
+        assert first.target is not None
+        provider.identity_digest = "source-digest-recycled"
+        result = await adapter.revalidate_visual_ref(visual_ref, first.target)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "visual_source_identity_changed")
+
+    async def test_ref_store_is_bounded_without_second_store(self) -> None:
+        _provider, _reader, adapter = self._make()
+        self.assertIsInstance(adapter._visual_refs, dict)
+        self.assertFalse(hasattr(adapter, "_visual_target_store"))
+        self.assertEqual(len(adapter._visual_refs), 0)
+
+
 class SchemaAndCoreStartupTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.runtime = create_runtime(JarvisConfig(environment="test", database_path=":memory:"))
@@ -326,6 +532,38 @@ class SchemaAndCoreStartupTests(unittest.IsolatedAsyncioTestCase):
 
     def _context(self) -> ToolContext:
         return ToolContext(self.identity, self.device, self.session.id, "visual-ocr-correlation")
+
+    def _install_actuation_fixture(
+        self,
+        *,
+        provider: _ActuationWindowProvider | None = None,
+        reader: _FakeReader | None = None,
+        send_input=None,
+    ) -> tuple[_ActuationWindowProvider, _FakeReader, list[tuple[int, ...]]]:
+        from jarvis.computer.native_input import WindowsNativeInputAdapter
+
+        provider = provider or _ActuationWindowProvider()
+        reader = reader or _FakeReader()
+        batches: list[tuple[int, ...]] = []
+
+        def record_send(inputs: object) -> int:
+            batches.append(tuple(item.mi.dwFlags for item in inputs))
+            if send_input is not None:
+                return send_input(inputs)
+            return len(inputs)
+
+        controller = self.runtime.computer_actions.controller.local
+        controller.perception_provider = provider
+        controller.semantic_adapter = _FakeSemanticAdapter()
+        controller.visual_ocr_adapter = _adapter(provider, _FakeSemanticAdapter(), reader)
+        controller.native_input_adapter = WindowsNativeInputAdapter(
+            provider,
+            controller.semantic_adapter,
+            metrics_provider=lambda: (0, 0, 1920, 1080),
+            send_input=record_send,
+            get_cursor_pos=lambda: (30, 30),
+        )
+        return provider, reader, batches
 
     def test_core_runtime_starts_without_ocr_extra(self) -> None:
         # asyncSetUp already proved this (no easyocr installed in this
@@ -359,6 +597,170 @@ class SchemaAndCoreStartupTests(unittest.IsolatedAsyncioTestCase):
         source = inspect.getsource(visual_ocr_module).casefold()
         for forbidden in ("api_key", "apikey", "http://", "https://", "requests.", "urllib"):
             self.assertNotIn(forbidden, source)
+
+    def test_visual_act_schema_is_exactly_action_ref_and_optional_target_device(self) -> None:
+        spec = self.runtime.tools.get("computer.visual.act")
+        self.assertIsNotNone(spec)
+        assert spec is not None
+        self.assertEqual(
+            set(spec.parameters_schema.get("properties", {})),
+            {"action", "visual_ref", "target_device_id"},
+        )
+        self.assertEqual(spec.parameters_schema.get("required"), ["action", "visual_ref"])
+        self.assertIs(spec.parameters_schema.get("additionalProperties"), False)
+        self.assertEqual(spec.parameters_schema["properties"]["action"].get("enum"), ["left_click_visual"])
+
+    def test_visual_act_schema_has_no_coordinate_or_ocr_fields(self) -> None:
+        spec = self.runtime.tools.get("computer.visual.act")
+        self.assertIsNotNone(spec)
+        assert spec is not None
+        properties = set(spec.parameters_schema.get("properties", {}))
+        self.assertFalse(properties & {"x", "y", "width", "height", "bounds", "text", "title", "process"})
+        with self.assertRaisesRegex(ValueError, "unknown_arguments"):
+            spec.validate_arguments({"action": "left_click_visual", "visual_ref": "visual-1", "x": 1})
+
+    async def test_visual_act_requests_owner_approval_without_native_input(self) -> None:
+        from jarvis.computer import service as computer_service
+
+        provider, _reader, batches = self._install_actuation_fixture()
+        with mock.patch.object(computer_service.platform, "system", return_value="Windows"):
+            observed = await self.runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_window", "window_ref": "window-1"}, self._context()
+            )
+            visual_ref = observed.output["regions"][0]["visual_ref"]
+            requested = await self.runtime.tool_service.execute(
+                "computer.visual.act", {"action": "left_click_visual", "visual_ref": visual_ref}, self._context()
+            )
+        self.assertEqual(requested.status.value, "approval_required")
+        self.assertIsNotNone(requested.approval_id)
+        self.assertEqual(batches, [])
+        self.assertEqual(provider.focus_calls, [])
+
+    async def test_visual_act_approval_preview_contains_trusted_metadata_only(self) -> None:
+        from jarvis.computer import service as computer_service
+
+        self._install_actuation_fixture()
+        with mock.patch.object(computer_service.platform, "system", return_value="Windows"):
+            observed = await self.runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_window", "window_ref": "window-1"}, self._context()
+            )
+            visual_ref = observed.output["regions"][0]["visual_ref"]
+            requested = await self.runtime.tool_service.execute(
+                "computer.visual.act", {"action": "left_click_visual", "visual_ref": visual_ref}, self._context()
+            )
+        row = self.runtime.repository.approval(requested.approval_id)
+        preview = json.loads(row["preview_json"])
+        self.assertEqual(preview["action"], "left_click_visual")
+        self.assertEqual(preview["window_title"], "Owned visual fixture")
+        self.assertEqual(preview["process_name"], "jarvis-fixture.exe")
+        self.assertEqual(preview["visual_ref"], visual_ref)
+        self.assertNotIn("text", preview)
+        self.assertNotIn("bounds", json.dumps(preview))
+        self.assertNotIn('"x"', json.dumps(preview))
+        self.assertNotIn('"y"', json.dumps(preview))
+
+    async def test_visual_act_approval_executes_one_click_after_revalidation(self) -> None:
+        from jarvis.computer import service as computer_service
+        from jarvis.computer.native_input import MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP
+
+        provider, _reader, batches = self._install_actuation_fixture()
+        with mock.patch.object(computer_service.platform, "system", return_value="Windows"):
+            observed = await self.runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_window", "window_ref": "window-1"}, self._context()
+            )
+            visual_ref = observed.output["regions"][0]["visual_ref"]
+            requested = await self.runtime.tool_service.execute(
+                "computer.visual.act", {"action": "left_click_visual", "visual_ref": visual_ref}, self._context()
+            )
+            decided = await self.runtime.tool_service.decide_and_resume(
+                requested.approval_id, True, self.identity.identity_id, self._context()
+            )
+        self.assertEqual(decided.status.value, "completed")
+        self.assertFalse(decided.verified)
+        self.assertEqual(len(batches), 2)
+        self.assertEqual(batches[1], (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP))
+        self.assertEqual(provider.focus_calls, ["window-1"])
+
+    async def test_visual_act_target_drift_refuses_approval_without_input(self) -> None:
+        from jarvis.computer import service as computer_service
+
+        provider, _reader, batches = self._install_actuation_fixture()
+        with mock.patch.object(computer_service.platform, "system", return_value="Windows"):
+            observed = await self.runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_window", "window_ref": "window-1"}, self._context()
+            )
+            visual_ref = observed.output["regions"][0]["visual_ref"]
+            requested = await self.runtime.tool_service.execute(
+                "computer.visual.act", {"action": "left_click_visual", "visual_ref": visual_ref}, self._context()
+            )
+            provider.identity_digest = "recycled-source-window"
+            decided = await self.runtime.tool_service.decide_and_resume(
+                requested.approval_id, True, self.identity.identity_id, self._context()
+            )
+        self.assertEqual(decided.status.value, "denied")
+        self.assertEqual(decided.error_code, "visual_source_identity_changed")
+        self.assertEqual(batches, [])
+        self.assertEqual(provider.focus_calls, [])
+
+    async def test_visual_act_low_confidence_does_not_create_approval(self) -> None:
+        from jarvis.computer import service as computer_service
+
+        provider, _reader, batches = self._install_actuation_fixture(
+            reader=_FakeReader([([[0, 0], [40, 0], [40, 20], [0, 20]], "Apply", 0.59)])
+        )
+        with mock.patch.object(computer_service.platform, "system", return_value="Windows"):
+            observed = await self.runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_window", "window_ref": "window-1"}, self._context()
+            )
+            visual_ref = observed.output["regions"][0]["visual_ref"]
+            requested = await self.runtime.tool_service.execute(
+                "computer.visual.act", {"action": "left_click_visual", "visual_ref": visual_ref}, self._context()
+            )
+        self.assertEqual(requested.status.value, "denied")
+        self.assertEqual(requested.error_code, "visual_target_confidence_too_low")
+        self.assertIsNone(requested.approval_id)
+        self.assertEqual(batches, [])
+        self.assertEqual(provider.focus_calls, [])
+
+    async def test_visual_act_ambiguous_fresh_target_does_not_create_approval(self) -> None:
+        from jarvis.computer import service as computer_service
+
+        provider, reader, batches = self._install_actuation_fixture(
+            reader=_FakeReader([([[0, 0], [40, 0], [40, 20], [0, 20]], "Apply", 0.91)])
+        )
+        with mock.patch.object(computer_service.platform, "system", return_value="Windows"):
+            observed = await self.runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_window", "window_ref": "window-1"}, self._context()
+            )
+            visual_ref = observed.output["regions"][0]["visual_ref"]
+            reader.results = [
+                ([[0, 0], [40, 0], [40, 20], [0, 20]], "Apply", 0.91),
+                ([[5, 0], [45, 0], [45, 20], [5, 20]], "Apply", 0.92),
+            ]
+            requested = await self.runtime.tool_service.execute(
+                "computer.visual.act", {"action": "left_click_visual", "visual_ref": visual_ref}, self._context()
+            )
+        self.assertEqual(requested.status.value, "denied")
+        self.assertEqual(requested.error_code, "visual_target_ambiguous")
+        self.assertIsNone(requested.approval_id)
+        self.assertEqual(batches, [])
+
+    async def test_visual_act_element_origin_refuses_semantic_fallback(self) -> None:
+        from jarvis.computer import service as computer_service
+
+        provider, _reader, batches = self._install_actuation_fixture()
+        with mock.patch.object(computer_service.platform, "system", return_value="Windows"):
+            observed = await self.runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_element", "element_ref": "element-1"}, self._context()
+            )
+            visual_ref = observed.output["regions"][0]["visual_ref"]
+            requested = await self.runtime.tool_service.execute(
+                "computer.visual.act", {"action": "left_click_visual", "visual_ref": visual_ref}, self._context()
+            )
+        self.assertEqual(requested.status.value, "denied")
+        self.assertEqual(requested.error_code, "visual_semantic_target_preferred")
+        self.assertEqual(batches, [])
+        self.assertEqual(provider.focus_calls, [])
 
     async def test_visual_ref_rejected_by_pointer_act_as_element_ref(self) -> None:
         requested = await self.runtime.tool_service.execute(

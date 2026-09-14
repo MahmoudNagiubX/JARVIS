@@ -32,7 +32,7 @@ from ..perception.windows import WindowsDesktopProvider
 from .file_access import FileAccessPolicy
 from .native_input import NativeInputResult, WindowsNativeInputAdapter
 from .semantic_uia import WindowsUIAutomationAdapter
-from .visual_ocr import EasyOcrVisualAdapter, VisualResult
+from .visual_ocr import EasyOcrVisualAdapter, VisualResult, VisualTargetResult
 
 
 class WindowsNativeComputerController:
@@ -163,10 +163,14 @@ class WindowsNativeComputerController:
                 return await self._visual_ocr_window(action.parameters)
             if capability is ComputerCapability.VISUAL_OCR_ELEMENT:
                 return await self._visual_ocr_element(action.parameters)
+            if capability is ComputerCapability.LEFT_CLICK_VISUAL:
+                return await self._left_click_visual(action.parameters)
             if capability is ComputerCapability.RESOLVE_ELEMENT_TARGET:
                 return await self._resolve_element_target(action.parameters)
             if capability is ComputerCapability.RESOLVE_WINDOW_TARGET:
                 return await asyncio.to_thread(self._resolve_window_target, action.parameters)
+            if capability is ComputerCapability.RESOLVE_VISUAL_TARGET:
+                return await self._resolve_visual_target(action.parameters)
             return ComputerResult("failed", error_code="native_action_not_configured")
         except (OSError, ValueError) as exc:
             return ComputerResult("failed", error_code=str(exc) or exc.__class__.__name__)
@@ -597,6 +601,53 @@ class WindowsNativeComputerController:
         result: VisualResult = await self.visual_ocr_adapter.ocr_element(element_ref)
         return ComputerResult(result.status, result.output, result.error_code, result.verified)
 
+    async def _resolve_visual_target(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        """Internal-only visual target resolution for approval binding.
+
+        The adapter owns the private bounds and OCR provenance. Only its
+        metadata projection crosses this controller boundary; no geometry or
+        OCR text is returned to the service/model-facing result.
+        """
+        if set(parameters) != {"visual_ref"}:
+            return ComputerResult("denied", error_code="visual_ref_required")
+        visual_ref = parameters.get("visual_ref")
+        if not isinstance(visual_ref, str) or not visual_ref.startswith("visual-"):
+            return ComputerResult("denied", error_code="visual_ref_required")
+        result: VisualTargetResult = await self.visual_ocr_adapter.resolve_visual_ref(visual_ref)
+        if result.target is None:
+            return ComputerResult(result.status, {}, result.error_code, False)
+        return ComputerResult("succeeded", result.public_output(), verified=True)
+
+    async def _left_click_visual(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        """Execute one approval-gated visual click through native input.
+
+        The visual resolver runs immediately before focus, then once more
+        after focus. Native input receives only the private, fresh bounds and
+        performs one move followed by one left-down/left-up batch.
+        """
+        if set(parameters) != {"visual_ref"}:
+            return ComputerResult("denied", error_code="visual_ref_required")
+        visual_ref = parameters.get("visual_ref")
+        if not isinstance(visual_ref, str) or not visual_ref.startswith("visual-"):
+            return ComputerResult("denied", error_code="visual_ref_required")
+        first: VisualTargetResult = await self.visual_ocr_adapter.resolve_visual_ref(visual_ref)
+        if first.target is None:
+            return ComputerResult(first.status, {}, first.error_code, False)
+        target = first.target
+        hwnd, focus_failure = self.native_input_adapter.ground_visual_window(target.source_window_ref)
+        if hwnd is None:
+            assert focus_failure is not None
+            return ComputerResult(focus_failure.status, dict(focus_failure.output), focus_failure.error_code, False)
+        second: VisualTargetResult = await self.visual_ocr_adapter.revalidate_visual_ref(visual_ref, target)
+        if second.target is None:
+            return ComputerResult(second.status, {}, second.error_code, False)
+        native_result: NativeInputResult = await self.native_input_adapter.left_click_visual(
+            second.target.source_window_ref,
+            second.target.bounds,
+            hwnd=hwnd,
+        )
+        return ComputerResult(native_result.status, dict(native_result.output), native_result.error_code, native_result.verified)
+
     async def _resolve_element_target(self, parameters: Mapping[str, Any]) -> ComputerResult:
         """Internal-only: fresh, trusted, actuation-grade element target
         descriptor (R18B02-001/002). Never reachable through any tool
@@ -722,6 +773,12 @@ class ComputerActionService:
         ComputerCapability.KEYBOARD_KEY.value,
         ComputerCapability.KEYBOARD_CHORD.value,
     })
+    # Visual actuation is its own target kind: unlike semantic element
+    # actions it binds an existing opaque visual ref to the trusted source
+    # window/expiry and lets the OCR adapter own private spatial continuity.
+    _visual_targeted_actions = frozenset({
+        ComputerCapability.LEFT_CLICK_VISUAL.value,
+    })
     # Two-target action (Batch 04 Milestone 1): a drag has a source AND a
     # target element, so it cannot be forced into the single-target element
     # digest above - it gets its own dual-target preview/binding
@@ -747,9 +804,9 @@ class ComputerActionService:
         self.approvals = approvals
         # Trailing elements carry the trusted target-identity digest (None
         # for a plain generic-preview approval) and which kind of target it
-        # binds to ("element" | "window" | None) so `decide()` can detect a
-        # target swapped out from under a pending approval and re-validate
-        # it the right way (R18B01-004, generalized by R18B02-001/003).
+        # binds to ("element" | "window" | "visual" | None) so `decide()`
+        # can detect a target swapped out from under a pending approval and
+        # re-validate it the right way.
         self._pending: dict[str, tuple[ComputerAction, Identity, DeviceIdentity, DeviceIdentity, str, datetime, str | None, str | None]] = {}
         self.MAX_PENDING = 32
 
@@ -825,6 +882,7 @@ class ComputerActionService:
                     action.action in self._element_targeted_actions
                     or action.action in self._window_targeted_actions
                     or action.action in self._dual_target_actions
+                    or action.action in self._visual_targeted_actions
                 ):
                     if action.action in self._element_targeted_actions:
                         target_kind = "element"
@@ -834,6 +892,11 @@ class ComputerActionService:
                     elif action.action in self._dual_target_actions:
                         target_kind = "drag"
                         target_preview, identity_digest, preview_error, reference_expires_at = await self._drag_target_preview(
+                            action, identity, target, adapter, session_id, correlation,
+                        )
+                    elif action.action in self._visual_targeted_actions:
+                        target_kind = "visual"
+                        target_preview, identity_digest, preview_error, reference_expires_at = await self._visual_target_preview(
                             action, identity, target, adapter, session_id, correlation,
                         )
                     else:
@@ -925,6 +988,10 @@ class ComputerActionService:
                 )
             elif target_kind == "drag":
                 _preview, fresh_digest, preview_error, _exp = await self._drag_target_preview(
+                    action, pending_identity, target, adapter, "computer", correlation,
+                )
+            elif target_kind == "visual":
+                _preview, fresh_digest, preview_error, _exp = await self._visual_target_preview(
                     action, pending_identity, target, adapter, "computer", correlation,
                 )
             else:
@@ -1123,6 +1190,56 @@ class ComputerActionService:
         expiries = [value for value in (source_expiry, target_expiry) if value is not None]
         reference_expires_at = min(expiries) if expiries else None
         return preview, identity_digest, None, reference_expires_at
+
+    async def _visual_target_preview(
+        self,
+        action: ComputerAction,
+        identity: Identity,
+        target_device: DeviceIdentity,
+        adapter: str,
+        session_id: str,
+        correlation: str,
+    ) -> tuple[dict[str, object] | None, str | None, str | None, datetime | None]:
+        """Fetch fresh visual metadata and an opaque binding digest.
+
+        The controller's internal resolver owns OCR text, bounds, confidence,
+        source identity, and spatial continuity. The durable approval preview
+        receives only trusted window metadata plus the opaque ref/action.
+        """
+        visual_ref = action.parameters.get("visual_ref") if isinstance(action.parameters, Mapping) else None
+        if not isinstance(visual_ref, str) or not visual_ref.startswith("visual-"):
+            return None, None, "visual_ref_required", None
+        metadata = {
+            "request_device_id": target_device.device_id,
+            "target_device_id": target_device.device_id,
+            "execution_adapter": adapter,
+        }
+        resolve_action = ComputerAction(
+            ComputerCapability.RESOLVE_VISUAL_TARGET.value,
+            {"visual_ref": visual_ref},
+            dry_run=False,
+        )
+        result = await self.controller.execute(
+            resolve_action,
+            ToolContext(identity, target_device, session_id, correlation, metadata=metadata),
+        )
+        if result.status != "succeeded":
+            return None, None, result.error_code or "visual_target_unavailable", None
+        descriptor = result.output if isinstance(result.output, Mapping) else {}
+        binding_digest = descriptor.get("binding_digest")
+        if not isinstance(binding_digest, str) or not binding_digest:
+            return None, None, "visual_target_binding_unavailable", None
+        title = descriptor.get("title")
+        reference_expires_at = descriptor.get("reference_expires_at")
+        preview: dict[str, object] = {
+            "action": action.action,
+            "target_kind": "visual",
+            "visual_ref": visual_ref,
+            "window_title": title[:80] if isinstance(title, str) else None,
+            "process_name": descriptor.get("process_name"),
+            "window_ref": descriptor.get("source_window_ref"),
+        }
+        return preview, binding_digest, None, reference_expires_at if isinstance(reference_expires_at, datetime) else None
 
     async def _window_target_preview(
         self,

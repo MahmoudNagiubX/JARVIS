@@ -1,6 +1,5 @@
-"""Product-owned, read-only local OCR visual-grounding adapter (Batch 05
-Milestone 1, GAP-0103 - advances to `PARTIAL`, never `RESOLVED` by this
-batch).
+"""Product-owned local OCR visual-grounding adapter (Batch 05/08,
+GAP-0103/GAP-0102 - still `PARTIAL`, never `RESOLVED` by this module alone).
 
 This is an execution provider, not an authority: it sits behind
 `ComputerActionService`/`WindowsNativeComputerController` exactly like
@@ -11,7 +10,11 @@ and reuses the existing fail-closed window/element privacy and staleness
 checks (`validate_input_window`, `resolve_actionable_target`) rather than
 re-deriving a second sensitivity policy.
 
-Deliberately read-only and observation-only this batch:
+The OCR observation itself remains read-only. Batch 08 adds one separately
+reviewed, bounded visual action: a window-origin ``visual_ref`` may be
+revalidated and passed to the existing native click layer. Element-origin
+visual refs remain observation-only because semantic UIA targeting is the
+preferred actuation path.
 
 - no `x`/`y`/width/height/path/URL/base64 input from the model - captures
   are derived strictly from a trusted, previously-issued `window_ref`/
@@ -25,12 +28,10 @@ Deliberately read-only and observation-only this batch:
   SQLite, Memory, World State, audit payload, logs, or an approval preview
   (this action is never consequential, so no approval is ever created for
   it at all);
-- opaque `visual-<uuid>` references are observation-only: nothing in this
-  batch resolves or accepts one as a targeting input, and every existing
-  pointer/keyboard/file/semantic-act parameter validator already rejects a
-  `visual-` prefixed string outright (it never matches the required
-  `element-`/`window-` prefix) - proven by regression tests, not a new
-  actuation code path;
+- opaque `visual-<uuid>` references never expose coordinates or raw geometry
+  to the model. Only a window-origin ref can enter the separately reviewed
+  visual-click resolver; element-origin refs are rejected with a typed
+  semantic-target preference error;
 - the optional `easyocr` dependency (`computer-ocr` extra) is imported
   lazily and only inside this module - core JARVIS startup and every other
   Computer Use capability work unchanged when it is absent, returning a
@@ -53,7 +54,9 @@ this module or by core startup.
 
 from __future__ import annotations
 
+import hashlib
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -77,6 +80,10 @@ MAX_TOTAL_TEXT = 12_000
 # Within the task's reviewed 15-30 second range.
 VISUAL_REF_TTL_SECONDS = 20
 MAX_VISUAL_REFS = 500
+# Fixed, reviewed actuation confidence gate. This is deliberately not a
+# dynamic threshold derived from the current frame or candidate count.
+VISUAL_ACTUATION_MIN_CONFIDENCE = 0.60
+VISUAL_SPATIAL_IOU_MIN = 0.20
 
 # Batch 06 (R18B05-001): the exact two EasyOCR 1.7.2 model weight files a
 # `Reader(["ar", "en"], detect_network="craft")` construction requires -
@@ -108,17 +115,74 @@ class VisualResult:
     verified: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class VisualTarget:
+    """Trusted internal target; ``bounds`` never crosses the model boundary."""
+
+    visual_ref: str
+    source_window_ref: str
+    source_window_identity_digest: str
+    normalized_text_digest: str
+    bounds: VisualBounds
+    confidence: float
+    origin_kind: str
+    observed_at: datetime
+    expires_at: datetime
+    window_title: str | None
+    process_name: str | None
+    binding_digest: str
+
+
+@dataclass(slots=True)
+class VisualTargetResult:
+    """Internal resolver result with typed, non-sensitive failure reasons."""
+
+    status: str
+    target: VisualTarget | None = None
+    error_code: str | None = None
+
+    def public_output(self) -> dict[str, object]:
+        """Return only bounded metadata needed by the approval authority."""
+        if self.target is None:
+            return {}
+        return {
+            "visual_ref": self.target.visual_ref,
+            "source_window_ref": self.target.source_window_ref,
+            "source_window_identity_digest": self.target.source_window_identity_digest,
+            "title": self.target.window_title,
+            "process_name": self.target.process_name,
+            "reference_expires_at": self.target.expires_at,
+            "binding_digest": self.target.binding_digest,
+        }
+
+
 @dataclass(slots=True)
 class _VisualRefEntry:
-    """Internal-only, never exposed to the model. Kept for forward
-    compatibility with a future (separately reviewed) batch that might
-    resolve a visual ref for grounded re-verification - nothing in Batch 05
-    ever looks one up, since visual refs are observation-only here."""
+    """Internal-only provenance held in the existing visual-ref store."""
 
     source_window_ref: str
-    text_digest: str
+    source_window_identity_digest: str | None
+    normalized_text_digest: str
     bounds: VisualBounds
+    confidence: float
+    origin_kind: str
+    observed_at: datetime
     expires_at: datetime
+
+    @property
+    def text_digest(self) -> str:
+        """Compatibility alias for the pre-Batch-08 internal field name."""
+        return self.normalized_text_digest
+
+
+@dataclass(frozen=True, slots=True)
+class _FreshWindowOcr:
+    raw_results: list[tuple[Any, str, float]]
+    origin_x: int
+    origin_y: int
+    source_window_identity_digest: str | None
+    window_title: str | None
+    process_name: str | None
 
 
 def _normalize_confidence(value: Any) -> float | None:
@@ -219,35 +283,17 @@ class EasyOcrVisualAdapter:
         models_error = self._models_ready()
         if models_error is not None:
             return VisualResult("failed", {}, models_error)
-        try:
-            self.perception_provider.validate_input_window(window_ref)
-        except ValueError as exc:
-            reason = str(exc) or "uia_window_stale"
-            status = "denied" if reason == "sensitive_window_denied" else "failed"
-            return VisualResult(status, {}, reason)
-        try:
-            frame = self.perception_provider.capture_frame(mode="active_window", window_ref=window_ref)
-        except (ValueError, OSError, RuntimeError) as exc:
-            return VisualResult("failed", {}, f"visual_capture_failed:{exc.__class__.__name__}")
-
-        async def analyze(active_frame: Any) -> tuple[list[tuple[Any, str, float]], int, int]:
-            image = _frame_to_bgr_array(active_frame)
-            # The CPU-bound EasyOCR inference itself runs in a worker
-            # thread - `analyze_and_release` awaits this coroutine before
-            # releasing the frame in its `finally` block, so the frame
-            # stays valid for the whole call and is still released exactly
-            # once, on the calling (event loop) thread.
-            ocr_results = await _run_in_thread(self._run_ocr, image)
-            return ocr_results, active_frame.region.x, active_frame.region.y
-
-        try:
-            raw_results, origin_x, origin_y = await analyze_and_release(frame, analyze)
-        except _OcrModelsUnavailableError:
-            return VisualResult("failed", {}, "visual_ocr_models_unavailable")
-        except Exception as exc:
-            return VisualResult("failed", {}, f"visual_ocr_inference_failed:{exc.__class__.__name__}")
-
-        observation = self._build_observation(window_ref, raw_results, origin_x, origin_y)
+        fresh, error_code = await self._capture_window_ocr(window_ref)
+        if fresh is None:
+            return VisualResult(_status_for(error_code), {}, error_code or "visual_capture_failed")
+        observation = self._build_observation(
+            window_ref,
+            fresh.raw_results,
+            fresh.origin_x,
+            fresh.origin_y,
+            source_window_identity_digest=fresh.source_window_identity_digest,
+            origin_kind="window",
+        )
         return VisualResult("succeeded", _observation_to_output(observation), verified=True)
 
     async def ocr_element(self, element_ref: str) -> VisualResult:
@@ -264,6 +310,14 @@ class EasyOcrVisualAdapter:
         window_ref = getattr(element, "window_ref", None) if element is not None else None
         if bounds is None or not window_ref:
             return VisualResult("failed", {}, "visual_target_bounds_unavailable")
+        try:
+            self.perception_provider.validate_input_window(window_ref)
+        except ValueError as exc:
+            reason = str(exc) or "uia_window_stale"
+            return VisualResult(_status_for(reason), {}, reason)
+        source_identity_digest, _title, _process_name, source_error = self._describe_source_window(window_ref)
+        if source_error is not None:
+            return VisualResult(_status_for(source_error), {}, source_error)
         try:
             frame = self.perception_provider.capture_frame(mode="active_window", window_ref=window_ref)
         except (ValueError, OSError, RuntimeError) as exc:
@@ -293,16 +347,93 @@ class EasyOcrVisualAdapter:
         # (internal-only) stored bounds remain meaningful, even though the
         # model-facing output never surfaces them.
         observation = self._build_observation(
-            window_ref, raw_results, frame.region.x + crop_x, frame.region.y + crop_y,
+            window_ref,
+            raw_results,
+            frame.region.x + crop_x,
+            frame.region.y + crop_y,
+            source_window_identity_digest=source_identity_digest,
+            origin_kind="element",
         )
         return VisualResult("succeeded", _observation_to_output(observation), verified=True)
+
+    async def _capture_window_ocr(self, window_ref: str) -> tuple[_FreshWindowOcr | None, str | None]:
+        """Capture and OCR one fresh active window without creating refs.
+
+        The same GDI/privacy/EasyOCR path serves observation and visual-ref
+        revalidation. Revalidation consumes the result in memory only and
+        never appends a second reference store or emits a new model result.
+        """
+        try:
+            self.perception_provider.validate_input_window(window_ref)
+        except ValueError as exc:
+            reason = str(exc) or "uia_window_stale"
+            return None, reason
+        source_identity_digest, title, process_name, source_error = self._describe_source_window(window_ref)
+        if source_error is not None:
+            return None, source_error
+        try:
+            frame = self.perception_provider.capture_frame(mode="active_window", window_ref=window_ref)
+        except (ValueError, OSError, RuntimeError) as exc:
+            return None, f"visual_capture_failed:{exc.__class__.__name__}"
+
+        async def analyze(active_frame: Any) -> tuple[list[tuple[Any, str, float]], int, int]:
+            image = _frame_to_bgr_array(active_frame)
+            ocr_results = await _run_in_thread(self._run_ocr, image)
+            return ocr_results, active_frame.region.x, active_frame.region.y
+
+        try:
+            raw_results, origin_x, origin_y = await analyze_and_release(frame, analyze)
+        except _OcrModelsUnavailableError:
+            return None, "visual_ocr_models_unavailable"
+        except Exception as exc:
+            return None, f"visual_ocr_inference_failed:{exc.__class__.__name__}"
+        return _FreshWindowOcr(
+            list(raw_results), origin_x, origin_y, source_identity_digest, title, process_name,
+        ), None
+
+    def _describe_source_window(
+        self, window_ref: str,
+    ) -> tuple[str | None, str | None, str | None, str | None]:
+        """Read trusted source identity when the provider supports it.
+
+        Older injected read-only test providers deliberately have no window
+        descriptor. That remains valid for OCR observation. Visual actuation
+        fails closed later if the stored provenance lacks this identity.
+        """
+        describe = getattr(self.perception_provider, "describe_window", None)
+        if not callable(describe):
+            return None, None, None, None
+        try:
+            descriptor = describe(window_ref)
+        except ValueError as exc:
+            return None, None, None, str(exc) or "window_ref_expired"
+        if not isinstance(descriptor, Mapping):
+            return None, None, None, "visual_source_identity_unavailable"
+        identity_digest = descriptor.get("identity_digest")
+        if not isinstance(identity_digest, str) or not identity_digest:
+            return None, None, None, "visual_source_identity_unavailable"
+        title = descriptor.get("title")
+        process_name = descriptor.get("process_name")
+        return (
+            identity_digest,
+            title if isinstance(title, str) else None,
+            process_name if isinstance(process_name, str) else None,
+            None,
+        )
 
     def _run_ocr(self, image: Any) -> list[tuple[Any, str, float]]:
         reader = self._ensure_reader()
         return list(reader.readtext(image, detail=1))
 
     def _build_observation(
-        self, source_window_ref: str, raw_results: list[tuple[Any, str, float]], origin_x: int, origin_y: int,
+        self,
+        source_window_ref: str,
+        raw_results: list[tuple[Any, str, float]],
+        origin_x: int,
+        origin_y: int,
+        *,
+        source_window_identity_digest: str | None = None,
+        origin_kind: str = "window",
     ) -> VisualObservation:
         now = datetime.now(UTC)
         self._prune_visual_refs(now)
@@ -325,17 +456,150 @@ class EasyOcrVisualAdapter:
             total_chars += len(bounded_text)
             region_bounds = _bbox_to_bounds(bbox, origin_x, origin_y)
             visual_ref = f"visual-{uuid4()}"
-            self._store_visual_ref(visual_ref, source_window_ref, bounded_text, region_bounds, now)
+            self._store_visual_ref(
+                visual_ref,
+                source_window_ref,
+                bounded_text,
+                region_bounds,
+                normalized_confidence,
+                now,
+                source_window_identity_digest=source_window_identity_digest,
+                origin_kind=origin_kind,
+            )
             regions.append(VisualTextRegion(visual_ref, bounded_text, normalized_confidence, region_bounds, now))
         return VisualObservation(source_window_ref, tuple(regions), truncated, PROVIDER_NAME, now)
 
     def _store_visual_ref(
-        self, visual_ref: str, source_window_ref: str, text: str, bounds: VisualBounds, now: datetime,
+        self,
+        visual_ref: str,
+        source_window_ref: str,
+        text: str,
+        bounds: VisualBounds,
+        confidence: float,
+        now: datetime,
+        *,
+        source_window_identity_digest: str | None,
+        origin_kind: str,
     ) -> None:
-        digest = _text_digest(text)
-        self._visual_refs[visual_ref] = _VisualRefEntry(source_window_ref, digest, bounds, now + timedelta(seconds=VISUAL_REF_TTL_SECONDS))
+        normalized_text = _normalize_ref_text(text)
+        self._visual_refs[visual_ref] = _VisualRefEntry(
+            source_window_ref=source_window_ref,
+            source_window_identity_digest=source_window_identity_digest,
+            normalized_text_digest=_text_digest(normalized_text),
+            bounds=bounds,
+            confidence=confidence,
+            origin_kind=origin_kind,
+            observed_at=now,
+            expires_at=now + timedelta(seconds=VISUAL_REF_TTL_SECONDS),
+        )
         while len(self._visual_refs) > MAX_VISUAL_REFS:
             self._visual_refs.pop(next(iter(self._visual_refs)))
+
+    async def resolve_visual_ref(self, visual_ref: str) -> VisualTargetResult:
+        """Resolve one opaque ref against a fresh, unique OCR observation.
+
+        This is an internal provider operation. It deliberately returns a
+        trusted target object only to the controller; ``public_output`` is
+        metadata-only and cannot expose OCR text or geometry.
+        """
+        if not isinstance(visual_ref, str) or not visual_ref.startswith("visual-"):
+            return VisualTargetResult("failed", error_code="visual_ref_unknown")
+        now = datetime.now(UTC)
+        entry = self._visual_refs.get(visual_ref)
+        if entry is not None and entry.expires_at <= now:
+            self._visual_refs.pop(visual_ref, None)
+            return VisualTargetResult("failed", error_code="visual_ref_expired")
+        self._prune_visual_refs(now)
+        entry = self._visual_refs.get(visual_ref)
+        if entry is None:
+            return VisualTargetResult("failed", error_code="visual_ref_unknown")
+        if entry.origin_kind != "window":
+            return VisualTargetResult("denied", error_code="visual_semantic_target_preferred")
+        if entry.confidence < VISUAL_ACTUATION_MIN_CONFIDENCE:
+            return VisualTargetResult("denied", error_code="visual_target_confidence_too_low")
+        if not entry.source_window_identity_digest:
+            return VisualTargetResult("failed", error_code="visual_source_identity_unavailable")
+
+        fresh, error_code = await self._capture_window_ocr(entry.source_window_ref)
+        if fresh is None:
+            return VisualTargetResult(_status_for(error_code), error_code=error_code or "visual_capture_failed")
+        if fresh.source_window_identity_digest != entry.source_window_identity_digest:
+            return VisualTargetResult("failed", error_code="visual_source_identity_changed")
+
+        matching: list[tuple[VisualBounds, float]] = []
+        same_text_seen = False
+        low_confidence_seen = False
+        for bbox, text, confidence in fresh.raw_results:
+            bounded_text = _normalize_text(text)[:MAX_TEXT_PER_REGION]
+            if not bounded_text:
+                continue
+            if _text_digest(_normalize_ref_text(bounded_text)) != entry.normalized_text_digest:
+                continue
+            same_text_seen = True
+            normalized_confidence = _normalize_confidence(confidence)
+            if normalized_confidence is None:
+                continue
+            if normalized_confidence < VISUAL_ACTUATION_MIN_CONFIDENCE:
+                low_confidence_seen = True
+                continue
+            current_bounds = _bbox_to_bounds(bbox, fresh.origin_x, fresh.origin_y)
+            if current_bounds.width <= 0 or current_bounds.height <= 0:
+                continue
+            if _spatially_continuous(entry.bounds, current_bounds):
+                matching.append((current_bounds, normalized_confidence))
+
+        if not matching:
+            if same_text_seen and low_confidence_seen:
+                return VisualTargetResult("denied", error_code="visual_target_confidence_too_low")
+            if same_text_seen:
+                return VisualTargetResult("failed", error_code="visual_target_not_found")
+            return VisualTargetResult("failed", error_code="visual_target_text_changed")
+        if len(matching) != 1:
+            return VisualTargetResult("failed", error_code="visual_target_ambiguous")
+
+        bounds, confidence = matching[0]
+        binding_digest = _visual_binding_digest(
+            visual_ref,
+            entry.source_window_ref,
+            entry.source_window_identity_digest,
+            entry.normalized_text_digest,
+            entry.origin_kind,
+            entry.expires_at,
+        )
+        return VisualTargetResult(
+            "succeeded",
+            target=VisualTarget(
+                visual_ref=visual_ref,
+                source_window_ref=entry.source_window_ref,
+                source_window_identity_digest=entry.source_window_identity_digest,
+                normalized_text_digest=entry.normalized_text_digest,
+                bounds=bounds,
+                confidence=confidence,
+                origin_kind=entry.origin_kind,
+                observed_at=entry.observed_at,
+                expires_at=entry.expires_at,
+                window_title=fresh.window_title,
+                process_name=fresh.process_name,
+                binding_digest=binding_digest,
+            ),
+        )
+
+    async def revalidate_visual_ref(self, visual_ref: str, expected: VisualTarget) -> VisualTargetResult:
+        """Re-read the ref and preserve its source/text binding after focus."""
+        result = await self.resolve_visual_ref(visual_ref)
+        if result.target is None:
+            return result
+        target = result.target
+        if (
+            target.visual_ref != expected.visual_ref
+            or target.source_window_ref != expected.source_window_ref
+            or target.source_window_identity_digest != expected.source_window_identity_digest
+            or target.normalized_text_digest != expected.normalized_text_digest
+            or target.origin_kind != expected.origin_kind
+            or target.binding_digest != expected.binding_digest
+        ):
+            return VisualTargetResult("failed", error_code="visual_target_changed")
+        return result
 
     def _prune_visual_refs(self, now: datetime) -> None:
         for ref, entry in tuple(self._visual_refs.items()):
@@ -344,7 +608,14 @@ class EasyOcrVisualAdapter:
 
 
 def _status_for(error_code: str | None) -> str:
-    if error_code in {"sensitive_window_denied", "uia_sensitive_value_denied", "uia_element_identity_weak", "uia_target_not_interactable"}:
+    if error_code in {
+        "sensitive_window_denied",
+        "uia_sensitive_value_denied",
+        "uia_element_identity_weak",
+        "uia_target_not_interactable",
+        "visual_semantic_target_preferred",
+        "visual_target_confidence_too_low",
+    }:
         return "denied"
     return "failed"
 
@@ -353,10 +624,48 @@ def _normalize_text(text: str) -> str:
     return unicodedata.normalize("NFKC", str(text)).strip()
 
 
-def _text_digest(text: str) -> str:
-    import hashlib
+def _normalize_ref_text(text: str) -> str:
+    """Normalize only the internal ref identity, preserving model text."""
+    return " ".join(unicodedata.normalize("NFKC", str(text)).split())
 
+
+def _text_digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _visual_binding_digest(
+    visual_ref: str,
+    source_window_ref: str,
+    source_window_identity_digest: str,
+    normalized_text_digest: str,
+    origin_kind: str,
+    expires_at: datetime,
+) -> str:
+    payload = "|".join((
+        visual_ref,
+        source_window_ref,
+        source_window_identity_digest,
+        normalized_text_digest,
+        origin_kind,
+        expires_at.isoformat(),
+    ))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _spatially_continuous(previous: VisualBounds, current: VisualBounds) -> bool:
+    if previous.width <= 0 or previous.height <= 0 or current.width <= 0 or current.height <= 0:
+        return False
+    left = max(previous.x, current.x)
+    top = max(previous.y, current.y)
+    right = min(previous.x + previous.width, current.x + current.width)
+    bottom = min(previous.y + previous.height, current.y + current.height)
+    intersection = max(0, right - left) * max(0, bottom - top)
+    if intersection <= 0:
+        return False
+    previous_area = previous.width * previous.height
+    current_area = current.width * current.height
+    union = previous_area + current_area - intersection
+    return union > 0 and intersection / union >= VISUAL_SPATIAL_IOU_MIN
 
 
 def _bbox_to_bounds(bbox: Any, origin_x: int, origin_y: int) -> VisualBounds:

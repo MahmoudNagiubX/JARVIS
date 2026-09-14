@@ -20,10 +20,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 from ..authority.identity.service import EnrollmentGrant
 from ..contracts import ComputerAction, DesktopWindow, VisualRegion
 from ..contracts.semantic_ui import SemanticBounds, SemanticElementSnapshot, SemanticResult
+from ..contracts.visual_ui import VisualBounds
 from .service import EvaluationCase, RegressionSuite
 
 SUITE_NAME = "computer_use_v2"
@@ -147,6 +149,88 @@ class _MultiWindowSemanticAdapter(_FakeSemanticAdapter):
             "verified": True,
             "verification_reason": "fixture_child_postcondition",
         })
+
+
+class _VisualEvaluationFrame:
+    def __init__(self) -> None:
+        self.width, self.height = 100, 60
+        self.region = VisualRegion(10, 20, self.width, self.height)
+        self.data = bytearray(self.width * self.height * 4)
+        self.released = False
+
+    def release(self) -> None:
+        self.released = True
+
+
+class _VisualEvaluationWindowProvider:
+    """In-memory source-window seam for the five Batch 08 eval cases."""
+
+    def __init__(self) -> None:
+        self.identity_digest = "visual-eval-source-1"
+        self.focus_calls = 0
+        self.captured_calls = 0
+
+    def validate_input_window(self, window_ref: str) -> int:
+        return 1
+
+    def describe_window(self, window_ref: str) -> dict[str, object]:
+        return {
+            "window_ref": window_ref,
+            "title": "JARVIS visual evaluation",
+            "process_name": "jarvis-fixture.exe",
+            "expires_at": datetime.now(UTC) + timedelta(seconds=45),
+            "identity_digest": self.identity_digest,
+        }
+
+    def capture_frame(self, **_kwargs: Any) -> _VisualEvaluationFrame:
+        self.captured_calls += 1
+        return _VisualEvaluationFrame()
+
+    def focus_window(self, window_ref: str) -> bool:
+        self.focus_calls += 1
+        return True
+
+    def is_foreground(self, hwnd: int) -> bool:
+        return True
+
+
+class _VisualEvaluationReader:
+    def __init__(self) -> None:
+        self.results: list[tuple[list[list[int]], str, float]] = [
+            ([[0, 0], [40, 0], [40, 20], [0, 20]], "Apply", 0.91),
+        ]
+
+    def readtext(self, *_args: Any, **_kwargs: Any) -> list[tuple[list[list[int]], str, float]]:
+        return self.results
+
+
+async def _visual_evaluation_fixture() -> SimpleNamespace:
+    from ..computer.native_input import WindowsNativeInputAdapter
+    from ..computer.visual_ocr import EasyOcrVisualAdapter
+
+    ctx = await _new_runtime_context()
+    provider = _VisualEvaluationWindowProvider()
+    reader = _VisualEvaluationReader()
+    batches: list[tuple[int, ...]] = []
+
+    def record_send(inputs: object) -> int:
+        batches.append(tuple(item.mi.dwFlags for item in inputs))
+        return len(inputs)
+
+    controller = ctx.runtime.computer_actions.controller.local
+    controller.perception_provider = provider
+    controller.semantic_adapter = ctx.semantic
+    controller.visual_ocr_adapter = EasyOcrVisualAdapter(
+        provider, ctx.semantic, reader_factory=lambda: reader,  # type: ignore[arg-type]
+    )
+    controller.native_input_adapter = WindowsNativeInputAdapter(
+        provider,
+        ctx.semantic,
+        metrics_provider=lambda: (0, 0, 1920, 1080),
+        send_input=record_send,
+        get_cursor_pos=lambda: (30, 30),
+    )
+    return SimpleNamespace(ctx=ctx, provider=provider, reader=reader, batches=batches)
 
 
 async def _new_runtime_context(*, file_access_roots: tuple[str, ...] = ()) -> SimpleNamespace:
@@ -1461,6 +1545,144 @@ async def _case_owned_child_window_transition_refuses_old_approval(_context: Any
         await ctx.runtime.shutdown()
 
 
+# -- 49. one visual click enters the canonical approval path --
+
+async def _case_visual_click_requires_approval_before_input(_context: Any) -> bool:
+    fixture = await _visual_evaluation_fixture()
+    ctx = fixture.ctx
+    try:
+        with mock.patch("jarvis.computer.service.platform.system", return_value="Windows"):
+            observed = await ctx.runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_window", "window_ref": "window-1"}, ctx.context,
+            )
+            visual_ref = observed.output["regions"][0]["visual_ref"]
+            requested = await ctx.runtime.tool_service.execute(
+                "computer.visual.act", {"action": "left_click_visual", "visual_ref": visual_ref}, ctx.context,
+            )
+        return (
+            requested.status.value == "approval_required"
+            and requested.approval_id is not None
+            and fixture.batches == []
+            and fixture.provider.focus_calls == 0
+        )
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 50. stale/changed visual content refuses before approval/input --
+
+async def _case_visual_click_stale_ref_refused_before_input(_context: Any) -> bool:
+    fixture = await _visual_evaluation_fixture()
+    ctx = fixture.ctx
+    try:
+        with mock.patch("jarvis.computer.service.platform.system", return_value="Windows"):
+            observed = await ctx.runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_window", "window_ref": "window-1"}, ctx.context,
+            )
+            visual_ref = observed.output["regions"][0]["visual_ref"]
+            fixture.reader.results = [
+                ([[0, 0], [40, 0], [40, 20], [0, 20]], "Cancel", 0.95),
+            ]
+            requested = await ctx.runtime.tool_service.execute(
+                "computer.visual.act", {"action": "left_click_visual", "visual_ref": visual_ref}, ctx.context,
+            )
+        return (
+            requested.status.value == "denied"
+            and requested.error_code == "visual_target_text_changed"
+            and requested.approval_id is None
+            and fixture.batches == []
+        )
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 51. duplicate same-text visual candidates never guess --
+
+async def _case_visual_click_ambiguous_refused_before_input(_context: Any) -> bool:
+    fixture = await _visual_evaluation_fixture()
+    ctx = fixture.ctx
+    try:
+        with mock.patch("jarvis.computer.service.platform.system", return_value="Windows"):
+            observed = await ctx.runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_window", "window_ref": "window-1"}, ctx.context,
+            )
+            visual_ref = observed.output["regions"][0]["visual_ref"]
+            fixture.reader.results = [
+                ([[0, 0], [40, 0], [40, 20], [0, 20]], "Apply", 0.91),
+                ([[5, 0], [45, 0], [45, 20], [5, 20]], "Apply", 0.92),
+            ]
+            requested = await ctx.runtime.tool_service.execute(
+                "computer.visual.act", {"action": "left_click_visual", "visual_ref": visual_ref}, ctx.context,
+            )
+        return (
+            requested.status.value == "denied"
+            and requested.error_code == "visual_target_ambiguous"
+            and requested.approval_id is None
+            and fixture.batches == []
+        )
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 52. approval-time source identity drift refuses without input --
+
+async def _case_visual_click_approval_source_drift_refused(_context: Any) -> bool:
+    fixture = await _visual_evaluation_fixture()
+    ctx = fixture.ctx
+    try:
+        with mock.patch("jarvis.computer.service.platform.system", return_value="Windows"):
+            observed = await ctx.runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_window", "window_ref": "window-1"}, ctx.context,
+            )
+            visual_ref = observed.output["regions"][0]["visual_ref"]
+            requested = await ctx.runtime.tool_service.execute(
+                "computer.visual.act", {"action": "left_click_visual", "visual_ref": visual_ref}, ctx.context,
+            )
+            if requested.approval_id is None:
+                return False
+            fixture.provider.identity_digest = "visual-eval-source-recycled"
+            decided = await ctx.runtime.tool_service.decide_and_resume(
+                requested.approval_id, True, ctx.identity.identity_id, ctx.context,
+            )
+        return (
+            decided.status.value == "denied"
+            and decided.error_code == "visual_source_identity_changed"
+            and fixture.batches == []
+            and fixture.provider.focus_calls == 0
+        )
+    finally:
+        await ctx.runtime.shutdown()
+
+
+# -- 53. uncertain post-input outcome is not automatically repeated --
+
+async def _case_visual_click_uncertain_outcome_never_retries(_context: Any) -> bool:
+    fixture = await _visual_evaluation_fixture()
+    ctx = fixture.ctx
+    try:
+        with mock.patch("jarvis.computer.service.platform.system", return_value="Windows"):
+            observed = await ctx.runtime.tool_service.execute(
+                "computer.visual.read", {"action": "ocr_window", "window_ref": "window-1"}, ctx.context,
+            )
+            visual_ref = observed.output["regions"][0]["visual_ref"]
+            requested = await ctx.runtime.tool_service.execute(
+                "computer.visual.act", {"action": "left_click_visual", "visual_ref": visual_ref}, ctx.context,
+            )
+            decided = await ctx.runtime.tool_service.decide_and_resume(
+                requested.approval_id, True, ctx.identity.identity_id, ctx.context,
+            )
+        from ..computer.native_input import MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP
+
+        return (
+            decided.status.value == "completed"
+            and decided.verified is False
+            and len(fixture.batches) == 2
+            and fixture.batches[1] == (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
+        )
+    finally:
+        await ctx.runtime.shutdown()
+
+
 def build_suite() -> RegressionSuite:
     cases = (
         EvaluationCase("cuv2-01", "semantic read uses canonical authority", "computer_use_v2", _case_semantic_read_canonical),
@@ -1511,12 +1733,17 @@ def build_suite() -> RegressionSuite:
         EvaluationCase("cuv2-46", "one drag recovery budget shared across pre-focus/post-focus grounding", "computer_use_v2", _case_drag_recovery_budget_shared_across_both_grounding_calls),
         EvaluationCase("cuv2-47", "owned child-window target is discovered and acted through canonical approval", "computer_use_v2", _case_owned_child_window_target_is_discovered_and_acted),
         EvaluationCase("cuv2-48", "owned child-window transition refuses the old approval", "computer_use_v2", _case_owned_child_window_transition_refuses_old_approval),
+        EvaluationCase("cuv2-49", "visual click requires canonical approval before input", "computer_use_v2", _case_visual_click_requires_approval_before_input),
+        EvaluationCase("cuv2-50", "stale visual ref is refused before approval/input", "computer_use_v2", _case_visual_click_stale_ref_refused_before_input),
+        EvaluationCase("cuv2-51", "ambiguous same-text visual target is refused before input", "computer_use_v2", _case_visual_click_ambiguous_refused_before_input),
+        EvaluationCase("cuv2-52", "visual approval source drift is refused before input", "computer_use_v2", _case_visual_click_approval_source_drift_refused),
+        EvaluationCase("cuv2-53", "uncertain visual click outcome is never retried", "computer_use_v2", _case_visual_click_uncertain_outcome_never_retries),
     )
     return RegressionSuite(
         SUITE_NAME, cases,
         "Deterministic Computer Use V2 product acceptance contracts (Phase 18 Workstream A Batch 02 Milestone 2, "
-        "extended by Batch 04 Milestone 1 with grounded drag and text-input contracts, and Batch 05 Milestone 1 "
-        "with read-only local OCR visual grounding contracts, and Batch 07 with owned child-window transition "
-        "contracts). No GUI/live Windows dependency; every case runs "
+        "extended by Batch 04 Milestone 1 with grounded drag and text-input contracts, Batch 05 Milestone 1 "
+        "with read-only local OCR visual grounding contracts, Batch 07 with owned child-window transition "
+        "contracts, and Batch 08 M1 with one bounded visual-click contract). No GUI/live Windows dependency; every case runs "
         "against fakes at the OS/provider boundary.",
     )

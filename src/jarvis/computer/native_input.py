@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..contracts.semantic_ui import SemanticDesktopAdapter
+from ..contracts.visual_ui import VisualBounds
 from ..perception.windows import WindowsDesktopProvider
 
 # -- Win32 constants (never exposed to the model) --
@@ -367,6 +368,88 @@ class WindowsNativeInputAdapter:
         # performed the intended semantic action (7.3.3) - always unverified
         # here; a separate evaluator may independently prove a scenario.
         return NativeInputResult("succeeded", evidence, verified=False)
+
+    async def left_click_visual(
+        self,
+        window_ref: str,
+        bounds: VisualBounds,
+        *,
+        hwnd: int | None = None,
+    ) -> NativeInputResult:
+        """Deliver exactly one bounded click at a trusted visual target.
+
+        ``bounds`` is an internal adapter object, never a model parameter.
+        When ``hwnd`` is omitted this method owns the normal validate/focus/
+        foreground preparation. The controller supplies an already-grounded
+        ``hwnd`` only after its required post-focus OCR revalidation.
+        """
+        if not self.available:
+            return NativeInputResult("failed", {}, "native_input_unavailable")
+        if bounds.width <= 0 or bounds.height <= 0:
+            return NativeInputResult("failed", {}, "native_input_injection_failed")
+        if hwnd is None:
+            hwnd, ground_failure = self.ground_visual_window(window_ref)
+            if hwnd is None:
+                assert ground_failure is not None
+                return ground_failure
+        elif not self.window_provider.is_foreground(hwnd):
+            return NativeInputResult("failed", {}, "window_focus_not_verified")
+
+        center_x = bounds.x + bounds.width // 2
+        center_y = bounds.y + bounds.height // 2
+        vleft, vtop, vwidth, vheight = self._metrics_provider()
+        normalized = normalize_virtual_desktop_point(
+            center_x,
+            center_y,
+            vleft=vleft,
+            vtop=vtop,
+            vwidth=vwidth,
+            vheight=vheight,
+        )
+        if normalized is None:
+            return NativeInputResult("failed", {}, "native_input_injection_failed")
+
+        move_inputs = (
+            _mouse_input(
+                normalized[0],
+                normalized[1],
+                MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+            ),
+        )
+        if self._send_input(move_inputs) != len(move_inputs):
+            return NativeInputResult(
+                "failed",
+                {"input_batch_accepted": False, "stage": "move"},
+                "native_input_injection_failed",
+                verified=False,
+            )
+
+        click_inputs = (
+            _mouse_input(0, 0, MOUSEEVENTF_LEFTDOWN),
+            _mouse_input(0, 0, MOUSEEVENTF_LEFTUP),
+        )
+        sent = self._send_input(click_inputs)
+        input_batch_accepted = sent == len(click_inputs)
+        cursor_x, cursor_y = self._get_cursor_pos()
+        evidence = {
+            "input_batch_accepted": input_batch_accepted,
+            "pointer_target_verified": (
+                abs(cursor_x - center_x) <= MOVE_TOLERANCE_PIXELS
+                and abs(cursor_y - center_y) <= MOVE_TOLERANCE_PIXELS
+            ),
+            "target_window_foreground": self.window_provider.is_foreground(hwnd),
+        }
+        if not input_batch_accepted:
+            # The combined down/up batch is not retried. A generic delivery
+            # failure cannot prove whether the application saw either event.
+            return NativeInputResult("failed", evidence, "native_input_injection_failed", verified=False)
+        # Generic visual delivery is never an independent application
+        # postcondition; the caller must keep this unverified.
+        return NativeInputResult("succeeded", evidence, verified=False)
+
+    def ground_visual_window(self, window_ref: str) -> tuple[int | None, NativeInputResult | None]:
+        """Prepare one trusted visual source window before post-focus OCR."""
+        return self._ground_window(window_ref)
 
     async def right_click_element(self, element_ref: str) -> NativeInputResult:
         if not self.available:

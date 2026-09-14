@@ -56,6 +56,9 @@ class PolicyPermissionEngine:
             # distinction is exactly what the clipboard_read finding
             # missed).
             PermissionRule("tool.computer.visual.read", PermissionEffect.ALLOW, "computer_visual_read_boundary"),
+            # The outer wrapper only gates entry; the inner computer action is
+            # consequential and creates the canonical owner-approval request.
+            PermissionRule("tool.computer.visual.act", PermissionEffect.ALLOW, "computer_visual_act_boundary"),
             # BrowserActionService owns the inner read/approval decision. The
             # outer tool wrapper must not create a second approval request.
             PermissionRule("tool.browser.", PermissionEffect.ALLOW, "browser_action_boundary"),
@@ -95,6 +98,7 @@ class PolicyPermissionEngine:
             # ComputerActionService._read_actions (risk_level "read").
             PermissionRule("computer.visual_ocr_window", PermissionEffect.ALLOW, "safe_visual_ocr_read"),
             PermissionRule("computer.visual_ocr_element", PermissionEffect.ALLOW, "safe_visual_ocr_read"),
+            PermissionRule("computer.left_click_visual", PermissionEffect.REQUIRE_APPROVAL, "visual_click_requires_approval"),
             PermissionRule("computer.screen_snapshot_on_demand", PermissionEffect.ALLOW, "on_demand_screen_read"),
             PermissionRule("browser.open_url", PermissionEffect.ALLOW, "safe_browser_navigation"),
             PermissionRule("browser.navigate", PermissionEffect.ALLOW, "safe_browser_navigation"),

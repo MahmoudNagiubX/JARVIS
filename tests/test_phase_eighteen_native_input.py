@@ -26,6 +26,7 @@ from jarvis.computer.native_input import (
 )
 from jarvis.contracts import ComputerAction, ToolContext
 from jarvis.contracts.semantic_ui import SemanticBounds, SemanticElementSnapshot, SemanticResult
+from jarvis.contracts.visual_ui import VisualBounds
 
 
 # -- coordinate math (pure function, no adapter needed) --
@@ -192,6 +193,7 @@ class MouseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.error_code, "native_input_injection_failed")
 
+
     async def test_pointer_position_mismatch_not_verified(self) -> None:
         semantic = _FakeSemanticAdapter(bounds=SemanticBounds(0, 0, 20, 20))
         adapter = _adapter(semantic, _FakeWindowProvider(), get_cursor_pos=lambda: (9999, 9999))
@@ -235,6 +237,138 @@ class MouseTests(unittest.IsolatedAsyncioTestCase):
         result = await adapter.move_to_element("element-1")
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.error_code, "native_input_injection_failed")
+
+
+class VisualMouseTests(unittest.IsolatedAsyncioTestCase):
+    """Batch 08 M1: one bounded visual click through the existing native layer."""
+
+    def _adapter(
+        self,
+        provider: _FakeWindowProvider | None = None,
+        *,
+        send_input=None,
+        get_cursor_pos=lambda: (120, 130),
+    ) -> WindowsNativeInputAdapter:
+        return _adapter(
+            _FakeSemanticAdapter(bounds=None),
+            provider or _FakeWindowProvider(),
+            send_input=send_input,
+            get_cursor_pos=get_cursor_pos,
+        )
+
+    async def test_visual_click_moves_then_sends_exactly_one_left_click_pair(self) -> None:
+        from jarvis.computer.native_input import MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE
+
+        batches: list[tuple[int, ...]] = []
+
+        def record_send(inputs: object) -> int:
+            batches.append(tuple(item.mi.dwFlags for item in inputs))
+            return len(inputs)
+
+        result = await self._adapter(send_input=record_send).left_click_visual(
+            "window-1", VisualBounds(100, 120, 40, 20)
+        )
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.verified)
+        self.assertEqual(len(batches), 2)
+        self.assertEqual(batches[0], (MOUSEEVENTF_MOVE | 0x8000 | 0x4000,))
+        self.assertEqual(batches[1], (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP))
+
+    async def test_visual_click_uses_virtual_desktop_coordinates_without_exposing_them(self) -> None:
+        batches: list[object] = []
+
+        def record_send(inputs: object) -> int:
+            batches.extend(inputs)
+            return len(inputs)
+
+        provider = _FakeWindowProvider()
+        adapter = _adapter(
+            _FakeSemanticAdapter(bounds=None),
+            provider,
+            metrics_provider=lambda: (-1920, 0, 3840, 1080),
+            send_input=record_send,
+            get_cursor_pos=lambda: (-1900, 20),
+        )
+        result = await adapter.left_click_visual("window-1", VisualBounds(-1920, 0, 40, 40))
+        self.assertEqual(result.status, "succeeded")
+        self.assertNotIn("x", json.dumps(result.output))
+        self.assertNotIn("y", json.dumps(result.output))
+        self.assertNotIn("bounds", json.dumps(result.output))
+
+    async def test_visual_click_focus_failure_sends_no_input(self) -> None:
+        calls = {"send": 0}
+        provider = _FakeWindowProvider()
+        provider.focus_result = False
+
+        def count_send(inputs: object) -> int:
+            calls["send"] += 1
+            return len(inputs)
+
+        result = await self._adapter(provider, send_input=count_send).left_click_visual(
+            "window-1", VisualBounds(100, 120, 40, 20)
+        )
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "window_focus_not_verified")
+        self.assertEqual(calls["send"], 0)
+
+    async def test_visual_click_move_failure_does_not_send_click(self) -> None:
+        batches: list[int] = []
+
+        def fail_move(inputs: object) -> int:
+            batches.append(len(inputs))
+            return 0
+
+        result = await self._adapter(send_input=fail_move).left_click_visual(
+            "window-1", VisualBounds(100, 120, 40, 20)
+        )
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "native_input_injection_failed")
+        self.assertEqual(batches, [1])
+
+    async def test_visual_click_partial_click_failure_is_not_retried(self) -> None:
+        batches: list[tuple[int, ...]] = []
+
+        def fail_click_once(inputs: object) -> int:
+            flags = tuple(item.mi.dwFlags for item in inputs)
+            batches.append(flags)
+            return 1 if len(batches) == 2 else len(inputs)
+
+        result = await self._adapter(send_input=fail_click_once).left_click_visual(
+            "window-1", VisualBounds(100, 120, 40, 20)
+        )
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "native_input_injection_failed")
+        self.assertEqual(len(batches), 2)
+
+    async def test_visual_click_rejects_non_positive_bounds_before_input(self) -> None:
+        calls = {"send": 0}
+
+        def count_send(inputs: object) -> int:
+            calls["send"] += 1
+            return len(inputs)
+
+        result = await self._adapter(send_input=count_send).left_click_visual(
+            "window-1", VisualBounds(100, 120, 0, 20)
+        )
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "native_input_injection_failed")
+        self.assertEqual(calls["send"], 0)
+
+    async def test_visual_click_foreground_race_blocks_input(self) -> None:
+        provider = _FakeWindowProvider()
+        provider._foreground_sequence = [False]
+        calls = {"send": 0}
+
+        def count_send(inputs: object) -> int:
+            calls["send"] += 1
+            return len(inputs)
+
+        result = await self._adapter(provider, send_input=count_send).left_click_visual(
+            "window-1", VisualBounds(100, 120, 40, 20)
+        )
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "window_focus_not_verified")
+        self.assertEqual(calls["send"], 0)
 
 
 class ExpandedPointerActionTests(unittest.IsolatedAsyncioTestCase):

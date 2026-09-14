@@ -58,17 +58,18 @@ class ComputerCapability(StrEnum):
     KEYBOARD_KEY = "keyboard_key"
     KEYBOARD_CHORD = "keyboard_chord"
     # Read-only local OCR visual grounding (Batch 05 Milestone 1, GAP-0103
-    # PARTIAL). Observation-only: never accepted as a targeting input by any
-    # pointer/keyboard/file/semantic-act action, no visual actuation exists
-    # in this batch.
+    # PARTIAL). Observation results remain untrusted; Batch 08 adds exactly
+    # one separately reviewed visual action below.
     VISUAL_OCR_WINDOW = "visual_ocr_window"
     VISUAL_OCR_ELEMENT = "visual_ocr_element"
+    LEFT_CLICK_VISUAL = "left_click_visual"
     # Internal-only capabilities: never registered in any ToolSpec, so the
     # model can never request them directly. ComputerActionService uses
     # these to build a fresh, trusted target preview/binding before creating
     # an approval for an element- or window-targeted action (R18B02-001/003).
     RESOLVE_ELEMENT_TARGET = "resolve_element_target"
     RESOLVE_WINDOW_TARGET = "resolve_window_target"
+    RESOLVE_VISUAL_TARGET = "resolve_visual_target"
 
 
 @dataclass(frozen=True, slots=True)

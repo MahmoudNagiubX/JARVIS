@@ -32,8 +32,8 @@ class MultiWindowEvaluationTests(unittest.IsolatedAsyncioTestCase):
     async def test_suite_adds_only_the_two_new_child_window_contract_cases(self) -> None:
         suite = build_suite()
         ids = [case.case_id for case in suite.cases]
-        self.assertEqual(ids[-2:], ["cuv2-47", "cuv2-48"])
-        self.assertEqual(len(ids), 48)
+        self.assertEqual(ids[-5:], ["cuv2-49", "cuv2-50", "cuv2-51", "cuv2-52", "cuv2-53"])
+        self.assertEqual(len(ids), 53)
         runtime = create_runtime(JarvisConfig(environment="test", database_path=":memory:"))
         await runtime.start()
         try:
