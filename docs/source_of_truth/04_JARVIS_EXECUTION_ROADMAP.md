@@ -125,6 +125,18 @@ gate is therefore false, GAP-0103 advances only to bounded visual actuation,
 and no Batch 09 work starts. See
 `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_08.md`.
 
+**Batch 09 T0/T1 checkpoint (2026-09-14):** T0 removed the redundant
+pre-focus visual OCR resolution while retaining approval-target binding,
+decide-time drift refusal, foreground verification, and post-focus fresh OCR.
+The owned receipt is now A/B/C/D/E 3/3 with zero network attempts and exact
+cleanup, and the fix is pushed as `ca1cbe3`. T1 added the finite
+`scripts/phase18/real_world_computer_use_acceptance.py` owner-session boundary
+with the exact opt-in gate, allowlisted scenario IDs, first-party URL and
+destination validation, login-required stop behavior, and privacy-safe
+receipts. No owner application or account was touched in T0/T1. T2 is pending
+the required fresh Codex session after the narrow `AGENTS.md` clarification;
+the broader real-app matrix remains unproven.
+
 Deliver:
 - product-owned UIA target/inspection/action layer;
 - benchmark `winapp ui` versus direct UIA implementation;

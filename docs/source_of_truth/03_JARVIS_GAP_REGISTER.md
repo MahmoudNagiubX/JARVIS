@@ -78,20 +78,23 @@ General mouse click/move/drag/drop and arbitrary bounded hotkeys/keys/paste are 
 **Batch 08 M0:** `PARTIAL` (unchanged). The evaluation-only OCR runner now uses a sequence-aware NFKC/whitespace-normalized Levenshtein similarity. Its bounded `combined_then_english` comparison was physically measured through the owned OCR fixture but failed the required English-similarity and all-three-run warm two-pass gates, so `OCR_BOUNDED_TWO_PASS_EVALUATION_NO_CHANGE` was recorded and DEC-048 remains unchanged. Visual actuation is still absent until the separately gated M1/M2 work.
 
 ### GAP-0103 — Visual grounding/OCR/local vision not production-active
-**Status:** `PARTIAL` (bounded visual actuation implemented; happy-path physical acceptance pending)
+**Status:** `PARTIAL` (bounded visual actuation implemented; T0 owned-fixture gate closed, broader real-app acceptance pending)
 
-**Batch 08 M1/M2 current truth:** `computer.visual.act` now accepts only an
+**Batch 08 M1/M2 current truth:** `computer.visual.act` accepts only an
 opaque window-origin `visual_ref` and routes through the existing target-aware
 approval, fresh OCR/source revalidation, foreground verification, and one
-native left-click batch. The owned OCR fixture now has a real `GO` button,
+native left-click batch. The owned OCR fixture has a real `GO` button,
 fixture-owned status read-back, and an allowlisted duplicate-target variant.
-Physical acceptance is `PARTIAL`: stale-target refusal, duplicate ambiguity,
-approval-target drift refusal, and post-input uncertainty are each 3/3 with
-zero network attempts and exact child cleanup; the real happy-path click is
-0/3 because the CPU-only host expires the ref during slow OCR/revalidation
-and cannot verify foreground activation. No fallback to same-text lookup,
-raw coordinates, UIA element lookup, or automatic post-input retry is used.
-See `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_08.md`.
+
+**Batch 09 T0 current truth:** the redundant pre-focus OCR resolution was
+removed by carrying the already-trusted target through the canonical service
+boundary; decide-time binding and the required post-focus fresh OCR remain in
+place. The owned physical receipt is now A/B/C/D/E 3/3, with zero network
+attempts and exact child cleanup. No fallback to same-text lookup, raw
+coordinates, UIA element lookup, or automatic post-input retry is used. T1
+adds only the explicit, opt-in owner-session runner boundary; it does not
+claim broader real-app acceptance. See
+`docs/audits/PHASE_18_WORKSTREAM_A_BATCH_09.md`.
 
 On-demand GDI capture and optional local OCR are implemented. Visual fallback
 still follows the UIA-first rule; the Batch 08 visual action is deliberately
@@ -146,10 +149,11 @@ Create repeatable NIGHTFURY tasks across Notepad, Explorer, Settings, Calculator
 **Batch 08 M1/M2:** the deterministic Computer Use V2 suite now contains 53
 cases, including approval-gated visual click, stale-refusal, ambiguity,
 approval-drift, and post-input-uncertainty contracts. The owned-fixture
-physical runner is intentionally still a foundation rather than the broad
-real-app matrix named by this gap: B/C/D/E are 3/3, while the real A happy
-path is 0/3 because the CPU-only host expires the visual reference before
-foreground-safe input begins. `GAP-0105` remains `PARTIAL`; no full
+physical runner remains a foundation rather than the broad real-app matrix
+named by this gap. **Batch 09 T1** adds the finite, hard-opt-in owner-session
+runner with privacy-safe receipts and no automatic startup/pytest/CI trigger;
+owner scenarios remain unexecuted until their production adapter and local
+configuration are ready. `GAP-0105` remains `PARTIAL`; no full
 multi-application acceptance claim is made.
 
 ### GAP-0106 — Multi-monitor/DPI/secure-desktop behavior needs explicit proof

@@ -105,13 +105,16 @@ Never report success from intent, a click, a returned HTTP 200, or a mock alone.
 
 ## 6.1 Physical acceptance safety
 
-Physical acceptance may target only JARVIS-owned fixture scripts under
-`scripts/phase18/`, launched through the approved owned-fixture boundary.
-Never launch, attach to, inspect as disposable, mutate, close, or kill an
-owner-installed/general application or owner session. Every fixture run must
-use a fresh nonce, exact-title window discovery, exact child PID/object
-ownership, and exact-PID terminate/wait/kill cleanup. Never fall back to a
-similar title, a first matching window, or a broad image-name process kill.
+Disposable physical acceptance may target only JARVIS-owned fixture scripts
+under `scripts/phase18/`, launched through the approved owned-fixture boundary.
+Separately, explicitly owner-authorized real-world acceptance is permitted only
+through the opt-in bounded Batch 09 runner at
+`scripts/phase18/real_world_computer_use_acceptance.py`. Never launch, attach
+to, inspect as disposable, mutate, close, or kill an owner-installed/general
+application or owner session. Every fixture run must use a fresh nonce,
+exact-title window discovery, exact child PID/object ownership, and exact-PID
+terminate/wait/kill cleanup. Never fall back to a similar title, a first
+matching window, or a broad image-name process kill.
 Never inspect owner clipboard contents, files, documents, profiles, or
 sessions. If a safe owned fixture cannot prove a physical behavior, leave the
 physical evidence pending rather than substituting an owner app.
