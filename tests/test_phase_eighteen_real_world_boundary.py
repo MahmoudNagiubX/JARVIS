@@ -10,10 +10,14 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
+
+from jarvis.computer.service import WindowsNativeComputerController
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -270,12 +274,15 @@ class CalculatorScenarioTests(unittest.IsolatedAsyncioTestCase):
         class Session:
             def __init__(self) -> None:
                 self.window_active = False
+                self.application_open = False
                 self.computer_actions: list[tuple[str, dict[str, object]]] = []
                 self.tool_calls: list[tuple[str, dict[str, object]]] = []
                 self.decisions: list[tuple[str, bool]] = []
 
             async def execute_computer_action(self, action: str, arguments: dict[str, object]):
                 self.computer_actions.append((action, arguments))
+                if action == "open_application":
+                    self.application_open = True
                 if action == "focus_window":
                     self.window_active = True
                 return SimpleNamespace(status="succeeded", output={}, error_code=None, verified=True)
@@ -285,21 +292,26 @@ class CalculatorScenarioTests(unittest.IsolatedAsyncioTestCase):
                 if name == "computer.semantic.read":
                     action = arguments.get("action")
                     if action == "list_windows":
+                        windows = [] if not self.application_open else [{
+                            "window_ref": "window-calculator",
+                            "title": "Calculator",
+                            "process_name": "CalculatorApp.exe",
+                            "active": self.window_active,
+                        }]
                         return SimpleNamespace(
                             status="completed",
-                            output={
-                                "windows": [{
-                                    "window_ref": "window-calculator",
-                                    "title": "Calculator",
-                                    "process_name": "CalculatorApp.exe",
-                                    "active": self.window_active,
-                                }],
-                            },
+                            output={"windows": windows},
                             error_code=None,
                         )
                     if action == "find_elements":
                         control_type = arguments.get("control_type")
                         name_filter = arguments.get("name")
+                        if arguments.get("automation_id") == "CalculatorResults":
+                            return SimpleNamespace(
+                                status="completed",
+                                output={"matches": [{"element_ref": "element-display", "automation_id": "CalculatorResults"}]},
+                                error_code=None,
+                            )
                         if control_type == "ButtonControl":
                             refs = {
                                 "Clear": "element-clear",
@@ -320,7 +332,7 @@ class CalculatorScenarioTests(unittest.IsolatedAsyncioTestCase):
                                 error_code=None,
                             )
                     if action == "get_text":
-                        return SimpleNamespace(status="completed", output={"text": "391"}, error_code=None)
+                        return SimpleNamespace(status="completed", output={"text": "Display is 391"}, error_code=None)
                 if name == "computer.semantic.act":
                     return SimpleNamespace(status="approval_required", approval_id="approval-calculator", output={}, error_code=None)
                 raise AssertionError(f"unexpected tool call: {name} {arguments}")
@@ -353,6 +365,8 @@ class CalculatorScenarioTests(unittest.IsolatedAsyncioTestCase):
                     raise AssertionError(f"unexpected computer action: {action}")
 
             async def execute_tool(self, _name: str, _arguments: dict[str, object]):
+                if _name == "computer.semantic.read" and _arguments.get("action") == "list_windows":
+                    return SimpleNamespace(status="completed", output={"windows": []}, error_code=None)
                 raise AssertionError("missing Calculator must stop before semantic reads")
 
             async def decide_tool(self, _approval_id: str, _approved: bool):
@@ -365,6 +379,154 @@ class CalculatorScenarioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], module.NOT_CONFIGURED)
         self.assertEqual(result["reason"], "calculator_not_configured")
         self.assertFalse(result["verified"])
+
+    async def test_calculator_handler_targets_new_window_around_stale_exact_windows(self) -> None:
+        module = self.module
+
+        class Session:
+            def __init__(self) -> None:
+                self.opened = False
+                self.focused_ref: str | None = None
+                self.decisions: list[str] = []
+
+            async def execute_computer_action(self, action: str, arguments: dict[str, object]):
+                if action == "open_application":
+                    self.opened = True
+                    return SimpleNamespace(status="succeeded", output={}, error_code=None, verified=True)
+                if action == "focus_window":
+                    self.focused_ref = str(arguments["window_ref"])
+                    return SimpleNamespace(status="succeeded", output={}, error_code=None, verified=True)
+                raise AssertionError(f"unexpected computer action: {action}")
+
+            async def execute_tool(self, name: str, arguments: dict[str, object]):
+                if name == "computer.semantic.read":
+                    action = arguments.get("action")
+                    if action == "list_windows":
+                        windows = [
+                            {"window_ref": "window-old-1", "title": "Calculator", "process_name": "ApplicationFrameHost.exe", "active": False},
+                            {"window_ref": "window-old-2", "title": "Calculator", "process_name": "ApplicationFrameHost.exe", "active": False},
+                        ]
+                        if self.opened:
+                            windows.append({"window_ref": "window-new", "title": "Calculator", "process_name": "ApplicationFrameHost.exe", "active": True})
+                        return SimpleNamespace(status="completed", output={"windows": windows}, error_code=None)
+                    if action == "find_elements":
+                        control_type = arguments.get("control_type")
+                        if arguments.get("automation_id") == "CalculatorResults":
+                            return SimpleNamespace(status="completed", output={"matches": [{"element_ref": "element-display"}]}, error_code=None)
+                        if control_type == "ButtonControl":
+                            refs = {
+                                "Clear": "element-clear",
+                                "One": "element-one",
+                                "Seven": "element-seven",
+                                "Multiply by": "element-multiply",
+                                "Two": "element-two",
+                                "Three": "element-three",
+                                "Equals": "element-equals",
+                            }
+                            ref = refs.get(arguments.get("name"))
+                            return SimpleNamespace(status="completed", output={"matches": [{"element_ref": ref}] if ref else []}, error_code=None)
+                        if control_type == "TextControl":
+                            return SimpleNamespace(status="completed", output={"matches": [{"element_ref": "element-display"}]}, error_code=None)
+                    if action == "get_text":
+                        return SimpleNamespace(status="completed", output={"text": "391"}, error_code=None)
+                if name == "computer.semantic.act":
+                    return SimpleNamespace(status="approval_required", approval_id=f"approval-{len(self.decisions)}", output={}, error_code=None)
+                raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+            async def decide_tool(self, approval_id: str, approved: bool):
+                if not approved:
+                    raise AssertionError("Calculator invoke must be explicitly approved")
+                self.decisions.append(approval_id)
+                return SimpleNamespace(status="completed", output={}, error_code=None, verified=False)
+
+        session = Session()
+        result = await module._run_calculator_scenario(
+            session, "RW-CALC-001", "JARVIS_E2E_TEST_NONCE", module.OwnerSessionConfig(True, owner_id="owner", device_id="device"),
+        )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(session.focused_ref, "window-new")
+        self.assertEqual(len(session.decisions), 7)
+
+    async def test_calculator_handler_settles_launch_before_grounding_exact_window(self) -> None:
+        module = self.module
+
+        class Session:
+            def __init__(self) -> None:
+                self.opened = False
+                self.settled = False
+                self.focused_ref: str | None = None
+                self.sleep_delays: list[float] = []
+                self.decisions = 0
+
+            async def execute_computer_action(self, action: str, arguments: dict[str, object]):
+                if action == "open_application":
+                    self.opened = True
+                    return SimpleNamespace(status="succeeded", output={}, error_code=None, verified=True)
+                if action == "focus_window":
+                    self.focused_ref = str(arguments["window_ref"])
+                    return SimpleNamespace(status="succeeded", output={}, error_code=None, verified=True)
+                raise AssertionError(f"unexpected computer action: {action}")
+
+            async def execute_tool(self, name: str, arguments: dict[str, object]):
+                if name == "computer.semantic.read":
+                    action = arguments.get("action")
+                    if action == "list_windows":
+                        windows = [
+                            {"window_ref": "window-old-1", "title": "Calculator", "process_name": "ApplicationFrameHost.exe", "active": False},
+                            {"window_ref": "window-old-2", "title": "Calculator", "process_name": "ApplicationFrameHost.exe", "active": False},
+                        ]
+                        if self.opened and self.settled:
+                            windows.append({"window_ref": "window-new", "title": "Calculator", "process_name": "ApplicationFrameHost.exe", "active": True})
+                        else:
+                            windows.append({"window_ref": "window-old-active", "title": "Calculator", "process_name": "ApplicationFrameHost.exe", "active": True})
+                        if action == "list_windows":
+                            return SimpleNamespace(status="completed", output={"windows": windows}, error_code=None)
+                    if action == "find_elements":
+                        control_type = arguments.get("control_type")
+                        if arguments.get("automation_id") == "CalculatorResults":
+                            return SimpleNamespace(status="completed", output={"matches": [{"element_ref": "element-display"}]}, error_code=None)
+                        if control_type == "ButtonControl":
+                            refs = {
+                                "Clear": "element-clear",
+                                "One": "element-one",
+                                "Seven": "element-seven",
+                                "Multiply by": "element-multiply",
+                                "Two": "element-two",
+                                "Three": "element-three",
+                                "Equals": "element-equals",
+                            }
+                            ref = refs.get(arguments.get("name"))
+                            return SimpleNamespace(status="completed", output={"matches": [{"element_ref": ref}] if ref else []}, error_code=None)
+                        if control_type == "TextControl":
+                            return SimpleNamespace(status="completed", output={"matches": [{"element_ref": "element-display"}]}, error_code=None)
+                    if action == "get_text":
+                        return SimpleNamespace(status="completed", output={"text": "391"}, error_code=None)
+                if name == "computer.semantic.act":
+                    self.decisions += 1
+                    return SimpleNamespace(status="approval_required", approval_id=f"approval-{self.decisions}", output={}, error_code=None)
+                raise AssertionError(f"unexpected tool call: {name} {arguments}")
+
+            async def decide_tool(self, _approval_id: str, approved: bool):
+                if not approved:
+                    raise AssertionError("Calculator invoke must be explicitly approved")
+                return SimpleNamespace(status="completed", output={}, error_code=None, verified=False)
+
+        session = Session()
+
+        async def settle(delay: float) -> None:
+            session.sleep_delays.append(delay)
+            session.settled = True
+
+        with patch.object(module.asyncio, "sleep", new=settle):
+            result = await module._run_calculator_scenario(
+                session, "RW-CALC-001", "JARVIS_E2E_TEST_NONCE", module.OwnerSessionConfig(True, owner_id="owner", device_id="device"),
+            )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(session.focused_ref, "window-new")
+        self.assertEqual(session.sleep_delays, [module._CALCULATOR_POST_LAUNCH_SETTLE_SECONDS])
+        self.assertEqual(session.decisions, 7)
 
     async def test_calculator_handler_refuses_exact_window_ambiguity_before_input(self) -> None:
         module = self.module
@@ -406,3 +568,235 @@ class CalculatorScenarioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "FAILED")
         self.assertFalse(result["verified"])
         self.assertEqual(result.get("sends", 0), 0)
+
+
+class BraveHostScenarioTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.module = _load_runner()
+
+    async def test_brave_host_baseline_stops_at_browser_v2_boundary(self) -> None:
+        module = self.module
+        path = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+
+        class Session:
+            def __init__(self) -> None:
+                self.actions: list[tuple[str, dict[str, object]]] = []
+                self.tool_calls: list[tuple[str, dict[str, object]]] = []
+                self.closed = False
+
+            async def login_preflight(self, service: str):
+                self.tool_calls.append(("login_preflight", {"service": service}))
+                return module.LoginPreflight(module.READY, "local_owner_runtime_ready")
+
+            async def execute_computer_action(self, action: str, arguments: dict[str, object]):
+                self.actions.append((action, arguments))
+                if action == "open_application":
+                    return SimpleNamespace(status="succeeded", output={"application": "brave", "executable": path}, error_code=None, verified=True)
+                if action == "focus_window":
+                    return SimpleNamespace(status="succeeded", output={}, error_code=None, verified=True)
+                raise AssertionError(f"unexpected computer action: {action}")
+
+            async def execute_tool(self, name: str, arguments: dict[str, object]):
+                self.tool_calls.append((name, arguments))
+                if name == "computer.semantic.read" and arguments.get("action") == "list_windows":
+                    return SimpleNamespace(
+                        status="completed",
+                        output={"windows": [{"window_ref": "window-brave", "title": "Owner Brave", "process_name": "brave.exe", "active": True}]},
+                        error_code=None,
+                    )
+                raise AssertionError("host baseline must not use browser or web tools")
+
+            async def decide_tool(self, _approval_id: str, _approved: bool):
+                raise AssertionError("host baseline must not request approval")
+
+            async def close(self):
+                self.closed = True
+
+        session = Session()
+        before_path = os.environ.get("PATH")
+
+        async def no_sleep(_delay: float) -> None:
+            return None
+
+        async def factory(_config):
+            return session
+
+        env = {
+            module.ENABLE_ENV: "1",
+            "JARVIS_E2E_OWNER_ID": "owner-test",
+            "JARVIS_E2E_DEVICE_ID": "device-test",
+            "JARVIS_E2E_BRAVE_PATH": path,
+        }
+        with patch.object(module.asyncio, "sleep", new=no_sleep):
+            receipt = await module.RealWorldAcceptanceRunner(env=env, session_factory=factory).run("RW-BRAVE-001", runs=1)
+
+        self.assertEqual(receipt["status"], "PARTIAL")
+        self.assertEqual(receipt["results"][0]["reason"], "cross_workstream_blocker_browser_v2_required")
+        self.assertTrue(receipt["results"][0]["host_baseline"])
+        self.assertFalse(receipt["results"][0]["verified"])
+        self.assertEqual([action for action, _ in session.actions], ["open_application", "focus_window"])
+        self.assertEqual(session.tool_calls[0], ("login_preflight", {"service": "brave_host"}))
+        self.assertTrue(session.closed)
+        self.assertEqual(os.environ.get("PATH"), before_path)
+
+    async def test_brave_host_restores_an_unset_process_path(self) -> None:
+        module = self.module
+        path = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+
+        class Session:
+            async def login_preflight(self, _service: str):
+                return module.LoginPreflight(module.READY, "local_owner_runtime_ready")
+
+            async def execute_computer_action(self, action: str, _arguments: dict[str, object]):
+                if action == "open_application":
+                    return SimpleNamespace(status="failed", output={}, error_code="application_not_installed", verified=False)
+                raise AssertionError(f"unexpected computer action: {action}")
+
+            async def execute_tool(self, _name: str, _arguments: dict[str, object]):
+                raise AssertionError("failed launch must stop before semantic reads")
+
+            async def decide_tool(self, _approval_id: str, _approved: bool):
+                raise AssertionError("failed launch must not request approval")
+
+            async def close(self):
+                return None
+
+        async def factory(_config):
+            return Session()
+
+        env = {
+            module.ENABLE_ENV: "1",
+            "JARVIS_E2E_OWNER_ID": "owner-test",
+            "JARVIS_E2E_DEVICE_ID": "device-test",
+            "JARVIS_E2E_BRAVE_PATH": path,
+        }
+        with patch.dict(os.environ, {}, clear=True):
+            receipt = await module.RealWorldAcceptanceRunner(env=env, session_factory=factory).run("RW-BRAVE-001", runs=1)
+
+            self.assertNotIn("PATH", os.environ)
+        self.assertEqual(receipt["status"], module.NOT_CONFIGURED)
+        self.assertEqual(receipt["results"][0]["reason"], "brave_path_not_found")
+
+    async def test_brave_host_refuses_multiple_inactive_windows_before_focus(self) -> None:
+        module = self.module
+        path = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+
+        class Session:
+            def __init__(self) -> None:
+                self.actions: list[str] = []
+
+            async def login_preflight(self, _service: str):
+                return module.LoginPreflight(module.READY, "local_owner_runtime_ready")
+
+            async def execute_computer_action(self, action: str, _arguments: dict[str, object]):
+                self.actions.append(action)
+                if action == "open_application":
+                    return SimpleNamespace(status="succeeded", output={"executable": path}, error_code=None, verified=True)
+                raise AssertionError("ambiguous host grounding must stop before focus")
+
+            async def execute_tool(self, name: str, arguments: dict[str, object]):
+                if name == "computer.semantic.read" and arguments.get("action") == "list_windows":
+                    return SimpleNamespace(
+                        status="completed",
+                        output={
+                            "windows": [
+                                {"window_ref": "window-brave-a", "title": "New Tab - Brave", "process_name": "brave.exe", "active": False},
+                                {"window_ref": "window-brave-b", "title": "New Tab - Brave", "process_name": "brave.exe", "active": False},
+                            ],
+                        },
+                        error_code=None,
+                    )
+                raise AssertionError("ambiguous host grounding must use only window listing")
+
+            async def decide_tool(self, _approval_id: str, _approved: bool):
+                raise AssertionError("host baseline must not request approval")
+
+            async def close(self):
+                return None
+
+        session = Session()
+
+        async def factory(_config):
+            return session
+
+        env = {
+            module.ENABLE_ENV: "1",
+            "JARVIS_E2E_OWNER_ID": "owner-test",
+            "JARVIS_E2E_DEVICE_ID": "device-test",
+            "JARVIS_E2E_BRAVE_PATH": path,
+        }
+        receipt = await module.RealWorldAcceptanceRunner(env=env, session_factory=factory).run("RW-BRAVE-001", runs=1)
+
+        self.assertEqual(receipt["status"], "PARTIAL")
+        self.assertEqual(receipt["results"][0]["reason"], "brave_window_ambiguous")
+        self.assertFalse(receipt["results"][0]["host_baseline"])
+        self.assertEqual(session.actions, ["open_application"])
+
+
+class BraveLauncherTests(unittest.TestCase):
+    def test_brave_launcher_uses_allowlisted_name_and_shell_false(self) -> None:
+        controller = WindowsNativeComputerController.__new__(WindowsNativeComputerController)
+        path = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+        with patch("jarvis.computer.service.shutil.which", return_value=path) as which:
+            with patch("jarvis.computer.service.subprocess.Popen") as popen:
+                result = controller._open_application({"application": "brave"})
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertTrue(result.verified)
+        which.assert_called_once_with("brave.exe")
+        popen.assert_called_once_with([path, "--new-window"], shell=False, close_fds=True)
+
+
+class ProductionSessionTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.module = _load_runner()
+
+    async def test_existing_owner_id_resolves_owner_identity_before_session(self) -> None:
+        module = self.module
+
+        class IdentityService:
+            def __init__(self) -> None:
+                self.identity_lookup: str | None = None
+                self.device_lookup: str | None = None
+
+            async def get_identity(self, identity_id: str):
+                self.identity_lookup = identity_id
+                if identity_id != "identity-owner":
+                    return None
+                return SimpleNamespace(identity_id=identity_id, owner_id="owner")
+
+            async def device(self, device_id: str):
+                self.device_lookup = device_id
+                return SimpleNamespace(owner_id="owner")
+
+        class Runtime:
+            def __init__(self) -> None:
+                self.state = SimpleNamespace(value="ready")
+                self.identity = IdentityService()
+                self.repository = SimpleNamespace(
+                    first_identity=lambda owner_id: {"id": "identity-owner", "owner_id": owner_id},
+                )
+                self.shutdown_calls = 0
+
+            async def start(self) -> None:
+                return None
+
+            async def shutdown(self) -> None:
+                self.shutdown_calls += 1
+
+        runtime = Runtime()
+        with patch("jarvis.bootstrap.create_runtime", return_value=runtime) as create_runtime:
+            with patch("jarvis.config.JarvisConfig.from_env", return_value=SimpleNamespace()) as from_env:
+                session = await module._new_production_session(
+                    module.OwnerSessionConfig(True, owner_id="owner", device_id="device"),
+                )
+
+        self.assertIsInstance(session, module.ProductionToolSession)
+        self.assertEqual(runtime.identity.identity_lookup, "identity-owner")
+        self.assertEqual(runtime.identity.device_lookup, "device")
+        create_runtime.assert_called_once()
+        from_env.assert_called_once()
+        await session.close()
+        self.assertEqual(runtime.shutdown_calls, 1)

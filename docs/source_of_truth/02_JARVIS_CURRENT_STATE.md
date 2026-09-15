@@ -1,7 +1,7 @@
 # JARVIS — CURRENT STATE
 
 **Status:** SNAPSHOT / IMPLEMENTATION TRUTH SUMMARY  
-**Reviewed:** 2026-09-12  
+**Reviewed:** 2026-09-15
 **Repository:** `MahmoudNagiubX/JARVIS`  
 **Reviewed HEAD:** `54b67ba396ec45180f1b60ea472ef94c9ac181a9`
 
@@ -33,7 +33,9 @@ The commit is recorded as unsigned. GitHub CI remains not configured in the Phas
 
 ### 1.1 Phase 18A audit/stabilization status (2026-09-12)
 
-Phase 18A.1 baseline audit and Phase 18A.2 targeted stabilization ran against this same `54b67ba` working tree (uncommitted local changes pending owner review — see Git rules in the task files; no push/merge/commit was performed as part of either task unless the owner separately instructs it):
+Phase 18A.1 baseline audit and Phase 18A.2 targeted stabilization ran against
+the `54b67ba` baseline; their reviewed results are carried by the repository's
+subsequent Phase 18 checkpoints:
 
 - `docs/audits/PHASE_18A1_BASELINE_AUDIT.md` — evidence-based audit; verdict `AUDIT_GATE_PASS_WITH_ROADMAP_GAPS`; 0 P0, 3 P1, 8 P2, 3 P3 findings.
 - `docs/audits/PHASE_18A2_STABILIZATION.md` — fixed the 7 approved findings (F18A1-013, 003, 001, 002, 009, 007, 012) with 15 new focused regression tests; full Python suite is green at 530 passed, 0 skipped, 36 subtests (515 pre-existing + 15 new; the one previously-justified skip is environment-dependent per the 18A.1 report and did not trigger in this environment either run). Frontend Vitest (75 passed), build, and `npm audit --audit-level=high` (0 high/critical) remain unchanged/green.
@@ -50,7 +52,7 @@ Phase 18A.1 baseline audit and Phase 18A.2 targeted stabilization ran against th
 | 15 MCP/Skills/Browser/Research | `IMPLEMENTED` foundation/final pass; some live adapters remain optional/deferred |
 | 16 Personal Intelligence | `IMPLEMENTED` / final pass |
 | 17 VENOM/Home/Multi-device/Room Fabric | code/architecture + real-network readiness `IMPLEMENTED`; physical deployment gates remain `PHYSICAL_PENDING`/`NOT_CONFIGURED` |
-| 18 | Phase 18A baseline audit/stabilization complete; Workstream A Batch 09 T0 visual acceptance is physically green 3/3, the owner-session boundary is implemented, and a bounded Calculator scenario handler is unit-tested, while physical T2 and the broader real-app matrix remain `PARTIAL`/configuration-gated |
+| 18 | Phase 18A baseline audit/stabilization complete; Workstream A Batch 09 T0 visual acceptance is physically green 3/3, `RW-CALC-001` is physically green 3/3 through the explicit owner-session boundary, and Brave binary provenance is recorded, while Brave host focus remains `PARTIAL` and browser navigation/authentication is blocked on Browser V2; T3-T6 are not started |
 | 19 | final physical end-to-end acceptance/release not started |
 
 **Important:** the 2026-09-05 Master's Phase 17 HOLD was superseded by the later `54b67ba` closure. Do not re-open those code gaps without regression evidence.
@@ -108,7 +110,7 @@ Phase 18A.1 baseline audit and Phase 18A.2 targeted stabilization ran against th
 | Grounded named-key keyboard input | `PARTIAL` | `computer.keyboard.key` (14-key bounded allowlist plus one reviewed `shift+tab` combo) and `computer.keyboard.chord` (5-chord allowlist: `ctrl+a/c/f/z/y` only, sharing its press/release sequencing with `computer.keyboard.key`) through `WindowsNativeInputAdapter` (Batch 02 Milestone 1, Batch 03 Milestone 2) - no raw VK/hotkey string. Physically proven live on NIGHTFURY through the owned Win32 fixtures: Tab key moves real keyboard focus (both fixtures), named chords delivered including `ctrl+c` (clipboard content independently proven to change) and `ctrl+z` (undo independently proven), Home/End/Backspace proven (Batch 04 Milestone 1), and literal typing proven for both English and Arabic Unicode text with exact independent read-back. Paste and arbitrary hotkeys remain `PLANNED` (deliberately deferred). |
 | Paste/drag/drop | `PARTIAL` | element-to-element drag implemented (see above, Batch 04 Milestone 1); paste (Ctrl+V) and file drag/drop remain `PLANNED`, not supported by current grounded desktop path |
 | UIA semantic control tree/actions | `RESOLVED` (core capability; broader Computer Use V2 breadth continues under GAP-0102/0104/0105/0106) | read (`computer.semantic.read`) and bounded write (`computer.semantic.act`: invoke/toggle/select, approval-required by default) tool paths implemented through `ComputerActionService`, when the optional `computer-uia` dependency is installed (DEC-046; Batch 01 Milestones 1-3, Batch 02 Milestone 0, Batch 03 Milestones 0/2 of Phase 18 Workstream A). `invoke`/`toggle`/`select` are now **all three** physically proven live on NIGHTFURY through a JARVIS-owned native Win32 fixture (`scripts/phase18/uia_fixture_host.py`, replacing the Batch 02 Edge Guest fixture which never reached Chromium content within the adapter's `MAX_INSPECT_DEPTH=5` bound) - 3/3 clean runs each, re-confirmed in both Batch 03 Milestone 0 and Milestone 2, with independent evidence each time. Batch 02 Milestone 0 hardened targeting (strong/weak identity, `list_windows` privacy filtering, fresh post-action re-observation, target-aware approval preview, disabled/offscreen/password fail-closed checks); Batch 03 Milestone 0 generalized that same trusted-preview/binding mechanism beyond semantic actions to `computer.pointer.act` and window-targeted keyboard actions, bounding approval expiry by the *actual* configured reference TTL rather than a hardcoded constant; Batch 04 Milestone 1 extended it again to a genuine dual-target binding for `drag_element_to_element`. See `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_04.md`. No generic text/value write (`set_value`), no OCR/visual fallback, no multi-app recovery loop - see GAP-0102 through GAP-0106. |
-| Computer Use V2 evaluation suite | `PARTIAL` | deterministic `computer_use_v2` suite (`src/jarvis/evaluation/computer_use_v2.py`, 53 cases after Batch 08) is registered through the existing `EvaluationService`, has no GUI dependency, and passes its current deterministic checks. Batch 09 T1 adds an explicitly opt-in, finite owner-session runner boundary; T2 adds a bounded Calculator orchestration handler with exact semantic grounding and independent readback, unit-tested only. No owner app scenario is claimed physically complete and the broader real-app/failure-mode breadth remains in GAP-0105. |
+| Computer Use V2 evaluation suite | `PARTIAL` | deterministic `computer_use_v2` suite (`src/jarvis/evaluation/computer_use_v2.py`, 53 cases after Batch 08) is registered through the existing `EvaluationService`, has no GUI dependency, and passes its current deterministic checks. Batch 09 adds an explicitly opt-in, finite owner-session runner boundary; `RW-CALC-001` is physically PASS 3/3 with exact semantic grounding and independent readback. Brave host focus remains unproven because the current desktop exposes multiple inactive exact Brave windows, and authenticated web control remains a Browser V2 blocker. The broader real-app/failure-mode breadth remains in GAP-0105. |
 | Local visual OCR grounding | `PARTIAL` | `computer.visual.read` provides bounded offline EasyOCR OCR through opaque `window_ref`/`element_ref` inputs; `computer.visual.act` adds one bounded OCR-grounded left-click through the existing approval/native-input path. Raw pixels, geometry, and refs remain transient/opaque, the visual reference TTL is 30 seconds, and element-origin visual refs remain denied in favor of semantic UIA targeting. Batch 09 T0 physically proves A/B/C/D/E 3/3 with zero network and exact cleanup; T1 owner-session acceptance remains configuration-gated. |
 | Approved-root file access confinement | `IMPLEMENTED` bounded | `FileAccessPolicy` (`src/jarvis/computer/file_access.py`, Batch 03 Milestone 1, hardened Batch 04 Milestone 0) confines `inspect_file`/`search_files`/`open_file`/`open_folder` to explicit owner-configured roots (`JarvisConfig.file_access_roots`), fail-closed when unconfigured; component-wise root containment (no string-prefix confusion), verified junction/`..`-escape resistance, component/filename-aware sensitive-path deny list including the full `.env.*` wildcard family. `search_files` now uses a genuine pre-descent bounded walker (`iter_search_candidates`) that decides containment/reparse-safety before descending into each directory, never `Path.rglob()`. No write/move/copy/rename/delete, no file dialogs - GAP-0503 resolved for this path-confinement scope only (`RESOLVED_AFTER_REVIEW_HARDENING`). |
 | On-demand screen capture | `IMPLEMENTED` bounded | native Windows GDI transient capture exists |
@@ -246,6 +248,11 @@ Do not inflate these states:
 - MQTT physical: not configured;
 - ESP32 physical: not run;
 - room voice physical: not run.
+- Batch 09 T2: `RW-CALC-001` is physically `PASS` 3/3 with independent
+  Calculator readback; Brave provenance is recorded, but host open/focus is
+  `PARTIAL` because the current desktop has multiple inactive exact Brave
+  windows. Brave navigation/authentication is a `CROSS_WORKSTREAM_BLOCKER`
+  until the approved Browser V2 adapter exists.
 
 ## 6. Evidence references
 

@@ -1,7 +1,7 @@
 # JARVIS — EXECUTION ROADMAP
 
 **Status:** CANONICAL WORK ORDER  
-**Reviewed:** 2026-09-12
+**Reviewed:** 2026-09-15
 
 ## 1. Phase numbering rule
 
@@ -134,13 +134,16 @@ cleanup, and the fix is pushed as `ca1cbe3`. T1 added the finite
 with the exact opt-in gate, allowlisted scenario IDs, first-party URL and
 destination validation, login-required stop behavior, and privacy-safe
 receipts. No owner application or account was touched in T0/T1. **T2
-checkpoint (2026-09-15):** the default `RW-CALC-001` handler now orchestrates
-allowlisted Calculator launch/focus through `ComputerActionService`, exact
-semantic button grounding with per-action approval, and independent `391`
-readback; its boundary tests pass, but the physical 3/3 gate is pending because
-owner-session opt-in and identity configuration are unset. Brave is
-`NOT_CONFIGURED` because no Brave executable or live browser adapter is
-configured. The broader real-app matrix remains unproven.
+continuation (2026-09-15):** the exact owner-session opt-in and existing
+owner/device identity were supplied only through process-local configuration.
+`RW-CALC-001` passed 3/3 through the canonical Calculator launch/focus and
+semantic approval/readback path, with zero wrong targets and zero external
+writes/sends. Brave provenance was recorded from standard installation paths,
+but its host-only open/focus attempt remained `PARTIAL` after fail-closed
+`brave_window_ambiguous` results on the current desktop. Browser navigation and
+authenticated web control are a `CROSS_WORKSTREAM_BLOCKER` until Workstream B
+provides Browser V2/Playwright. No T3-T6 work started; the broader real-app
+matrix remains unproven.
 
 Deliver:
 - product-owned UIA target/inspection/action layer;

@@ -44,7 +44,14 @@ class WindowsNativeComputerController:
         "notepad": "notepad.exe",
         "calculator": "calc.exe",
         "calc": "calc.exe",
+        "brave": "brave.exe",
         "explorer": "explorer.exe",
+    }
+    SAFE_APPLICATION_ARGUMENTS = {
+        # A fresh bounded host window gives the caller an exact foreground
+        # target even when unrelated Brave windows already exist. Arguments
+        # are product-owned; callers cannot supply command-line flags.
+        "brave": ("--new-window",),
     }
     SAFE_STOP_PROCESSES = frozenset({"notepad.exe", "calc.exe", "calculator.exe", "code.exe"})
     MAX_CLIPBOARD_TEXT = 16_000
@@ -187,7 +194,7 @@ class WindowsNativeComputerController:
         resolved = shutil.which(executable)
         if resolved is None:
             return ComputerResult("failed", {"application": name}, "application_not_installed")
-        subprocess.Popen([resolved], shell=False, close_fds=True)
+        subprocess.Popen([resolved, *self.SAFE_APPLICATION_ARGUMENTS.get(name, ())], shell=False, close_fds=True)
         return ComputerResult("succeeded", {"application": name, "executable": resolved}, verified=True)
 
     def _open_path(self, parameters: Mapping[str, Any], kind: str) -> ComputerResult:

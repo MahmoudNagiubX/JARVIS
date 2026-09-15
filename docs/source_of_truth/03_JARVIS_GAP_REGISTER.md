@@ -1,7 +1,7 @@
 # JARVIS — GAP REGISTER
 
 **Status:** CANONICAL OPEN-WORK REGISTER  
-**Reviewed:** 2026-09-12
+**Reviewed:** 2026-09-15
 
 > A gap is not automatically a bug. It may be missing capability, production debt, physical acceptance, configuration, or documentation drift. `02_JARVIS_CURRENT_STATE.md` owns capability status; this file owns what still needs work.
 
@@ -96,13 +96,15 @@ adds only the explicit, opt-in owner-session runner boundary; it does not
 claim broader real-app acceptance. See
 `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_09.md`.
 
-**Batch 09 T2:** the owner-session runner now contains a bounded Calculator
-handler that launches/focuses through `ComputerActionService`, grounds exact
-semantic controls through the existing read/action path, requires approval for
-each invoke, and independently reads back `391`. The handler is unit-tested but
-has not been physically run because owner-session opt-in and identity
-configuration are unset. Brave remains `NOT_CONFIGURED`; no live browser
-adapter or launcher change was made.
+**Batch 09 T2 continuation (2026-09-15):** the owner-session runner contains a
+bounded Calculator handler that launches/focuses through
+`ComputerActionService`, grounds exact semantic controls through the existing
+read/action path, requires approval for each invoke, and independently reads
+back `391`; with process-local opt-in and the existing owner/device identity it
+passed the physical `RW-CALC-001` gate 3/3. Brave provenance was recorded from
+standard installation paths, but the host-only open/focus attempt remained
+`PARTIAL` after 3/3 fail-closed `brave_window_ambiguous` results. No browser
+navigation/authentication was attempted; see `GAP-0201` and the Batch 09 audit.
 
 On-demand GDI capture and optional local OCR are implemented. Visual fallback
 still follows the UIA-first rule; the Batch 08 visual action is deliberately
@@ -162,10 +164,16 @@ named by this gap. **Batch 09 T1** adds the finite, hard-opt-in owner-session
 runner with privacy-safe receipts and no automatic startup/pytest/CI trigger;
 the default Calculator scenario handler now provides the first bounded
 real-application orchestration slice through the canonical typed services, with
-exact semantic grounding and independent result readback. The handler is
-unit-tested only; physical owner-session runs remain unexecuted until local
-configuration and required live adapters are ready. `GAP-0105` remains
-`PARTIAL`; no full multi-application acceptance claim is made.
+exact semantic grounding and independent result readback. At the T1 checkpoint
+the handler was unit-tested only; physical owner-session results are recorded
+in the Batch 09 T2 continuation below. **Batch 09 T2
+continuation (2026-09-15):** the existing owner/device identity was enabled
+only through process-local opt-in, and `RW-CALC-001` passed 3/3 with exact
+semantic grounding and independent `Display is 391` readback. Brave provenance
+was recorded from standard installation paths, but the host-only open/focus
+attempt remained `PARTIAL` (3/3 fail-closed `brave_window_ambiguous`); no
+browser navigation/authentication was attempted. `GAP-0105` remains `PARTIAL`;
+no full multi-application acceptance claim is made.
 
 ### GAP-0106 — Multi-monitor/DPI/secure-desktop behavior needs explicit proof
 **Status:** `PARTIAL`  
@@ -178,6 +186,11 @@ Computer Use V2 must handle DPI/window movement/multiple monitors and fail safel
 ### GAP-0201 — Live Playwright action adapter is not active in default runtime
 **Status:** `OPEN`  
 Implement real click/type/select/navigation/screenshot capability behind existing `BrowserActionService`, preserving URL policy, approvals, audit, and offline composition.
+**Batch 09 boundary (2026-09-15):** the existing `LocalBrowserController` is
+not a live authenticated Brave/session adapter. `RW-BRAVE-001` therefore stops
+after the bounded host-only phase and classifies navigation/authenticated web
+control as `CROSS_WORKSTREAM_BLOCKER`; no Playwright dependency or second
+browser authority was added in Workstream A.
 
 ### GAP-0202 — Browser upload/download workflows are missing
 **Status:** `OPEN`  

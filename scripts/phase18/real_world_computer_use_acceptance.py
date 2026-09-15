@@ -47,7 +47,9 @@ SCENARIO_IDS = frozenset(
 
 SCENARIO_SERVICE = {
     "RW-CALC-001": "calculator",
-    "RW-BRAVE-001": "brave",
+    # T2 host-only preflight. It deliberately does not claim an authenticated
+    # browser session; web navigation remains a separate Browser V2 gate.
+    "RW-BRAVE-001": "brave_host",
     "RW-CHATGPT-001": "chatgpt",
     "RW-GMAIL-001": "gmail",
     "RW-NOTION-001": "notion",
@@ -106,6 +108,16 @@ _RECEIPT_REASONS = frozenset(
         "unsafe_destination",
         "discord_target_not_explicit",
         "brave_path_not_allowlisted",
+        "brave_path_not_found",
+        "brave_path_resolution_mismatch",
+        "brave_launch_failed",
+        "brave_window_not_found",
+        "brave_window_ambiguous",
+        "brave_process_not_allowlisted",
+        "brave_ui_provider_unavailable",
+        "brave_focus_not_verified",
+        "brave_host_baseline_passed",
+        "cross_workstream_blocker_browser_v2_required",
         "owner_id_invalid",
         "device_id_invalid",
         "calculator_not_configured",
@@ -209,6 +221,11 @@ _CALCULATOR_BUTTON_NAMES = {
 }
 _CALCULATOR_WINDOW_ATTEMPTS = 20
 _CALCULATOR_WINDOW_DELAY_SECONDS = 0.5
+_CALCULATOR_POST_LAUNCH_SETTLE_SECONDS = 2.0
+_BRAVE_PROCESS_NAME = "brave.exe"
+_BRAVE_WINDOW_ATTEMPTS = 20
+_BRAVE_WINDOW_DELAY_SECONDS = 0.5
+_BRAVE_POST_LAUNCH_SETTLE_SECONDS = 2.0
 
 
 def _result_status(result: object) -> str:
@@ -226,42 +243,71 @@ def _result_error(result: object) -> str | None:
     return error if isinstance(error, str) else None
 
 
-async def _calculator_window_observation(session: OwnerToolSession) -> tuple[dict[str, object] | None, str | None]:
-    """Return one exact Calculator window without selecting a similar target."""
+async def _calculator_window_snapshot(session: OwnerToolSession) -> tuple[list[dict[str, object]], str | None]:
+    """Read exact Calculator candidates without selecting a target."""
 
-    last_error = "calculator_window_not_found"
+    result = await session.execute_tool("computer.semantic.read", {"action": "list_windows"})
+    if _result_status(result) != "completed":
+        return [], "calculator_ui_provider_unavailable"
+    windows = _result_output(result).get("windows", ())
+    if not isinstance(windows, (list, tuple)):
+        return [], "calculator_ui_provider_unavailable"
+    title_matches = [
+        window for window in windows
+        if isinstance(window, Mapping)
+        and str(window.get("title", "")).strip().casefold() == _CALCULATOR_TITLE
+    ]
+    matches = [
+        window for window in title_matches
+        if str(window.get("process_name", "")).strip().casefold() in _CALCULATOR_PROCESS_NAMES
+    ]
+    if not matches and title_matches:
+        return [], "calculator_process_not_allowlisted"
+    validated: list[dict[str, object]] = []
+    for window in matches:
+        window_ref = window.get("window_ref")
+        if not isinstance(window_ref, str) or not window_ref.startswith("window-"):
+            return [], "calculator_ui_provider_unavailable"
+        validated.append(dict(window))
+    return validated, None
+
+
+async def _calculator_window_after_launch(session: OwnerToolSession) -> tuple[dict[str, object] | None, str | None]:
+    """Select one exact candidate from a single post-launch observation."""
+
     for attempt in range(_CALCULATOR_WINDOW_ATTEMPTS):
-        result = await session.execute_tool("computer.semantic.read", {"action": "list_windows"})
-        if _result_status(result) != "completed":
-            error = _result_error(result)
-            if error in {"uia_not_available", "windows_backend_unavailable", "satellite_offline"}:
-                return None, "calculator_ui_provider_unavailable"
-            last_error = "calculator_ui_provider_unavailable"
-        else:
-            windows = _result_output(result).get("windows", ())
-            if not isinstance(windows, (list, tuple)):
-                return None, "calculator_ui_provider_unavailable"
-            title_matches = [
-                window for window in windows
-                if isinstance(window, Mapping)
-                and str(window.get("title", "")).strip().casefold() == _CALCULATOR_TITLE
-            ]
-            matches = [
-                window for window in title_matches
-                if str(window.get("process_name", "")).strip().casefold() in _CALCULATOR_PROCESS_NAMES
-            ]
-            if len(matches) > 1:
-                return None, "calculator_window_ambiguous"
-            if len(matches) == 1:
-                window_ref = matches[0].get("window_ref")
-                if isinstance(window_ref, str) and window_ref.startswith("window-"):
-                    return dict(matches[0]), None
-                return None, "calculator_ui_provider_unavailable"
-            if title_matches:
-                return None, "calculator_process_not_allowlisted"
+        matches, error = await _calculator_window_snapshot(session)
+        if error is not None:
+            return None, error
+        if len(matches) == 1:
+            return matches[0], None
+        active_matches = [window for window in matches if window.get("active") is True]
+        if len(active_matches) == 1:
+            return active_matches[0], None
+        if len(active_matches) > 1 or len(matches) > 1:
+            return None, "calculator_window_ambiguous"
         if attempt + 1 < _CALCULATOR_WINDOW_ATTEMPTS:
             await asyncio.sleep(_CALCULATOR_WINDOW_DELAY_SECONDS)
-    return None, last_error
+    return None, "calculator_window_not_found"
+
+
+async def _calculator_active_window_observation(
+    session: OwnerToolSession,
+) -> tuple[dict[str, object] | None, str | None]:
+    """Confirm one exact Calculator candidate is the active window."""
+
+    for attempt in range(_CALCULATOR_WINDOW_ATTEMPTS):
+        matches, error = await _calculator_window_snapshot(session)
+        if error is not None:
+            return None, error
+        active_matches = [window for window in matches if window.get("active") is True]
+        if len(active_matches) > 1:
+            return None, "calculator_window_ambiguous"
+        if len(active_matches) == 1:
+            return active_matches[0], None
+        if attempt + 1 < _CALCULATOR_WINDOW_ATTEMPTS:
+            await asyncio.sleep(_CALCULATOR_WINDOW_DELAY_SECONDS)
+    return None, "calculator_window_not_found"
 
 
 async def _calculator_button(session: OwnerToolSession, window_ref: str, button: str) -> tuple[str | None, str | None]:
@@ -306,24 +352,32 @@ async def _calculator_result_verified(session: OwnerToolSession, window_ref: str
     """Verify 391 from a fresh semantic read, never from action self-report."""
 
     result = await session.execute_tool(
-        "computer.semantic.read", {"action": "find_elements", "window_ref": window_ref, "control_type": "TextControl"},
+        "computer.semantic.read", {
+            "action": "find_elements",
+            "window_ref": window_ref,
+            "automation_id": "CalculatorResults",
+        },
     )
     if _result_status(result) != "completed":
         return False, "calculator_readback_unavailable"
     matches = _result_output(result).get("matches", ())
     if not isinstance(matches, (list, tuple)):
         return False, "calculator_readback_unavailable"
-    for match in matches:
-        if not isinstance(match, Mapping):
-            continue
-        element_ref = match.get("element_ref")
-        if not isinstance(element_ref, str) or not element_ref.startswith("element-"):
-            continue
-        text_result = await session.execute_tool(
-            "computer.semantic.read", {"action": "get_text", "element_ref": element_ref},
-        )
-        if _result_status(text_result) == "completed" and _result_output(text_result).get("text") == "391":
-            return True, "calculator_result_verified"
+    if len(matches) != 1 or not isinstance(matches[0], Mapping):
+        return False, "calculator_readback_unavailable"
+    element_ref = matches[0].get("element_ref")
+    if not isinstance(element_ref, str) or not element_ref.startswith("element-"):
+        return False, "calculator_readback_unavailable"
+    text_result = await session.execute_tool(
+        "computer.semantic.read", {"action": "get_text", "element_ref": element_ref},
+    )
+    value = _result_output(text_result).get("text") if _result_status(text_result) == "completed" else None
+    # Windows Calculator exposes the numeric result through the stable
+    # CalculatorResults AutomationId, while its localized name/text may be
+    # either the bare value or the accessibility label "Display is <value>".
+    normalized = " ".join(value.split()).casefold() if isinstance(value, str) else ""
+    if normalized in {"391", "display is 391"}:
+        return True, "calculator_result_verified"
     return False, "calculator_result_mismatch"
 
 
@@ -341,15 +395,21 @@ async def _run_calculator_scenario(
             return {"status": NOT_CONFIGURED, "reason": "calculator_not_configured", "attempted": False, "verified": False}
         return {"status": "FAILED", "reason": "calculator_launch_failed", "attempted": True, "verified": False}
 
-    window, error = await _calculator_window_observation(session)
+    # Windows Calculator may expose its existing UWP host windows before the
+    # newly requested launch has settled. Give that bounded launch one short
+    # settle interval before the first semantic grounding snapshot; otherwise
+    # an already-open exact sibling can be selected and its foreground state
+    # can change while the opaque reference is handed to focus_window.
+    await asyncio.sleep(_CALCULATOR_POST_LAUNCH_SETTLE_SECONDS)
+    window, error = await _calculator_window_after_launch(session)
     if window is None:
         return {"status": "FAILED", "reason": error or "calculator_window_not_found", "attempted": True, "verified": False}
     window_ref = window["window_ref"]
     focused = await session.execute_computer_action("focus_window", {"window_ref": window_ref})
     if _result_status(focused) != "succeeded":
         return {"status": "FAILED", "reason": "calculator_focus_not_verified", "attempted": True, "verified": False}
-    focused_window, error = await _calculator_window_observation(session)
-    if focused_window is None or focused_window.get("window_ref") != window_ref or focused_window.get("active") is not True:
+    focused_window, error = await _calculator_active_window_observation(session)
+    if focused_window is None or focused_window.get("active") is not True:
         return {"status": "FAILED", "reason": "calculator_focus_not_verified", "attempted": True, "verified": False}
 
     for button in ("clear", "1", "7", "multiply", "2", "3", "equals"):
@@ -366,6 +426,132 @@ async def _run_calculator_scenario(
         "reason": reason,
         "attempted": True,
         "verified": verified,
+    }
+
+
+def _normalized_path(value: str) -> str:
+    return os.path.normcase(os.path.abspath(value))
+
+
+def _prepend_exact_brave_directory(path: str) -> tuple[bool, str | None]:
+    """Temporarily make one already-validated Brave directory resolvable."""
+
+    if Path(path).name.casefold() != _BRAVE_PROCESS_NAME:
+        return False, None
+    previous = os.environ.get("PATH")
+    directory = str(Path(path).parent)
+    os.environ["PATH"] = directory + os.pathsep + (previous or "")
+    return True, previous
+
+
+async def _brave_window_snapshot(session: OwnerToolSession) -> tuple[list[dict[str, object]], str | None]:
+    """Read exact Brave top-level candidates without selecting a target."""
+
+    result = await session.execute_tool("computer.semantic.read", {"action": "list_windows"})
+    if _result_status(result) != "completed":
+        return [], "brave_ui_provider_unavailable"
+    windows = _result_output(result).get("windows", ())
+    if not isinstance(windows, (list, tuple)):
+        return [], "brave_ui_provider_unavailable"
+    matches = [
+        window for window in windows
+        if isinstance(window, Mapping)
+        and str(window.get("process_name", "")).strip().casefold() == _BRAVE_PROCESS_NAME
+    ]
+    validated: list[dict[str, object]] = []
+    for window in matches:
+        window_ref = window.get("window_ref")
+        if not isinstance(window_ref, str) or not window_ref.startswith("window-"):
+            return [], "brave_ui_provider_unavailable"
+        validated.append(dict(window))
+    return validated, None
+
+
+async def _brave_window_after_launch(session: OwnerToolSession) -> tuple[dict[str, object] | None, str | None]:
+    """Select one exact Brave candidate from one settled observation."""
+
+    for attempt in range(_BRAVE_WINDOW_ATTEMPTS):
+        matches, error = await _brave_window_snapshot(session)
+        if error is not None:
+            return None, error
+        if len(matches) == 1:
+            return matches[0], None
+        active_matches = [window for window in matches if window.get("active") is True]
+        if len(active_matches) == 1:
+            return active_matches[0], None
+        if len(active_matches) > 1 or len(matches) > 1:
+            return None, "brave_window_ambiguous"
+        if attempt + 1 < _BRAVE_WINDOW_ATTEMPTS:
+            await asyncio.sleep(_BRAVE_WINDOW_DELAY_SECONDS)
+    return None, "brave_window_not_found"
+
+
+async def _brave_active_window_observation(session: OwnerToolSession) -> tuple[dict[str, object] | None, str | None]:
+    """Confirm one exact Brave candidate is active after canonical focus."""
+
+    for attempt in range(_BRAVE_WINDOW_ATTEMPTS):
+        matches, error = await _brave_window_snapshot(session)
+        if error is not None:
+            return None, error
+        active_matches = [window for window in matches if window.get("active") is True]
+        if len(active_matches) > 1:
+            return None, "brave_window_ambiguous"
+        if len(active_matches) == 1:
+            return active_matches[0], None
+        if attempt + 1 < _BRAVE_WINDOW_ATTEMPTS:
+            await asyncio.sleep(_BRAVE_WINDOW_DELAY_SECONDS)
+    return None, "brave_window_not_found"
+
+
+async def _run_brave_host_scenario(
+    session: OwnerToolSession,
+    _scenario: str,
+    _nonce: str,
+    config: OwnerSessionConfig,
+) -> Mapping[str, object]:
+    """Prove only exact Brave launch/focus; web navigation is out of scope."""
+
+    configured_path = config.brave_path
+    if configured_path is None or Path(configured_path).name.casefold() != _BRAVE_PROCESS_NAME:
+        return {"status": NOT_CONFIGURED, "reason": "brave_path_not_found", "attempted": False, "verified": False, "host_baseline": False}
+    path_prepared, previous_path = _prepend_exact_brave_directory(configured_path)
+    if not path_prepared:
+        return {"status": UNSAFE_STATE, "reason": "brave_path_not_allowlisted", "attempted": False, "verified": False, "host_baseline": False}
+    try:
+        launched = await session.execute_computer_action("open_application", {"application": "brave"})
+    finally:
+        if previous_path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = previous_path
+    if _result_status(launched) != "succeeded":
+        reason = "brave_path_not_found" if _result_error(launched) == "application_not_installed" else "brave_launch_failed"
+        return {"status": NOT_CONFIGURED if reason == "brave_path_not_found" else "FAILED", "reason": reason, "attempted": True, "verified": False, "host_baseline": False}
+    resolved = _result_output(launched).get("executable")
+    if not isinstance(resolved, str) or _normalized_path(resolved) != _normalized_path(configured_path):
+        return {"status": UNSAFE_STATE, "reason": "brave_path_resolution_mismatch", "attempted": True, "verified": False, "host_baseline": False}
+
+    await asyncio.sleep(_BRAVE_POST_LAUNCH_SETTLE_SECONDS)
+    window, error = await _brave_window_after_launch(session)
+    if window is None:
+        return {"status": "FAILED", "reason": error or "brave_window_not_found", "attempted": True, "verified": False, "host_baseline": False}
+    window_ref = window["window_ref"]
+    focused = await session.execute_computer_action("focus_window", {"window_ref": window_ref})
+    if _result_status(focused) != "succeeded":
+        return {"status": "FAILED", "reason": "brave_focus_not_verified", "attempted": True, "verified": False, "host_baseline": False}
+    active, error = await _brave_active_window_observation(session)
+    if active is None or active.get("active") is not True:
+        return {"status": "FAILED", "reason": "brave_focus_not_verified", "attempted": True, "verified": False, "host_baseline": False}
+
+    # The host baseline is verified, but this scenario intentionally does not
+    # navigate or inspect an authenticated tab. Browser V2/Playwright remains
+    # a cross-workstream dependency and no web acceptance is claimed here.
+    return {
+        "status": "PARTIAL",
+        "reason": "cross_workstream_blocker_browser_v2_required",
+        "attempted": True,
+        "verified": False,
+        "host_baseline": True,
     }
 
 
@@ -486,11 +672,12 @@ def _safe_outcome(
     verified: bool = False,
     writes: int = 0,
     sends: int = 0,
+    host_baseline: bool | None = None,
 ) -> dict[str, object]:
     """Project a handler result without retaining page/app content."""
 
     safe_reason = reason if reason in _RECEIPT_REASONS else "bounded_result_reason"
-    return {
+    outcome = {
         "status": status,
         "reason": safe_reason,
         "nonce": nonce,
@@ -501,6 +688,9 @@ def _safe_outcome(
         "credentials_interacted": 0,
         "raw_content_persisted": False,
     }
+    if host_baseline is not None:
+        outcome["host_baseline"] = host_baseline
+    return outcome
 
 
 def _sanitize_handler_result(raw: Mapping[str, object], nonce: str) -> dict[str, object]:
@@ -509,6 +699,7 @@ def _sanitize_handler_result(raw: Mapping[str, object], nonce: str) -> dict[str,
     reason = raw.get("reason") if isinstance(raw.get("reason"), str) else "handler_result_unavailable"
     if status not in allowed_statuses:
         status = "FAILED"
+    host_baseline = raw.get("host_baseline")
     return _safe_outcome(
         status,
         reason,
@@ -517,6 +708,7 @@ def _sanitize_handler_result(raw: Mapping[str, object], nonce: str) -> dict[str,
         verified=bool(raw.get("verified", False)),
         writes=int(raw.get("external_writes", 0)) if isinstance(raw.get("external_writes", 0), int) else 0,
         sends=int(raw.get("sends", 0)) if isinstance(raw.get("sends", 0), int) else 0,
+        host_baseline=host_baseline if isinstance(host_baseline, bool) else None,
     )
 
 
@@ -524,6 +716,7 @@ def _required_configuration(scenario: str, config: OwnerSessionConfig) -> str | 
     if config.owner_id is None or config.device_id is None:
         return "owner_runtime_identity_not_configured"
     required = {
+        "RW-BRAVE-001": config.brave_path,
         "RW-NOTION-001": config.notion_page_url,
         "RW-SPOTIFY-001": config.spotify_query,
         "RW-DISCORD-TEST-001": config.discord_target,
@@ -544,6 +737,10 @@ class ProductionToolSession:
         self._context = ToolContext(identity, device, "phase18-owner-e2e", "phase18-owner-e2e")
 
     async def login_preflight(self, service: str) -> LoginPreflight:
+        if service == "brave_host":
+            # Host launch/focus is local computer control only. It does not
+            # assert an authenticated browser or permit web navigation.
+            return LoginPreflight(READY, "local_owner_runtime_ready")
         # The current LocalBrowserController is a bounded HTTP parser, not a
         # real Brave/session adapter. Never mistake it for an authenticated
         # owner browser. A future first-party adapter must report a challenge
@@ -591,9 +788,11 @@ async def _new_production_session(config: OwnerSessionConfig) -> OwnerToolSessio
     runtime = create_runtime(JarvisConfig.from_env())
     try:
         await runtime.start()
-        identity = await runtime.identity.get_identity(config.owner_id)
+        identity_row = runtime.repository.first_identity(config.owner_id)
+        identity_id = identity_row.get("id") if isinstance(identity_row, Mapping) else None
+        identity = await runtime.identity.get_identity(identity_id) if isinstance(identity_id, str) else None
         device = await runtime.identity.device(config.device_id)
-        if identity is None or device is None or identity.owner_id != device.owner_id or device.owner_id != config.owner_id:
+        if identity is None or device is None or identity.owner_id != config.owner_id or device.owner_id != config.owner_id:
             await runtime.shutdown()
             return None
         return ProductionToolSession(runtime, identity, device)
@@ -615,7 +814,14 @@ class RealWorldAcceptanceRunner:
     ) -> None:
         self._env = os.environ if env is None else env
         self._session_factory = session_factory or _new_production_session
-        self._handlers = dict({"RW-CALC-001": _run_calculator_scenario} if handlers is None else handlers)
+        self._handlers = dict(
+            {
+                "RW-CALC-001": _run_calculator_scenario,
+                "RW-BRAVE-001": _run_brave_host_scenario,
+            }
+            if handlers is None
+            else handlers
+        )
 
     async def run(self, scenario: str, *, runs: int = 1) -> dict[str, object]:
         if not 1 <= runs <= 3:
