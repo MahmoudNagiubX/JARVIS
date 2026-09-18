@@ -194,6 +194,13 @@ T6 adds the fail-closed owner-session/ChatGPT nonce runner and deterministic
 red-team cases, but no live opt-in, manual login, authenticated shell, nonce
 readback, or persistence proof is claimed.
 
+**T06 owner-session preflight (2026-09-19):** using process-local values only,
+the existing owner/device identity and dedicated JARVIS Brave profile reached
+the exact ChatGPT origin with send confirmation disabled. The runner returned
+`BROWSER_V2_PARTIAL` / `authenticated_shell_uncertain`; no credential,
+typing, click, nonce send, or raw secret/screenshot persistence occurred.
+T06 remains `PARTIAL` and stops at the manual-authentication boundary.
+
 Exit: defined research and browser-action workflows succeed repeatedly with verified end states and no browser-to-authority escalation.
 
 ### Workstream C — Specialist Agent Delegation

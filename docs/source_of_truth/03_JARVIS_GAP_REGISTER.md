@@ -559,3 +559,10 @@ configuration/evidence, not silently treated as complete.
   catalog/identity and launch/focus code are accepted. The generic-app
   physical focus probe failed closed, and the broad multi-application,
   semantic-workflow, recovery, and Tier A/B acceptance matrix remains open.
+
+- **GAP-0201/GAP-0205 — remain `PARTIAL` / `OWNER_ACTION_REQUIRED`:** the
+  process-local T06 preflight reached the exact ChatGPT origin through the
+  dedicated JARVIS Brave profile with the existing owner/device identity, but
+  the authenticated shell was `uncertain`. No credentials or nonce-send action
+  was attempted; manual authentication and explicit send confirmation remain
+  outside unattended execution.

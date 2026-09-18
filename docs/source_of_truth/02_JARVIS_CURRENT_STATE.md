@@ -184,6 +184,18 @@ used the canonical safe-process path. This is `PARTIAL`/launch-only evidence,
 not Tier A/B acceptance. No arbitrary executable path, shell, remote-phone
 launch, credential, cookie, or normal Brave profile path was introduced.
 
+### T06 owner-session preflight — 2026-09-19
+
+The finite Browser V2 owner runner was then exercised with the existing local
+owner/device identity derived only in process memory, the exact standard Brave
+binary, the dedicated JARVIS `OwnerPersistent` profile, and send confirmation
+disabled. It reached `https://chatgpt.com/` and returned
+`BROWSER_V2_PARTIAL` / `authenticated_shell_uncertain`. No credentials were
+entered, no nonce was sent, no raw screenshot or secret was persisted, and all
+security counters remained zero. This proves bounded target/profile
+preflight, not authenticated web acceptance; manual owner authentication and
+an explicit send confirmation remain required.
+
 ### Browser/research/MCP/skills
 
 | Capability | Status | Current truth |

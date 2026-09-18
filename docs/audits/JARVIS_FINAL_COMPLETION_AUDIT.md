@@ -373,6 +373,26 @@ covered by this addendum and remains exclusively a Browser V2/Playwright gate;
 no credential, cookie, normal Brave profile, arbitrary shell path, or remote
 phone launch was used.
 
+## 11E. T06 owner-session preflight — 2026-09-19
+
+The finite owner runner was exercised with process-local configuration derived
+from the existing local owner/device records. It used the exact standard Brave
+executable and the dedicated JARVIS `OwnerPersistent` profile, with
+`JARVIS_BROWSER_T6_CONFIRM_SEND=0`.
+
+| Check | Evidence | Truth |
+|---|---|---|
+| Owner/device binding | existing local identity/device matched and required Browser V2 capabilities were present; identifiers were not printed or committed | `PASS` |
+| Dedicated Brave target | exact configured Brave path and dedicated profile passed the runner policy | `PASS` |
+| Target preflight | `https://chatgpt.com/` opened through `BrowserActionService`; a session was present | `PASS` / bounded only |
+| Authenticated shell | runner result `BROWSER_V2_PARTIAL` with `authenticated_shell_uncertain` | `OWNER_ACTION_REQUIRED` |
+| Credential/send boundary | zero credential interactions; send confirmation disabled; no typing, click, nonce send, readback, or raw secret/screenshot persistence | `PASS` |
+
+This is not authenticated acceptance. The owner must manually authenticate in
+the dedicated profile and explicitly enable the nonce-send confirmation before
+any T06 action path can type or click. The normal Brave profile and credential
+stores remain untouched. T07 and later release gates remain stopped.
+
 ## 12. Ultimate Completion Requirement Matrix
 
 This matrix is evaluated against the current feature-branch HEAD
