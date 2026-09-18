@@ -23,6 +23,7 @@ from .computer.controller import ComputerExecutionRouter, WindowsComputerControl
 from .computer.applications import InstalledApplicationRegistry
 from .computer.file_access import FileAccessPolicy
 from .computer.service import ComputerActionService, WindowsNativeComputerController
+from .study.service import StudyService
 from .context.assembler import ContextAssembler
 from .contracts import (
     ApprovalEngine,
@@ -62,7 +63,7 @@ from .proactive.service import DurableProactiveService
 from .notifications.service import NotificationService
 from .runtime.noop import NoOpSpeechToText, NoOpTextToSpeech
 from .scheduler.service import BackgroundScheduler
-from .tools.registry import ToolRegistry, default_registry, register_browser_tools, register_computer_tools, register_perception_tools
+from .tools.registry import ToolRegistry, default_registry, register_browser_tools, register_computer_tools, register_perception_tools, register_study_tools
 from .tools.service import ToolExecutionService
 from .voice.core import VoiceCore
 from .voice.fabric import RoomVoiceFabric
@@ -156,6 +157,7 @@ class JarvisRuntime:
     communication: CommunicationChannel
     device_fabric: DeviceFabricService
     computer_actions: ComputerActionService
+    study: StudyService
     application_registry: InstalledApplicationRegistry
     browser_actions: BrowserActionService
     home: HomeActionService
@@ -326,6 +328,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     satellite_computer_controller = WindowsComputerController(satellite)
     computer_router = ComputerExecutionRouter(local_computer_controller, satellite_computer_controller)
     computer_actions = ComputerActionService(computer_router, repository, event_bus, permission, audit, approval)
+    study = StudyService(file_access_policy)
 
     async def resolve_computer_target(owner_id: str, device_id: str) -> tuple[DeviceIdentity, str | None] | None:
         record = await device_fabric.get(owner_id, device_id)
@@ -555,6 +558,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     )
     register_perception_tools(registry, perception)
     register_computer_tools(registry, computer_actions, target_resolver=resolve_computer_target)
+    register_study_tools(registry, study, computer_actions)
     if effective_config.desktop_awareness_enabled:
         scheduler.add("desktop-metadata-awareness", 10.0, perception.poll_metadata_awareness)
     developer_workers = DeveloperWorkerGateway(enabled=effective_config.codex_worker_enabled)
@@ -710,6 +714,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         communication=local_channel,
         device_fabric=device_fabric,
         computer_actions=computer_actions,
+        study=study,
         application_registry=application_registry,
         browser_actions=browser_actions,
         home=home,

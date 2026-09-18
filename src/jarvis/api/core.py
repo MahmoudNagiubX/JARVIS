@@ -261,6 +261,65 @@ class CoreApplication:
             "refreshed": refresh,
         }
 
+    async def study_resolve(self, owner_id: str, values: dict[str, object]) -> dict[str, Any]:
+        query = values.get("query", values.get("lecture", ""))
+        if not isinstance(query, str):
+            raise ValueError("study_query_required")
+        root = values.get("root")
+        if root is not None and not isinstance(root, str):
+            raise ValueError("study_root_invalid")
+        return asdict(self.runtime.study.resolve(owner_id, query, root=root))
+
+    async def study_prepare(self, owner_id: str, values: dict[str, object]) -> dict[str, Any]:
+        query = values.get("query", values.get("lecture", ""))
+        if not isinstance(query, str):
+            raise ValueError("study_query_required")
+
+        def _optional_text(name: str) -> str | None:
+            value = values.get(name)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"study_{name}_invalid")
+            return value
+
+        checklist = values.get("checklist", ())
+        if not isinstance(checklist, (list, tuple)) or not all(isinstance(item, str) for item in checklist):
+            raise ValueError("study_checklist_invalid")
+        root = values.get("root")
+        if root is not None and not isinstance(root, str):
+            raise ValueError("study_root_invalid")
+        return asdict(self.runtime.study.prepare(
+            owner_id,
+            query,
+            root=root,
+            notes_target=_optional_text("notes_target"),
+            research_query=_optional_text("research_query"),
+            youtube_topic=_optional_text("youtube_topic"),
+            spotify_playlist=_optional_text("spotify_playlist"),
+            checklist=tuple(checklist),
+        ))
+
+    async def study_open(
+        self,
+        identity: Identity,
+        device: DeviceIdentity,
+        values: dict[str, object],
+    ) -> dict[str, Any]:
+        resolution_id = values.get("resolution_id")
+        if not isinstance(resolution_id, str) or not resolution_id.startswith("study-resolution-"):
+            raise ValueError("study_resolution_id_required")
+        candidate_ref = values.get("candidate_ref")
+        if candidate_ref is not None and not isinstance(candidate_ref, str):
+            raise ValueError("study_candidate_ref_invalid")
+        path = self.runtime.study.path_for_open(identity.owner_id, resolution_id, candidate_ref)
+        if path is None:
+            return {"status": "denied", "error_code": "study_resolution_invalid_or_ambiguous", "verified": False}
+        result = await self.runtime.computer_actions.execute(
+            ComputerAction("open_file", {"path": str(path)}, bool(values.get("dry_run", False))),
+            identity,
+            device,
+        )
+        return {"status": result.status, "resolution_id": resolution_id, "candidate_ref": candidate_ref, "computer": asdict(result), "verified": result.verified}
+
     async def set_installed_application_enabled(self, app_ref: str, enabled: bool) -> dict[str, Any]:
         application = self.runtime.application_registry.set_enabled(app_ref, enabled)
         return application.public_dict()

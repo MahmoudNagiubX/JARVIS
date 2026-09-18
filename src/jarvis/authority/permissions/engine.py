@@ -71,6 +71,7 @@ class PolicyPermissionEngine:
             # BrowserActionService owns the inner read/approval decision. The
             # outer tool wrapper must not create a second approval request.
             PermissionRule("tool.browser.", PermissionEffect.ALLOW, "browser_action_boundary"),
+            PermissionRule("tool.study.", PermissionEffect.ALLOW, "bounded_study_workflow"),
             PermissionRule("tool.mcp.", PermissionEffect.ALLOW, "mcp_capability_boundary"),
             PermissionRule("mission.start", PermissionEffect.ALLOW, "bounded_mission_start"),
             PermissionRule("skill.", PermissionEffect.ALLOW, "registered_skill_execution"),

@@ -127,6 +127,7 @@ from .research import (
     ResearchSource,
     ResearchStep,
 )
+from .study import StudyLectureCandidate, StudyPlan, StudyResolution, StudyResolutionStatus, StudyStep
 from .tools import Tool, ToolContext, ToolRegistry, ToolResult, ToolResultRetention, ToolResultStatus
 from .voice import (
     AudioPlayback,
@@ -294,6 +295,11 @@ __all__ = [
     "ResearchRun",
     "ResearchSource",
     "ResearchStep",
+    "StudyLectureCandidate",
+    "StudyPlan",
+    "StudyResolution",
+    "StudyResolutionStatus",
+    "StudyStep",
     "PermissionDecision",
     "PermissionEffect",
     "PermissionEngine",

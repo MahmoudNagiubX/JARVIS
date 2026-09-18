@@ -400,6 +400,18 @@ class CoreHttpServer:
                         self._authenticated(body)
                         self._respond(HTTPStatus.OK, asyncio.run(application.installed_applications(refresh=True)))
                         return
+                    if route == "/study/resolve":
+                        principal = self._authenticated(body)
+                        self._respond(HTTPStatus.OK, asyncio.run(application.study_resolve(principal.identity.owner_id, body)))
+                        return
+                    if route == "/study/prepare":
+                        principal = self._authenticated(body)
+                        self._respond(HTTPStatus.OK, asyncio.run(application.study_prepare(principal.identity.owner_id, body)))
+                        return
+                    if route == "/study/open":
+                        principal = self._authenticated(body)
+                        self._respond(HTTPStatus.OK, asyncio.run(application.study_open(principal.identity, principal.device, body)))
+                        return
                     if route.startswith("/computer/apps/"):
                         parts = route.strip("/").split("/")
                         if len(parts) == 4 and parts[3] == "enabled":

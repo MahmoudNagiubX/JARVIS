@@ -866,6 +866,113 @@ def register_computer_tools(
     ))
 
 
+def register_study_tools(registry: ToolRegistry, study: object, computer_actions: object) -> None:
+    """Expose lecture planning through the existing tool authority."""
+
+    from ..contracts import ComputerAction
+
+    def _owner_context(context: ToolContext) -> tuple[object, object] | None:
+        if context.identity is None or context.device is None:
+            return None
+        return context.identity, context.device
+
+    async def resolve(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        principal = _owner_context(context)
+        query = arguments.get("query")
+        if principal is None:
+            return ToolResult(ToolResultStatus.DENIED, error_code="identity_or_device_missing")
+        if not isinstance(query, str) or not query.strip() or len(query) > 200:
+            return ToolResult(ToolResultStatus.DENIED, error_code="study_query_required")
+        root = arguments.get("root")
+        if root is not None and (not isinstance(root, str) or len(root) > 1000):
+            return ToolResult(ToolResultStatus.DENIED, error_code="study_root_invalid")
+        result = study.resolve(principal[0].owner_id, query, root=root)
+        return ToolResult(ToolResultStatus.SUCCEEDED, _json_safe(result), verified=True)
+
+    async def prepare(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        principal = _owner_context(context)
+        query = arguments.get("query")
+        if principal is None:
+            return ToolResult(ToolResultStatus.DENIED, error_code="identity_or_device_missing")
+        if not isinstance(query, str) or not query.strip() or len(query) > 200:
+            return ToolResult(ToolResultStatus.DENIED, error_code="study_query_required")
+        checklist = arguments.get("checklist", ())
+        if not isinstance(checklist, (list, tuple)) or not all(isinstance(item, str) for item in checklist):
+            return ToolResult(ToolResultStatus.DENIED, error_code="study_checklist_invalid")
+        optional: dict[str, str | None] = {}
+        for name in ("root", "notes_target", "research_query", "youtube_topic", "spotify_playlist"):
+            value = arguments.get(name)
+            if value is not None and (not isinstance(value, str) or len(value) > 1000):
+                return ToolResult(ToolResultStatus.DENIED, error_code=f"study_{name}_invalid")
+            optional[name] = value
+        result = study.prepare(principal[0].owner_id, query, checklist=tuple(checklist), **optional)
+        return ToolResult(ToolResultStatus.SUCCEEDED, _json_safe(result), verified=True)
+
+    async def open_lecture(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        principal = _owner_context(context)
+        resolution_id = arguments.get("resolution_id")
+        candidate_ref = arguments.get("candidate_ref")
+        if principal is None:
+            return ToolResult(ToolResultStatus.DENIED, error_code="identity_or_device_missing")
+        if not isinstance(resolution_id, str) or not resolution_id.startswith("study-resolution-"):
+            return ToolResult(ToolResultStatus.DENIED, error_code="study_resolution_id_required")
+        if candidate_ref is not None and (not isinstance(candidate_ref, str) or not candidate_ref.startswith("lecture-")):
+            return ToolResult(ToolResultStatus.DENIED, error_code="study_candidate_ref_invalid")
+        path = study.path_for_open(principal[0].owner_id, resolution_id, candidate_ref)
+        if path is None:
+            return ToolResult(ToolResultStatus.DENIED, error_code="study_resolution_invalid_or_ambiguous")
+        result = await computer_actions.execute(
+            ComputerAction("open_file", {"path": str(path)}, False),
+            principal[0],
+            principal[1],
+            session_id=context.session_id,
+            correlation_id=context.correlation_id,
+        )
+        try:
+            status = ToolResultStatus(result.status)
+        except ValueError:
+            status = ToolResultStatus.FAILED
+        if status is ToolResultStatus.APPROVAL_REQUIRED:
+            return ToolResult(status, error_code=result.error_code, approval_id=result.approval_id)
+        return ToolResult(
+            status,
+            {"resolution_id": resolution_id, "candidate_ref": candidate_ref, "status": result.status},
+            result.error_code,
+            result.verified,
+        )
+
+    registry.register(ToolSpec(
+        "tool-study-resolve-v1", "study.resolve", "1", "Resolve one lecture inside approved file roots; ambiguity returns candidates.",
+        "read", "tool.request", frozenset(), 15.0, True, resolve,
+        parameters_schema={"type": "object", "properties": {"query": {"type": "string", "maxLength": 200}, "root": {"type": "string", "maxLength": 1000}}, "required": ["query"], "additionalProperties": False},
+        retention=ToolResultRetention.EPHEMERAL, argument_retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-study-prepare-v1", "study.prepare", "1", "Prepare an ordered lecture study plan with truthful optional integration states.",
+        "read", "tool.request", frozenset(), 15.0, True, prepare,
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "maxLength": 200},
+                "root": {"type": "string", "maxLength": 1000},
+                "notes_target": {"type": "string", "maxLength": 1000},
+                "research_query": {"type": "string", "maxLength": 1000},
+                "youtube_topic": {"type": "string", "maxLength": 1000},
+                "spotify_playlist": {"type": "string", "maxLength": 1000},
+                "checklist": {"type": "array", "items": {"type": "string", "maxLength": 200}, "maxItems": 12},
+            },
+            "required": ["query"], "additionalProperties": False,
+        },
+        retention=ToolResultRetention.EPHEMERAL, argument_retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-study-open-v1", "study.open", "1", "Open one previously resolved lecture through the canonical computer boundary.",
+        "safe", "tool.request", frozenset(), 20.0, False, open_lecture,
+        parameters_schema={"type": "object", "properties": {"resolution_id": {"type": "string", "maxLength": 100}, "candidate_ref": {"type": "string", "maxLength": 100}}, "required": ["resolution_id"], "additionalProperties": False},
+        retention=ToolResultRetention.EPHEMERAL, argument_retention=ToolResultRetention.EPHEMERAL,
+    ))
+
+
 def _tool_status(status: str) -> ToolResultStatus:
     if status == "completed":
         return ToolResultStatus.SUCCEEDED
