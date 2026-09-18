@@ -11,7 +11,7 @@
 | Physical voice | PARTIAL | Explicit local wake/VAD/STT/TTS/playback runner and safe local smoke checks; human/operator acceptance remains open; `docs/phase13/evidence/PHYSICAL_LOCAL_VOICE.json` |
 | Windows satellite | PASS | Same-host process-separated Core/typed agent authority-path observation passed; second-host deployment not claimed; bounded evidence in `docs/phase09/evidence/PHYSICAL_COMPUTER_AUTHORITY_ACCEPTANCE.json` |
 | Computer control | PASS | Phase 11 grounded window, clipboard, and literal keyboard acceptance; bounded media-key volume; mute-state query remains explicitly unavailable |
-| Installed desktop applications | PARTIAL | `InstalledApplicationRegistry` and native-first opaque-ref launch/focus path are implemented at `d6848c1`; bounded discovery and deterministic tests pass, but the current physical Notepad probe is launch-only because foreground verification failed closed; no Tier A/B claim |
+| Installed desktop applications | PARTIAL | `InstalledApplicationRegistry` and native-first opaque-ref launch/focus path are implemented at `5a0ea52`; bounded discovery and deterministic tests pass, but the current physical Notepad probe is launch-only because foreground verification failed closed; no Tier A/B claim |
 | Browser/Playwright | PARTIAL | Deterministic controller tested; no Node/Playwright |
 | Authenticated WebSocket | PARTIAL | Loopback handshake, auth, topic allowlist, bounded queue/lifetime; no full client-frame adapter |
 | Jupyter/KiCad | DEFERRED | Adapter boundaries only |

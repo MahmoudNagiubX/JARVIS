@@ -56,7 +56,7 @@ product test is a physical voice claim.
 
 ## Native installed-application acceptance — 2026-09-19
 
-The native application addendum is code-backed at `d6848c1`. The installed-app
+The native application addendum is code-backed at `5a0ea52`. The installed-app
 catalog is bounded to standard Start Menu roots, Windows App Paths, and known
 fallback identities; it returns opaque refs and keeps target paths, launch
 arguments, and fingerprints internal. Use the authenticated local Command

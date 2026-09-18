@@ -349,7 +349,7 @@ owner/configuration-gated and must still supply an independent verifier result.
 
 ## 11D. Native desktop application addendum — 2026-09-19
 
-The native desktop addendum is implemented in `d6848c1` under the existing
+The native desktop addendum is implemented in `5a0ea52` under the existing
 Computer authority. `InstalledApplicationRegistry` discovers only bounded
 standard Windows sources and returns opaque `app_ref` descriptors. Exact
 targets are fingerprinted and revalidated immediately before launch; duplicate
@@ -363,7 +363,7 @@ owner enable/disable, and `AUTO`/`DESKTOP`/`BROWSER`/`API` preferences.
 |---|---|---|
 | Bounded discovery | 162 entries observed from Start Menu/App Paths/known-app sources; no broad disk scan | `PASS` |
 | Opaque model boundary | public descriptors omit raw target paths, launch args, AUMID, process/window identity, and target fingerprint | `PASS` |
-| Deterministic regression | installed-app registry/boundary tests `45 passed` in the focused native boundary set; broader computer/browser/Phase-18 selection `466 passed, 3 skipped, 17 subtests` | `PASS` |
+| Deterministic regression | focused native/authority boundary set `46 passed`; full Python regression `982 passed, 3 skipped, 45 subtests` | `PASS` |
 | Physical generic-app gate | canonical Notepad launch/observation succeeded; foreground verification returned `application_focus_not_verified` in the non-interactive runner; canonical cleanup completed | `PARTIAL` / `LAUNCH_ONLY` |
 | Tier A/B application acceptance | no three-run semantic/postcondition receipt exists | `NOT_CLAIMED` |
 
@@ -410,7 +410,7 @@ them.
 | YouTube | `NOT_CONFIGURED` | No accepted search/open/play workflow is configured. |
 | Study preparation | `NOT_CONFIGURED` | No configured lecture/OneNote/Notion/YouTube/Spotify mission target set exists. |
 | Laptop control | `PARTIAL` | Calculator physical proof is 3/3 and bounded file/input suites pass; safe-paste foreground proof failed closed. |
-| Application control | `PARTIAL` | Native-first bounded installed-app catalog, opaque refs, exact target revalidation, local-only open/focus, and owner surface settings are implemented at `d6848c1`; the physical generic-app probe is launch-only and broad/Tier A/B owner-application acceptance is not claimed. |
+| Application control | `PARTIAL` | Native-first bounded installed-app catalog, opaque refs, exact target revalidation, local-only open/focus, and owner surface settings are implemented at `5a0ea52`; the physical generic-app probe is launch-only and broad/Tier A/B owner-application acceptance is not claimed. |
 | Wake word | `PHYSICAL_PENDING` | Local wake pipeline exists; human reliability acceptance is not complete. |
 | Voice conversation | `PHYSICAL_PENDING` | VoiceCore and local adapters exist; English/Egyptian Arabic/mixed, follow-up, barge-in, and device recovery remain physical gates. |
 | Frontend | `PARTIAL` | React Command Center tests/build pass and routes render truthful state; final physical visual/accessibility review remains open. |

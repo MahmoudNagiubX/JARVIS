@@ -3,11 +3,11 @@
 **Status:** SNAPSHOT / IMPLEMENTATION TRUTH SUMMARY  
 **Reviewed:** 2026-09-19
 **Repository:** `MahmoudNagiubX/JARVIS`  
-**Reviewed HEAD:** `d6848c1`
+**Reviewed HEAD:** `5a0ea52`
 
 > Always compare this file with current HEAD before trusting it in a later chat.
 
-**Final-completion feature-branch checkpoint:** `d6848c1` — bounded desktop
+**Final-completion feature-branch checkpoint:** `5a0ea52` — bounded desktop
 release slices plus the native installed-application control addendum are
 implemented; external/physical release gates remain explicitly partial where
 evidence is unavailable.
@@ -166,7 +166,7 @@ was added; see `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_08.md`.
 
 ### Native desktop application addendum — 2026-09-19
 
-`d6848c1` adds the bounded `InstalledApplicationRegistry` and wires it through
+`5a0ea52` carries the bounded `InstalledApplicationRegistry` and wires it through
 the existing Computer Use authority. Discovery is limited to standard Start
 Menu roots, Windows App Paths, and explicit known-app fallbacks. The UI now
 exposes installed applications and owner-controlled `AUTO`/`DESKTOP`/

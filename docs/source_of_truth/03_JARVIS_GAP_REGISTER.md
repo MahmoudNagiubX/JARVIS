@@ -175,7 +175,7 @@ attempt remained `PARTIAL` (3/3 fail-closed `brave_window_ambiguous`); no
 browser navigation/authentication was attempted. `GAP-0105` remains `PARTIAL`;
 no full multi-application acceptance claim is made.
 
-**Native desktop application addendum (2026-09-19):** `d6848c1` adds the
+**Native desktop application addendum (2026-09-19):** `5a0ea52` carries the
 bounded `InstalledApplicationRegistry` as the preferred local application
 surface. Standard Start Menu roots, Windows App Paths, and explicit known-app
 fallbacks produce opaque `app_ref` descriptors; exact targets are
