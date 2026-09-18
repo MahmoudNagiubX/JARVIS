@@ -11,7 +11,8 @@ the cancellation state is persisted and emitted. Client message ids provide a
 small idempotency/replay boundary.
 
 `LocalWorkerRuntime` provides typed worker requests and results for coding,
-research, browser, engineering, and general-background categories. Handlers
+research, browser, computer, engineering, personal, automation, verifier, and
+general-background categories. Handlers
 are injected adapters with timeout and cancellation boundaries. The optional
 Codex adapter is read-only and workspace-scoped; a missing CLI or unavailable
 provider fails explicitly, and no write-capable external worker is required at

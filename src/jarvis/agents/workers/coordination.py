@@ -73,15 +73,24 @@ class WorkerCoordinator:
             category = "research"
         elif any(word in text for word in ("browser", "web page", "website")):
             category = "browser"
+        elif any(word in text for word in ("laptop", "desktop", "computer", "calculator", "application", "app")):
+            category = "computer"
         elif any(word in text for word in ("build", "code", "test", "debug", "implement")):
             category = "coding"
         elif any(word in text for word in ("circuit", "cad", "notebook")):
             category = "engineering"
+        elif any(word in text for word in ("memory", "personal", "preference")):
+            category = "personal"
+        elif any(word in text for word in ("schedule", "reminder", "automation", "recurring")):
+            category = "automation"
+        elif any(word in text for word in ("verify", "verification", "postcondition")):
+            category = "verifier"
         else:
             category = "general_background"
         if required_capability and required_capability.startswith("browser") and not internet_available:
             return WorkerSelection(category, "internet-required capability unavailable", False, workspace_scope)
-        available = WorkerCategory(category) in self.local.handlers or bool(self.developer_gateway and category == "coding" and any(item.available for item in self.developer_gateway.providers()))
+        gateway_enabled = bool(self.developer_gateway and getattr(self.developer_gateway, "enabled", True))
+        available = WorkerCategory(category) in self.local.handlers or bool(self.developer_gateway and category == "coding" and gateway_enabled and any(item.available for item in self.developer_gateway.providers()))
         return WorkerSelection(category, f"task classified as {category}; local/free preference", available, workspace_scope)
 
     async def run(
@@ -147,7 +156,8 @@ class WorkerCoordinator:
         delegation = WorkerDelegation(f"delegation-{uuid4()}", owner_id, selected.worker, selected.reason, workspace_scope, task[:1_000], result, started, completed)
         self.repository.insert_worker_delegation(delegation)
         await self._emit("worker.delegated", delegation, EventState.ACCEPTED)
-        await self._emit("worker.completed" if result.get("status") in {"succeeded", "completed", "deferred"} else "worker.failed", delegation, EventState.COMPLETED if result.get("status") in {"succeeded", "completed", "deferred"} else EventState.FAILED)
+        execution_succeeded = result.get("status") in {"succeeded", "completed"}
+        await self._emit("worker.completed" if execution_succeeded else "worker.failed", delegation, EventState.COMPLETED if execution_succeeded else EventState.FAILED)
         return delegation
 
     async def _with_verification(self, envelope: SpecialistTaskEnvelope, result: Mapping[str, object]) -> dict[str, object]:
@@ -155,7 +165,7 @@ class WorkerCoordinator:
         normalized = dict(result)
         raw_status = normalized.get("status")
         execution_status = getattr(raw_status, "value", raw_status)
-        if execution_status in {"succeeded", "completed", "deferred"}:
+        if execution_status in {"succeeded", "completed"}:
             if self.verifier is None:
                 verification = WorkerVerification(
                     VerificationStatus.UNVERIFIED,
@@ -163,11 +173,12 @@ class WorkerCoordinator:
                 )
             else:
                 try:
+                    worker_status = WorkerStatus.SUCCEEDED if execution_status == "completed" else WorkerStatus(execution_status)
                     verification = await self.verifier(
                         envelope,
                         WorkerResult(
                             worker_id=str(normalized.get("worker_id", "unknown")),
-                            status=WorkerStatus(str(execution_status)),
+                            status=worker_status,
                             summary=str(normalized.get("summary", "")),
                             artifacts=tuple(str(item) for item in normalized.get("artifacts", ()) or ()),
                             changes=tuple(str(item) for item in normalized.get("changes", ()) or ()),
@@ -178,7 +189,7 @@ class WorkerCoordinator:
                     )
                 except Exception as exc:
                     verification = WorkerVerification(VerificationStatus.FAILED, f"verifier_failed:{exc.__class__.__name__}")
-        elif execution_status == "approval_required":
+        elif execution_status in {"deferred", "approval_required"}:
             verification = WorkerVerification(VerificationStatus.UNVERIFIED, "approval_required_before_execution")
         else:
             verification = WorkerVerification(VerificationStatus.FAILED, str(normalized.get("error_code") or "worker_execution_failed"))

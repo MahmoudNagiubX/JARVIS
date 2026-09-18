@@ -324,6 +324,29 @@ T04 remains `NOT_CONFIGURED` by design. The installed binary is not treated as
 authority, and no Google/Antigravity authentication, external delegation, or
 second worker control path was added.
 
+## 11C. T05 delegation and verification continuation
+
+The existing `WorkerCoordinator` remains the single delegation authority. Its
+bounded roster now distinguishes coding, research, browser, computer,
+engineering, personal, automation, verifier, and general-background work. An
+external provider result of `completed` is normalized to the canonical worker
+`succeeded` state before independent verification; deferred or approval-paused
+work is never emitted as worker completion.
+
+| Check | Evidence | Truth |
+|---|---|---|
+| Task envelope | owner/mission/goal/scope/capabilities/budget/deadline/cancellation/evidence/expected output/verifier requirements | PASS |
+| Enabled Codex route | fixture adapter through `WorkerCoordinator` and `DeveloperWorkerGateway` | PASS |
+| Independent verifier | fixture scope readback returned `verified` with bounded evidence | PASS |
+| Owner/audit persistence | repository owner foreign key and delegation/event path | PASS |
+| Focused T05 regression | developer-worker, coordinator, worker-runtime, and audit suites | `40 passed` |
+| Full Python regression after T05 | repository suite | `971 passed, 3 skipped, 45 subtests` |
+| Live Codex task | prior disposable smoke timed out before provider output | `PARTIAL`; no live coding acceptance claimed |
+
+The end-to-end fixture is deterministic evidence of the coordinator boundary,
+not live provider or physical acceptance. A real Codex coding run remains
+owner/configuration-gated and must still supply an independent verifier result.
+
 ## 12. Ultimate Completion Requirement Matrix
 
 This matrix is evaluated against the current feature-branch HEAD
@@ -345,7 +368,7 @@ them.
 | Gemini `gemini-3.5-flash` | `NOT_CONFIGURED` | Optional GenerateContent adapter, transient inline media path, and visual fallback route are implemented; `JARVIS_GEMINI_ENABLED` and `GEMINI_API_KEY` are not configured. |
 | Codex worker | `PARTIAL` | Exact local Codex CLI is discovered and routed through a bounded read-only workspace adapter; focused tests pass, while the disposable live smoke timed out before provider output and no independent verification/live authentication is accepted. |
 | AntiGravity delegation | `NOT_CONFIGURED` | No approved installed adapter or manual authentication is present; no invocation was attempted. |
-| Agent orchestration | `PARTIAL` | AgentRuntime, missions, worker envelope, permissions, approvals, and verification state are implemented; full live daily-use acceptance remains open. |
+| Agent orchestration | `PARTIAL` | AgentRuntime, missions, typed worker roster/envelope, bounded Codex routing, permissions, approvals, and independent worker verification are implemented/tested; live provider/authentication and full daily-use acceptance remain open. |
 | Brave control | `PARTIAL` | Public dedicated-profile Browser V2 lifecycle passed; authenticated owner navigation/action acceptance is not proven. |
 | Web search | `PARTIAL` | Bounded browser/research seams exist; current live multi-source owner search was not accepted. |
 | Research | `PARTIAL` | Local evidence ledger, restart reconciliation, and deterministic research tests pass; owner web-research acceptance remains open. |

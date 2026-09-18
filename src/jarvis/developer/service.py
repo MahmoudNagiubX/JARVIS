@@ -166,6 +166,10 @@ class DeveloperWorkerGateway:
     def providers(self) -> tuple[DeveloperWorkerProvider, ...]:
         return self._providers
 
+    @property
+    def enabled(self) -> bool:
+        return self.adapter is not None
+
     async def run(self, provider: str, task: str, workspace_scope: str | None = None, *, timeout_seconds: float = 60.0) -> dict[str, object]:
         selected = next((item for item in self._providers if item.name == provider), None)
         if selected is None or not selected.available:

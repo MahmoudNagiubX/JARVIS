@@ -14,7 +14,11 @@ class WorkerCategory(StrEnum):
     CODING = "coding"
     RESEARCH = "research"
     BROWSER = "browser"
+    COMPUTER = "computer"
     ENGINEERING = "engineering"
+    PERSONAL = "personal"
+    AUTOMATION = "automation"
+    VERIFIER = "verifier"
     GENERAL_BACKGROUND = "general_background"
 
 

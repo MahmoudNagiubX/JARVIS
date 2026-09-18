@@ -7,6 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from jarvis.agents.workers.coordination import WorkerCoordinator
+from jarvis.agents.workers.runtime import VerificationStatus, WorkerVerification
+from jarvis.bootstrap import create_runtime
 from jarvis.contracts import DeveloperWorkerProvider
 from jarvis.config import JarvisConfig
 from jarvis.developer.service import CodexDeveloperWorkerAdapter, DeveloperWorkerGateway, _ProcessExecution
@@ -104,3 +107,48 @@ class DeveloperWorkerTests(unittest.IsolatedAsyncioTestCase):
             enabled = DeveloperWorkerGateway(enabled=True)
         self.assertIsNone(discovery_only.adapter)
         self.assertIsInstance(enabled.adapter, CodexDeveloperWorkerAdapter)
+
+    async def test_coordinator_routes_enabled_worker_through_independent_verifier(self) -> None:
+        runtime = create_runtime(JarvisConfig(environment="test", database_path=":memory:"))
+        await runtime.start()
+        identity = await runtime.identity.bootstrap_owner("Developer Worker Fixture")
+
+        class ObjectAdapter:
+            async def run(self, task: str, scope: str | None, timeout: float) -> dict[str, object]:
+                return {
+                    "status": "completed",
+                    "provider": "codex",
+                    "worker_id": "codex-fixture",
+                    "summary": f"bounded: {task}",
+                    "changes": [],
+                    "timeout": timeout,
+                    "scope": scope,
+                }
+
+        try:
+            gateway = DeveloperWorkerGateway(adapter=ObjectAdapter())
+            gateway._providers = (DeveloperWorkerProvider("codex", "codex", True, "fixture"),)
+            observed: dict[str, object] = {}
+
+            async def verifier(envelope, result):
+                observed.update(task_id=envelope.task_id, scope=envelope.scope, status=result.status.value)
+                return WorkerVerification(VerificationStatus.VERIFIED, "fixture_readback", ("scope-unchanged",))
+
+            with tempfile.TemporaryDirectory() as folder:
+                Path(folder, ".git").mkdir()
+                coordinator = WorkerCoordinator(runtime.repository, runtime.event_bus, developer_gateway=gateway, verifier=verifier)
+                delegation = await coordinator.run(
+                    identity.owner_id,
+                    "implement the bounded fixture change",
+                    workspace_scope=folder,
+                    expected_output=("summary",),
+                    verifier_requirements=("scope-unchanged",),
+                )
+
+            self.assertEqual(delegation.worker, "coding")
+            self.assertEqual(delegation.result["status"], "completed")
+            self.assertEqual(delegation.result["verification_status"], VerificationStatus.VERIFIED.value)
+            self.assertEqual(delegation.result["verification_evidence"], ["scope-unchanged"])
+            self.assertEqual(observed["status"], "succeeded")
+        finally:
+            await runtime.shutdown()
