@@ -306,6 +306,24 @@ not produce provider output, so no authenticated/live worker acceptance is
 claimed. Results remain `UNVERIFIED` unless the existing independent verifier
 callback supplies evidence; no write-capable path was added.
 
+## 11B. T04 optional Antigravity boundary
+
+The explicitly named Antigravity executable was inspected at its standard
+resolved path without launching it or installing anything:
+
+| Check | Evidence | Truth |
+|---|---|---|
+| Exact executable | `C:\Users\mahmo\AppData\Local\agy\bin\agy.exe` | discovered |
+| CLI version | `1.2.2` | recorded |
+| Authenticode | `Valid`, signer `Google LLC` | recorded |
+| SHA-256 | `80A029A8F22DCCC123FD39453BD4D51C93D6384D4F365993A3D5ACCFA4AF4B47` | recorded |
+| Product adapter/authentication | no approved JARVIS adapter or owner-authenticated delegation session | `NOT_CONFIGURED` |
+| Invocation | none; no coding agent was delegated | `NOT_RUN` |
+
+T04 remains `NOT_CONFIGURED` by design. The installed binary is not treated as
+authority, and no Google/Antigravity authentication, external delegation, or
+second worker control path was added.
+
 ## 12. Ultimate Completion Requirement Matrix
 
 This matrix is evaluated against the current feature-branch HEAD
