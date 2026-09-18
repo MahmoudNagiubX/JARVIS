@@ -359,6 +359,55 @@ def register_computer_tools(
             return await execute_action(operation, {}, arguments, context)
         return ToolResult(ToolResultStatus.DENIED, error_code="audio_operation_invalid")
 
+    async def apps_list(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        if set(arguments) - {"target_device_id"}:
+            return ToolResult(ToolResultStatus.DENIED, error_code="application_catalog_parameters_invalid")
+        return await execute_action("list_applications", {}, arguments, context)
+
+    async def apps_find(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        if set(arguments) - {"query", "target_device_id"}:
+            return ToolResult(ToolResultStatus.DENIED, error_code="application_query_parameters_invalid")
+        query = arguments.get("query")
+        if not isinstance(query, str) or not query.strip() or len(query) > 200:
+            return ToolResult(ToolResultStatus.DENIED, error_code="application_query_required")
+        return await execute_action("find_application", {"query": query}, arguments, context)
+
+    async def application_status(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        if set(arguments) - {"app_ref", "target_device_id"}:
+            return ToolResult(ToolResultStatus.DENIED, error_code="application_status_parameters_invalid")
+        app_ref = arguments.get("app_ref")
+        if not isinstance(app_ref, str) or not app_ref.startswith("app-"):
+            return ToolResult(ToolResultStatus.DENIED, error_code="application_ref_required")
+        return await execute_action("application_status", {"app_ref": app_ref}, arguments, context)
+
+    async def application_open(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        if set(arguments) - {"app_ref", "application", "target_device_id"}:
+            return ToolResult(ToolResultStatus.DENIED, error_code="application_open_parameters_invalid")
+        app_ref = arguments.get("app_ref")
+        application = arguments.get("application")
+        if (app_ref is None) == (application is None):
+            return ToolResult(ToolResultStatus.DENIED, error_code="application_ref_or_alias_required")
+        if app_ref is not None and (not isinstance(app_ref, str) or not app_ref.startswith("app-")):
+            return ToolResult(ToolResultStatus.DENIED, error_code="application_ref_required")
+        if application is not None and (not isinstance(application, str) or not application.strip() or len(application) > 200):
+            return ToolResult(ToolResultStatus.DENIED, error_code="application_alias_invalid")
+        parameters = {"app_ref": app_ref} if app_ref is not None else {"application": application}
+        return await execute_action("open_application", parameters, arguments, context)
+
+    async def application_focus(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        if set(arguments) - {"app_ref", "application", "target_device_id"}:
+            return ToolResult(ToolResultStatus.DENIED, error_code="application_focus_parameters_invalid")
+        app_ref = arguments.get("app_ref")
+        application = arguments.get("application")
+        if (app_ref is None) == (application is None):
+            return ToolResult(ToolResultStatus.DENIED, error_code="application_ref_or_alias_required")
+        if app_ref is not None and (not isinstance(app_ref, str) or not app_ref.startswith("app-")):
+            return ToolResult(ToolResultStatus.DENIED, error_code="application_ref_required")
+        if application is not None and (not isinstance(application, str) or not application.strip() or len(application) > 200):
+            return ToolResult(ToolResultStatus.DENIED, error_code="application_alias_invalid")
+        parameters = {"app_ref": app_ref} if app_ref is not None else {"application": application}
+        return await execute_action("focus_application", parameters, arguments, context)
+
     async def window(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
         if arguments.get("operation") not in {"minimize", "maximize", "restore"}:
             return ToolResult(ToolResultStatus.DENIED, error_code="window_operation_invalid")
@@ -555,6 +604,41 @@ def register_computer_tools(
         # tool is only a typed entry boundary, matching pointer/semantic act.
         return await execute_action("left_click_visual", {"visual_ref": visual_ref}, arguments, context)
 
+    registry.register(ToolSpec(
+        "tool-computer-apps-list-v1", "computer.apps.list", "1",
+        "List the bounded, verified installed desktop application catalog. Raw executable paths and private app data are never returned.",
+        "read", "tool.request", frozenset({"computer.observe"}), 20.0, True, apps_list,
+        parameters_schema={"type": "object", "properties": {"target_device_id": {"type": "string", "maxLength": 200}}, "additionalProperties": False},
+        retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-apps-find-v1", "computer.apps.find", "1",
+        "Resolve one exact installed-app alias to an opaque app_ref; duplicate identities fail closed.",
+        "read", "tool.request", frozenset({"computer.observe"}), 20.0, True, apps_find,
+        parameters_schema={"type": "object", "properties": {"query": {"type": "string", "maxLength": 200}, "target_device_id": {"type": "string", "maxLength": 200}}, "required": ["query"], "additionalProperties": False},
+        retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-application-status-v1", "computer.application.status", "1",
+        "Read installed-app identity, support tier, login status, and current verified window state for an opaque app_ref.",
+        "read", "tool.request", frozenset({"computer.observe"}), 20.0, True, application_status,
+        parameters_schema={"type": "object", "properties": {"app_ref": {"type": "string", "maxLength": 100}, "target_device_id": {"type": "string", "maxLength": 200}}, "required": ["app_ref"], "additionalProperties": False},
+        retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-open-application-v1", "computer.open_application", "1",
+        "Open or focus one exact verified installed desktop application by opaque app_ref or exact alias. No arbitrary executable path or shell command is accepted.",
+        "safe", "tool.request", frozenset({"computer.input"}), 20.0, False, application_open,
+        parameters_schema={"type": "object", "properties": {"app_ref": {"type": "string", "maxLength": 100}, "application": {"type": "string", "maxLength": 200}, "target_device_id": {"type": "string", "maxLength": 200}}, "additionalProperties": False},
+        argument_retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-focus-application-v1", "computer.focus_application", "1",
+        "Focus one exact verified installed desktop application window without launching an arbitrary process.",
+        "safe", "tool.request", frozenset({"computer.input"}), 20.0, False, application_focus,
+        parameters_schema={"type": "object", "properties": {"app_ref": {"type": "string", "maxLength": 100}, "application": {"type": "string", "maxLength": 200}, "target_device_id": {"type": "string", "maxLength": 200}}, "additionalProperties": False},
+        argument_retention=ToolResultRetention.EPHEMERAL,
+    ))
     registry.register(ToolSpec(
         "tool-computer-audio-adjust-v1", "computer.audio.adjust", "1", "Adjust local Windows audio by bounded media-key steps.",
         "safe", "tool.request", frozenset({"computer.input"}), 10.0, True, audio,

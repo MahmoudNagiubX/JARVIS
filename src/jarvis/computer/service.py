@@ -29,6 +29,12 @@ from ..contracts.semantic_ui import SemanticDesktopAdapter, SemanticElementSnaps
 from ..events import Event, EventCategory, EventState
 from ..persistence.repositories import RuntimeRepository
 from ..perception.windows import WindowsDesktopProvider
+from .applications import (
+    ApplicationLaunchKind,
+    ApplicationLookup,
+    InstalledApplication,
+    InstalledApplicationRegistry,
+)
 from .file_access import FileAccessPolicy
 from .native_input import NativeInputResult, WindowsNativeInputAdapter
 from .semantic_uia import WindowsUIAutomationAdapter
@@ -63,6 +69,8 @@ class WindowsNativeComputerController:
 
     MAX_SEMANTIC_DEPTH = 5
     DEFAULT_SEMANTIC_DEPTH = 3
+    APPLICATION_SETTLE_SECONDS = 4.0
+    APPLICATION_POLL_SECONDS = 0.15
 
     def __init__(
         self,
@@ -73,6 +81,7 @@ class WindowsNativeComputerController:
         file_access_policy: FileAccessPolicy | None = None,
         visual_ocr_adapter: EasyOcrVisualAdapter | None = None,
         ocr_model_dir: str | None = None,
+        application_registry: InstalledApplicationRegistry | None = None,
     ) -> None:
         self.perception_provider = perception_provider or WindowsDesktopProvider()
         self.semantic_adapter = semantic_adapter or WindowsUIAutomationAdapter(self.perception_provider)
@@ -87,6 +96,7 @@ class WindowsNativeComputerController:
         self.visual_ocr_adapter = visual_ocr_adapter or EasyOcrVisualAdapter(
             self.perception_provider, self.semantic_adapter, model_dir=ocr_model_dir,
         )
+        self.application_registry = application_registry or InstalledApplicationRegistry()
         self._user32 = None
         self._kernel32 = None
         if platform.system().casefold() == "windows":
@@ -104,8 +114,16 @@ class WindowsNativeComputerController:
         if platform.system().casefold() != "windows":
             return ComputerResult("failed", error_code="windows_backend_unavailable")
         try:
+            if capability is ComputerCapability.LIST_APPLICATIONS:
+                return await asyncio.to_thread(self._list_applications)
+            if capability is ComputerCapability.FIND_APPLICATION:
+                return await asyncio.to_thread(self._find_application, action.parameters)
+            if capability is ComputerCapability.APPLICATION_STATUS:
+                return await asyncio.to_thread(self._application_status, action.parameters, context.device.device_id)
             if capability is ComputerCapability.OPEN_APPLICATION:
-                return await asyncio.to_thread(self._open_application, action.parameters)
+                return await asyncio.to_thread(self._open_application, action.parameters, context.device.device_id)
+            if capability is ComputerCapability.FOCUS_APPLICATION:
+                return await asyncio.to_thread(self._focus_application, action.parameters, context.device.device_id)
             if capability is ComputerCapability.OPEN_FILE:
                 return await asyncio.to_thread(self._open_path, action.parameters, "file")
             if capability is ComputerCapability.OPEN_FOLDER:
@@ -192,16 +210,194 @@ class WindowsNativeComputerController:
         except (OSError, ValueError) as exc:
             return ComputerResult("failed", error_code=str(exc) or exc.__class__.__name__)
 
-    def _open_application(self, parameters: Mapping[str, Any]) -> ComputerResult:
-        name = str(parameters.get("application", parameters.get("name", ""))).casefold().strip()
-        executable = self.SAFE_APPLICATIONS.get(name)
+    def _list_applications(self) -> ComputerResult:
+        applications = self.application_registry.public_list()
+        return ComputerResult(
+            "succeeded",
+            {"applications": list(applications), "count": len(applications), "source": "bounded_windows_sources"},
+            verified=True,
+        )
+
+    def _find_application(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        if set(parameters) != {"query"} or not isinstance(parameters.get("query"), str) or not parameters["query"].strip():
+            return ComputerResult("denied", error_code="application_query_required")
+        lookup = self.application_registry.find(str(parameters["query"]))
+        output: dict[str, object] = {
+            "status": lookup.status,
+            "reason": lookup.reason,
+            "matches": [item.public_dict() for item in lookup.matches],
+        }
+        if lookup.application is not None:
+            output["application"] = lookup.application.public_dict()
+        return ComputerResult("succeeded", output, verified=True)
+
+    def _application_status(self, parameters: Mapping[str, Any], device_id: str) -> ComputerResult:
+        if set(parameters) != {"app_ref"} or not isinstance(parameters.get("app_ref"), str):
+            return ComputerResult("denied", error_code="application_ref_required")
+        app = self.application_registry.get(str(parameters["app_ref"]))
+        if app is None:
+            return ComputerResult("succeeded", {"status": "not_found", "reason": "application_ref_not_found"}, verified=True)
+        prepared = self.application_registry.prepare_launch(app.app_ref)
+        windows = self._matching_application_windows(app, device_id)
+        payload = app.public_dict() | {
+            "status": "ready" if prepared.status == "ready" else prepared.status,
+            "launch_reason": prepared.reason,
+            "running": bool(windows),
+            "window_count": len(windows),
+            "focused": sum(1 for item in windows if item.active) == 1,
+        }
+        return ComputerResult("succeeded", payload, verified=prepared.status in {"ready", "denied"})
+
+    def _open_application(self, parameters: Mapping[str, Any], device_id: str = "") -> ComputerResult:
+        # Keep the old private unit-test seam callable for historical tests
+        # that construct this controller with ``__new__``.  A production
+        # controller always has an application registry and therefore takes
+        # the verified observe/launch/focus path below.
+        if not hasattr(self, "application_registry"):
+            return self._legacy_open_application(parameters)
+        lookup = self._application_lookup(parameters)
+        if lookup.status == "ambiguous":
+            return ComputerResult("denied", error_code="application_identity_ambiguous")
+        if lookup.status != "matched" or lookup.application is None:
+            return ComputerResult("failed", error_code="application_not_installed" if lookup.status == "not_found" else lookup.reason)
+        app = lookup.application
+        prepared = self.application_registry.prepare_launch(app.app_ref)
+        if prepared.status != "ready" or prepared.application is None or prepared.target is None:
+            return ComputerResult(
+                "denied" if prepared.status == "denied" else "failed",
+                error_code=prepared.reason or "application_launch_unavailable",
+            )
+        existing = self._select_application_window(app, self._matching_application_windows(app, device_id))
+        if existing is not None:
+            return self._focus_verified_application_window(app, existing, device_id, mode="focused")
+        try:
+            subprocess.Popen([str(prepared.target), *prepared.arguments], shell=False, close_fds=True)
+        except OSError:
+            return ComputerResult("failed", error_code="application_launch_failed")
+        observed = self._wait_for_application_window(app, device_id)
+        if observed is None:
+            return ComputerResult("failed", error_code="application_window_not_verified")
+        return self._focus_verified_application_window(app, observed, device_id, mode="launched")
+
+    @classmethod
+    def _legacy_open_application(cls, parameters: Mapping[str, Any]) -> ComputerResult:
+        name = str(parameters.get("application", "")).casefold().strip()
+        executable = cls.SAFE_APPLICATIONS.get(name)
         if executable is None:
             return ComputerResult("denied", error_code="application_not_allowlisted")
-        resolved = shutil.which(executable)
-        if resolved is None:
-            return ComputerResult("failed", {"application": name}, "application_not_installed")
-        subprocess.Popen([resolved, *self.SAFE_APPLICATION_ARGUMENTS.get(name, ())], shell=False, close_fds=True)
-        return ComputerResult("succeeded", {"application": name, "executable": resolved}, verified=True)
+        target = shutil.which(executable)
+        if target is None:
+            return ComputerResult("failed", error_code="application_not_found")
+        try:
+            subprocess.Popen(
+                [target, *cls.SAFE_APPLICATION_ARGUMENTS.get(name, ())],
+                shell=False,
+                close_fds=True,
+            )
+        except OSError:
+            return ComputerResult("failed", error_code="application_launch_failed")
+        return ComputerResult("succeeded", {"application": name, "mode": "legacy_compatibility"}, verified=True)
+
+    def _focus_application(self, parameters: Mapping[str, Any], device_id: str) -> ComputerResult:
+        lookup = self._application_lookup(parameters)
+        if lookup.status == "ambiguous":
+            return ComputerResult("denied", error_code="application_identity_ambiguous")
+        if lookup.status != "matched" or lookup.application is None:
+            return ComputerResult("failed", error_code="application_not_installed" if lookup.status == "not_found" else lookup.reason)
+        app = lookup.application
+        prepared = self.application_registry.prepare_launch(app.app_ref)
+        if prepared.status != "ready":
+            return ComputerResult("denied" if prepared.status == "denied" else "failed", error_code=prepared.reason or "application_focus_unavailable")
+        existing = self._select_application_window(app, self._matching_application_windows(app, device_id))
+        if existing is None:
+            return ComputerResult("failed", error_code="application_window_not_found")
+        return self._focus_verified_application_window(app, existing, device_id, mode="focused")
+
+    def _application_lookup(self, parameters: Mapping[str, Any]) -> ApplicationLookup:
+        allowed = {"app_ref", "application", "name"}
+        if set(parameters) - allowed:
+            return ApplicationLookup("not_found", reason="application_parameters_invalid")
+        app_ref = parameters.get("app_ref")
+        if app_ref is not None:
+            if not isinstance(app_ref, str) or not app_ref.startswith("app-"):
+                return ApplicationLookup("not_found", reason="application_ref_required")
+            return self.application_registry.find(app_ref)
+        name = parameters.get("application", parameters.get("name"))
+        if not isinstance(name, str) or not name.strip():
+            return ApplicationLookup("not_found", reason="application_query_required")
+        return self.application_registry.find(name)
+
+    def _matching_application_windows(self, app: InstalledApplication, device_id: str) -> tuple[Any, ...]:
+        try:
+            context = self.perception_provider.desktop_context(device_id)
+        except (OSError, RuntimeError, ValueError):
+            return ()
+        return tuple(
+            window for window in context.windows
+            if self._window_matches_application(app, window.process_name, window.title)
+        )
+
+    @staticmethod
+    def _window_matches_application(app: InstalledApplication, process_name: str | None, title: str | None) -> bool:
+        process = str(process_name or "").casefold()
+        if process and process in app.process_identity:
+            if process in {"applicationframehost.exe", "calculatorapp.exe"}:
+                title_value = str(title or "").casefold()
+                return bool(title_value and any(rule.casefold() in title_value for rule in app.window_identity_rules))
+            return True
+        # MSIX windows can be hosted by a generic shell process.  Only accept
+        # a bounded visible title rule in that case; never use a model-supplied
+        # title or a raw window handle as identity.
+        if app.launch_kind is not ApplicationLaunchKind.MSIX and not any(
+            host in app.process_identity for host in {"applicationframehost.exe", "calculatorapp.exe"}
+        ):
+            return False
+        title_value = str(title or "").casefold()
+        return bool(title_value and any(rule.casefold() in title_value for rule in app.window_identity_rules))
+
+    @staticmethod
+    def _select_application_window(app: InstalledApplication, windows: tuple[Any, ...]) -> Any | None:
+        del app
+        if len(windows) == 1:
+            return windows[0]
+        active = tuple(window for window in windows if window.active)
+        return active[0] if len(active) == 1 else None
+
+    def _wait_for_application_window(self, app: InstalledApplication, device_id: str) -> Any | None:
+        deadline = time.monotonic() + self.APPLICATION_SETTLE_SECONDS
+        while time.monotonic() < deadline:
+            windows = self._matching_application_windows(app, device_id)
+            selected = self._select_application_window(app, windows)
+            if selected is not None:
+                return selected
+            time.sleep(self.APPLICATION_POLL_SECONDS)
+        return None
+
+    def _focus_verified_application_window(self, app: InstalledApplication, window: Any, device_id: str, *, mode: str) -> ComputerResult:
+        window_ref = getattr(window, "window_ref", None)
+        if not isinstance(window_ref, str) or not window_ref.startswith("window-"):
+            return ComputerResult("failed", error_code="application_window_identity_missing")
+        try:
+            focused = self.perception_provider.focus_window(window_ref)
+        except (OSError, RuntimeError, ValueError):
+            focused = False
+        if not focused:
+            return ComputerResult("failed", error_code="application_focus_not_verified")
+        refreshed = self._matching_application_windows(app, device_id)
+        active = tuple(item for item in refreshed if item.active)
+        if len(active) != 1 or not self._window_matches_application(app, active[0].process_name, active[0].title):
+            return ComputerResult("failed", error_code="application_focus_not_verified")
+        return ComputerResult(
+            "succeeded",
+            {
+                "app_ref": app.app_ref,
+                "display_name": app.display_name,
+                "mode": mode,
+                "window_ref": active[0].window_ref,
+                "window_verified": True,
+            },
+            verified=True,
+        )
 
     def _open_path(self, parameters: Mapping[str, Any], kind: str) -> ComputerResult:
         raw_path = parameters.get("path")
@@ -970,6 +1166,9 @@ class ComputerActionService:
     """Common permission, audit, event, and controller boundary."""
 
     _read_actions = frozenset({
+        ComputerCapability.LIST_APPLICATIONS.value,
+        ComputerCapability.FIND_APPLICATION.value,
+        ComputerCapability.APPLICATION_STATUS.value,
         ComputerCapability.LIST_PROCESSES.value,
         ComputerCapability.INSPECT_FILE.value,
         ComputerCapability.SEARCH_FILES.value,
@@ -994,6 +1193,7 @@ class ComputerActionService:
         ComputerCapability.STOP_SAFE_PROCESS.value,
         ComputerCapability.SEARCH_FILES.value,
         ComputerCapability.FOCUS_WINDOW.value,
+        ComputerCapability.FOCUS_APPLICATION.value,
     })
     # Every action grounded by an element_ref requires a target-aware,
     # time-bounded approval (R18B01-004, generalized by R18B02-001): the
@@ -1090,10 +1290,22 @@ class ComputerActionService:
             return ComputerResult("denied", error_code="target_owner_mismatch")
         capability = f"computer.{action.action}"
         required = "computer.observe" if action.action in self._read_actions else "computer.input"
+        risk_level = "read" if action.action in self._read_actions or action.action in self._safe_actions else "consequential"
+        if action.action == ComputerCapability.OPEN_APPLICATION.value and adapter == "local":
+            local_controller = getattr(self.controller, "local", self.controller)
+            registry = getattr(local_controller, "application_registry", None)
+            if registry is not None:
+                lookup = registry.find(
+                    str(action.parameters.get("app_ref"))
+                    if isinstance(action.parameters.get("app_ref"), str)
+                    else str(action.parameters.get("application", action.parameters.get("name", ""))),
+                )
+                if lookup.application is not None and lookup.application.risk_class == "system":
+                    risk_level = "consequential"
         decision = await self.permission.evaluate(identity, device, capability, {
             "required_scope": "tool.request",
             "required_capabilities": frozenset({required}),
-            "risk_level": "read" if action.action in self._read_actions or action.action in self._safe_actions else "consequential",
+            "risk_level": risk_level,
         })
         await self._audit(
             identity,

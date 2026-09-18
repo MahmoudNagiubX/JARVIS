@@ -54,8 +54,12 @@ function Workspace({ api, initialSession }: { api: ApiClient; initialSession?: J
         const payload = await api.get<{ runs?: unknown[] }>('/research/runs')
         setScreenDataState((current) => ({ ...current, research: list(payload.runs) }))
       } else if (path === '/settings') {
-        const [health, profile] = await Promise.all([api.get<Record<string, unknown>>('/health'), api.get<Record<string, unknown>>('/personalization/profile')])
-        setScreenDataState((current) => ({ ...current, health: record(health), profile: record(profile) }))
+        const [health, profile, applications] = await Promise.all([
+          api.get<Record<string, unknown>>('/health'),
+          api.get<Record<string, unknown>>('/personalization/profile'),
+          api.get<{ applications?: unknown[] }>('/computer/apps'),
+        ])
+        setScreenDataState((current) => ({ ...current, health: record(health), applications: list(applications.applications), profile: record(profile) }))
       }
     } catch (error) {
       setError(error instanceof Error ? error.message : 'The local screen could not be loaded.')

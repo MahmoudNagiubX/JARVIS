@@ -252,6 +252,23 @@ class CoreApplication:
             "mcp_reporting": await self.runtime.mcp.health_report(),
         }
 
+    async def installed_applications(self, *, refresh: bool = False) -> dict[str, Any]:
+        applications = self.runtime.application_registry.public_list(refresh=refresh)
+        return {
+            "applications": list(applications),
+            "count": len(applications),
+            "source": "bounded_windows_sources",
+            "refreshed": refresh,
+        }
+
+    async def set_installed_application_enabled(self, app_ref: str, enabled: bool) -> dict[str, Any]:
+        application = self.runtime.application_registry.set_enabled(app_ref, enabled)
+        return application.public_dict()
+
+    async def set_installed_application_surface(self, app_ref: str, surface: str) -> dict[str, Any]:
+        application = self.runtime.application_registry.set_surface_preference(app_ref, surface)
+        return application.public_dict()
+
     async def satellite_connect(self, principal: DemoPrincipal, values: dict[str, object]) -> dict[str, Any]:
         capabilities = values.get("capabilities", ())
         if not isinstance(capabilities, (list, tuple)):

@@ -18,7 +18,11 @@ class ComputerAction:
 
 
 class ComputerCapability(StrEnum):
+    LIST_APPLICATIONS = "list_applications"
+    FIND_APPLICATION = "find_application"
+    APPLICATION_STATUS = "application_status"
     OPEN_APPLICATION = "open_application"
+    FOCUS_APPLICATION = "focus_application"
     CLOSE_APPLICATION = "close_application"
     FOCUS_WINDOW = "focus_window"
     CHANGE_VOLUME = "change_volume"

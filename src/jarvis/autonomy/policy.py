@@ -10,9 +10,13 @@ from ..contracts import AutonomyDecision, AutonomyLevel, AutonomyRule
 class AutonomyPolicy:
     def __init__(self, rules: Sequence[AutonomyRule] = ()) -> None:
         self.rules = tuple(rules) or (
+            AutonomyRule("computer.list_applications", AutonomyLevel.OBSERVE, "bounded installed application catalog"),
+            AutonomyRule("computer.find_application", AutonomyLevel.OBSERVE, "exact installed application resolution"),
+            AutonomyRule("computer.application_status", AutonomyLevel.OBSERVE, "bounded installed application status"),
             AutonomyRule("project.tests.run", AutonomyLevel.SAFE_AUTO, "bounded local test runner"),
             AutonomyRule("workspace.inspect", AutonomyLevel.SAFE_AUTO, "read-only workspace inspection"),
             AutonomyRule("computer.open_application", AutonomyLevel.SAFE_AUTO, "allowlisted application launch"),
+            AutonomyRule("computer.focus_application", AutonomyLevel.SAFE_AUTO, "verified application focus"),
             AutonomyRule("computer.change_volume", AutonomyLevel.SAFE_AUTO, "local volume adjustment"),
             AutonomyRule("computer.mute", AutonomyLevel.SAFE_AUTO, "local mute toggle"),
             AutonomyRule("computer.unmute", AutonomyLevel.SAFE_AUTO, "local unmute toggle"),

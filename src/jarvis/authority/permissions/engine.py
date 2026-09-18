@@ -64,6 +64,10 @@ class PolicyPermissionEngine:
             # The outer wrapper only gates entry; the inner computer action is
             # consequential and creates the canonical owner-approval request.
             PermissionRule("tool.computer.visual.act", PermissionEffect.ALLOW, "computer_visual_act_boundary"),
+            PermissionRule("tool.computer.apps.", PermissionEffect.ALLOW, "computer_application_catalog_boundary"),
+            PermissionRule("tool.computer.application.", PermissionEffect.ALLOW, "computer_application_catalog_boundary"),
+            PermissionRule("tool.computer.open_application", PermissionEffect.ALLOW, "computer_application_boundary"),
+            PermissionRule("tool.computer.focus_application", PermissionEffect.ALLOW, "computer_application_boundary"),
             # BrowserActionService owns the inner read/approval decision. The
             # outer tool wrapper must not create a second approval request.
             PermissionRule("tool.browser.", PermissionEffect.ALLOW, "browser_action_boundary"),
@@ -71,6 +75,10 @@ class PolicyPermissionEngine:
             PermissionRule("mission.start", PermissionEffect.ALLOW, "bounded_mission_start"),
             PermissionRule("skill.", PermissionEffect.ALLOW, "registered_skill_execution"),
             PermissionRule("computer.open_application", PermissionEffect.ALLOW, "safe_application_open"),
+            PermissionRule("computer.list_applications", PermissionEffect.ALLOW, "safe_application_catalog_read"),
+            PermissionRule("computer.find_application", PermissionEffect.ALLOW, "safe_application_catalog_read"),
+            PermissionRule("computer.application_status", PermissionEffect.ALLOW, "safe_application_catalog_read"),
+            PermissionRule("computer.focus_application", PermissionEffect.ALLOW, "safe_application_focus"),
             PermissionRule("computer.change_volume", PermissionEffect.ALLOW, "safe_volume_change"),
             PermissionRule("computer.mute", PermissionEffect.ALLOW, "safe_audio_control"),
             PermissionRule("computer.unmute", PermissionEffect.ALLOW, "safe_audio_control"),

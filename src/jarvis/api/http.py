@@ -90,6 +90,9 @@ class CoreHttpServer:
                         principal = self._authenticated(values)
                     if route == "/health":
                         self._respond(HTTPStatus.OK, asyncio.run(application.health()))
+                    elif route == "/computer/apps":
+                        refresh = query.get("refresh", ["false"])[0].casefold() == "true"
+                        self._respond(HTTPStatus.OK, asyncio.run(application.installed_applications(refresh=refresh)))
                     elif route == "/satellites/commands":
                         principal = self._authenticated(values)
                         self._respond(
@@ -393,6 +396,26 @@ class CoreHttpServer:
                         ticket = ticket_service.issue(principal, str(body.get("scope", "events")))
                         self._respond(HTTPStatus.CREATED, {"stream_ticket": ticket.token, "scope": ticket.scope, "expires_at": ticket.expires_at.isoformat()})
                         return
+                    if route == "/computer/apps/refresh":
+                        self._authenticated(body)
+                        self._respond(HTTPStatus.OK, asyncio.run(application.installed_applications(refresh=True)))
+                        return
+                    if route.startswith("/computer/apps/"):
+                        parts = route.strip("/").split("/")
+                        if len(parts) == 4 and parts[3] == "enabled":
+                            self._authenticated(body)
+                            enabled = body.get("enabled")
+                            if not isinstance(enabled, bool):
+                                raise ValueError("application_enabled_must_be_boolean")
+                            self._respond(HTTPStatus.OK, asyncio.run(application.set_installed_application_enabled(parts[2], enabled)))
+                            return
+                        if len(parts) == 4 and parts[3] == "surface":
+                            self._authenticated(body)
+                            surface = body.get("surface")
+                            if not isinstance(surface, str):
+                                raise ValueError("application_surface_required")
+                            self._respond(HTTPStatus.OK, asyncio.run(application.set_installed_application_surface(parts[2], surface)))
+                            return
                     if route == "/messages":
                         principal = self._authenticated(body)
                         result = asyncio.run(application.send_message(

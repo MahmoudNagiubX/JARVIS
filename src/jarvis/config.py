@@ -75,6 +75,7 @@ class JarvisConfig:
     browser_headless: bool = True
     browser_owner_persistent_opt_in: bool = False
     browser_profile_root: str | None = None
+    installed_apps_config_path: str = "data/installed_apps.json"
 
     @classmethod
     def from_env(cls) -> "JarvisConfig":
@@ -163,6 +164,7 @@ class JarvisConfig:
             "true" if defaults.browser_owner_persistent_opt_in else "false",
         ).strip().lower()
         browser_profile_root = os.getenv("JARVIS_BROWSER_PROFILE_ROOT", "").strip() or None
+        installed_apps_config_path = os.getenv("JARVIS_INSTALLED_APPS_CONFIG", defaults.installed_apps_config_path).strip()
         try:
             timeout = float(timeout_text)
         except ValueError as exc:
@@ -214,6 +216,8 @@ class JarvisConfig:
             raise ValueError("event handler timeout must be positive")
         if not database_path:
             raise ValueError("database_path cannot be empty")
+        if not installed_apps_config_path or len(installed_apps_config_path) > 1_000:
+            raise ValueError("JARVIS_INSTALLED_APPS_CONFIG must be a bounded non-empty path")
         if model_provider not in {"mock", "ollama", "gguf", "llama_cpp", "openai", "hybrid"}:
             raise ValueError("JARVIS_MODEL_PROVIDER must be mock, ollama, gguf, llama_cpp, openai, or hybrid")
         if browser_backend not in {"local", "playwright"}:
@@ -292,6 +296,7 @@ class JarvisConfig:
             browser_headless=browser_headless_text in {"true", "1", "yes", "on"},
             browser_owner_persistent_opt_in=browser_owner_opt_in_text in {"true", "1", "yes", "on"},
             browser_profile_root=browser_profile_root,
+            installed_apps_config_path=installed_apps_config_path,
         )
 
     @property

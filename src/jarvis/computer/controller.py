@@ -75,6 +75,12 @@ class ComputerExecutionRouter:
 
     async def execute(self, action: ComputerAction, context: ToolContext) -> ToolResult:
         adapter = context.metadata.get("execution_adapter", "local")
+        if adapter != "local" and action.action in {
+            "list_applications", "find_application", "application_status", "focus_application",
+        }:
+            return ToolResult(ToolResultStatus.DENIED, error_code="native_application_control_local_only")
+        if adapter != "local" and action.action == "open_application":
+            return ToolResult(ToolResultStatus.DENIED, error_code="native_application_control_local_only")
         if adapter == "local":
             return await self.local.execute(action, context)
         if adapter == "satellite":

@@ -1322,12 +1322,40 @@ export function BrowserScreen() {
 }
 
 export function SettingsScreen() {
-  const { projection, screenData } = useJarvis()
+  const { api, projection, screenData, setScreenData, setError } = useJarvis()
+  const [refreshingApps, setRefreshingApps] = useState(false)
+  const [updatingAppRef, setUpdatingAppRef] = useState<string | null>(null)
   const health = screenData.health
   const system = projectionRecord(record(projection), 'system')
   const model = record(health.local_model || health.model)
   const voice = projectionRecord(record(projection), 'voice')
   const mcp = list(health.mcp)
+
+  async function refreshInstalledApps() {
+    setRefreshingApps(true)
+    try {
+      const payload = await api.post<{ applications?: unknown[] }>('/computer/apps/refresh', {})
+      setScreenData({ applications: list(payload.applications) })
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Installed application discovery failed.')
+    } finally {
+      setRefreshingApps(false)
+    }
+  }
+
+  async function updateInstalledApp(appRef: string, path: string, body: JsonRecord) {
+    setUpdatingAppRef(appRef)
+    try {
+      const payload = await api.post<JsonRecord>(path, body)
+      setScreenData({
+        applications: screenData.applications.map((item) => item.app_ref === appRef ? payload : item),
+      })
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Installed application settings update failed.')
+    } finally {
+      setUpdatingAppRef(null)
+    }
+  }
 
   return (
     <div className="screen settings-screen" data-testid="settings-screen">
@@ -1376,6 +1404,68 @@ export function SettingsScreen() {
               title="No MCP servers configured"
               detail="Only backend-confirmed local capability state appears here."
             />
+          )}
+        </FramePanel>
+
+        <FramePanel
+          title="Installed applications"
+          eyebrow="NATIVE-FIRST"
+          status={screenData.applications.length ? `${screenData.applications.length} detected` : 'not scanned'}
+        >
+          <div className="card-actions">
+            <Button variant="quiet" disabled={refreshingApps} onClick={() => void refreshInstalledApps()}>
+              {refreshingApps ? 'Refreshing…' : 'Refresh Installed Apps'}
+            </Button>
+          </div>
+          {screenData.applications.length ? (
+            <div className="compact-list">
+              {screenData.applications.map((item, index) => (
+                <div className="compact-row" key={stringValue(item.app_ref, `${item.display_name}-${index}`)}>
+                  <div>
+                    <strong>{stringValue(item.display_name, 'Unknown application')}</strong>
+                    <span>Resolved surface: {stringValue(item.resolved_surface, 'UNSUPPORTED')}</span>
+                    <span>{stringValue(item.preferred_surface, 'AUTO')} · {stringValue(item.automation_tier, 'TIER_D')} · {stringValue(item.login_status, 'IDENTITY_UNVERIFIED')}</span>
+                    <span>{item.enabled === false ? 'Disabled' : record(item.capabilities).launchable === false ? 'Detected, not launchable' : 'Launchable'} · {stringValue(item.reason, 'status unavailable')}</span>
+                    {stringValue(item.app_ref) && (
+                      <div className="card-actions">
+                        <label>
+                          Surface
+                          <select
+                            aria-label={`Surface for ${stringValue(item.display_name, 'application')}`}
+                            value={stringValue(item.preferred_surface, 'AUTO')}
+                            disabled={updatingAppRef === stringValue(item.app_ref)}
+                            onChange={(event) => void updateInstalledApp(
+                              stringValue(item.app_ref),
+                              `/computer/apps/${encodeURIComponent(stringValue(item.app_ref))}/surface`,
+                              { surface: event.target.value },
+                            )}
+                          >
+                            <option value="AUTO">Auto</option>
+                            <option value="DESKTOP">Desktop</option>
+                            <option value="BROWSER">Browser</option>
+                            <option value="API">API</option>
+                          </select>
+                        </label>
+                        <Button
+                          variant="quiet"
+                          disabled={updatingAppRef === stringValue(item.app_ref)}
+                          onClick={() => void updateInstalledApp(
+                            stringValue(item.app_ref),
+                            `/computer/apps/${encodeURIComponent(stringValue(item.app_ref))}/enabled`,
+                            { enabled: item.enabled === false },
+                          )}
+                        >
+                          {item.enabled === false ? 'Enable' : 'Disable'}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                  <StatusBadge value={stringValue(item.application_class, 'UNKNOWN')} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState title="No installed-app catalog yet" detail="Discovery is bounded and on demand; refresh to inspect standard Windows application sources." />
           )}
         </FramePanel>
 

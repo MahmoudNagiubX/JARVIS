@@ -20,6 +20,7 @@ from .autonomy.policy import AutonomyPolicy
 from .capabilities.registry import CapabilityRegistry
 from .communications.hub import CommunicationsHub, LocalCommunicationChannel
 from .computer.controller import ComputerExecutionRouter, WindowsComputerController
+from .computer.applications import InstalledApplicationRegistry
 from .computer.file_access import FileAccessPolicy
 from .computer.service import ComputerActionService, WindowsNativeComputerController
 from .context.assembler import ContextAssembler
@@ -155,6 +156,7 @@ class JarvisRuntime:
     communication: CommunicationChannel
     device_fabric: DeviceFabricService
     computer_actions: ComputerActionService
+    application_registry: InstalledApplicationRegistry
     browser_actions: BrowserActionService
     home: HomeActionService
     communications: CommunicationsHub
@@ -315,9 +317,11 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     device_fabric = DeviceFabricService(repository, event_bus, audit)
     windows_perception_provider = WindowsDesktopProvider()
     file_access_policy = FileAccessPolicy.from_config_roots(effective_config.file_access_roots)
+    application_registry = InstalledApplicationRegistry(settings_path=Path(effective_config.installed_apps_config_path))
     local_computer_controller = WindowsNativeComputerController(
         perception_provider=windows_perception_provider, file_access_policy=file_access_policy,
         ocr_model_dir=effective_config.ocr_model_dir,
+        application_registry=application_registry,
     )
     satellite_computer_controller = WindowsComputerController(satellite)
     computer_router = ComputerExecutionRouter(local_computer_controller, satellite_computer_controller)
@@ -700,6 +704,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         communication=local_channel,
         device_fabric=device_fabric,
         computer_actions=computer_actions,
+        application_registry=application_registry,
         browser_actions=browser_actions,
         home=home,
         communications=communications,
@@ -750,6 +755,8 @@ def _register_capabilities(capabilities: CapabilityRegistry) -> None:
 
     windows = system().casefold() == "windows"
     computer = (
+        "computer.list_applications", "computer.find_application", "computer.application_status",
+        "computer.focus_application",
         "computer.open_application", "computer.open_file", "computer.open_folder",
         "computer.list_processes", "computer.inspect_file", "computer.search_files",
         "computer.stop_safe_process", "computer.change_volume", "computer.mute", "computer.unmute",
