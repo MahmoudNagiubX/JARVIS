@@ -1,16 +1,16 @@
 # JARVIS — CURRENT STATE
 
 **Status:** SNAPSHOT / IMPLEMENTATION TRUTH SUMMARY  
-**Reviewed:** 2026-09-18
+**Reviewed:** 2026-09-19
 **Repository:** `MahmoudNagiubX/JARVIS`  
-**Reviewed HEAD:** `54b67ba396ec45180f1b60ea472ef94c9ac181a9`
+**Reviewed HEAD:** `d6848c1`
 
 > Always compare this file with current HEAD before trusting it in a later chat.
 
-**Final-completion feature-branch checkpoint:** `81b0947` — bounded desktop
-release slices are implemented and the post-slice full Python regression is
-`951 passed, 3 skipped, 45 subtests passed`; external/physical release gates
-remain explicitly partial where evidence is unavailable.
+**Final-completion feature-branch checkpoint:** `d6848c1` — bounded desktop
+release slices plus the native installed-application control addendum are
+implemented; external/physical release gates remain explicitly partial where
+evidence is unavailable.
 
 ## 1. Current repository baseline
 
@@ -131,7 +131,8 @@ voice/device, and hosted CI/branch-protection evidence remain external gates.
 
 | Capability | Status | Current truth |
 |---|---|---|
-| Bounded file/process/app actions | `PARTIAL` | inspect small process list, bounded file read/search/open, allowlisted launch/stop |
+| Bounded file/process/app actions | `PARTIAL` | inspect small process list, bounded file read/search/open, allowlisted launch/stop, and the bounded installed-app catalog |
+| Installed desktop application control | `PARTIAL` | native-first opaque `app_ref` discovery, exact fingerprinted launch/focus, owner enable/surface settings, and local-only enforcement are implemented. Current physical Notepad evidence proves launch/observation only; foreground focus verification failed closed, so no Tier A/B workflow is claimed. |
 | Window focus | `IMPLEMENTED` bounded | fresh `window_ref` revalidation + foreground verification |
 | Minimize/maximize/restore | `IMPLEMENTED` bounded | Phase 11 |
 | Clipboard Unicode | `IMPLEMENTED` bounded | transient sensitive payload handling/readback |
@@ -147,7 +148,7 @@ voice/device, and hosted CI/branch-protection evidence remain external gates.
 | On-demand screen capture | `IMPLEMENTED` bounded | native Windows GDI transient capture exists |
 | Visual actuation | `PARTIAL` | bounded `computer.visual.act` exists behind the canonical approval/native-input path; Batch 09 T0 proves the owned visual happy path and refusal/uncertainty safeguards 3/3, while broader real-app visual use remains configuration-gated |
 | Camera | `PLANNED/OPTIONAL` | architecture-only; continuous camera capture is off |
-| Robust multi-app Computer Use V2 | `PLANNED` | next major capability workstream |
+| Robust multi-app Computer Use V2 | `PLANNED` | native app registry is the preferred surface, but broad per-application semantic workflows and Tier A/B physical evidence remain open |
 
 **Batch 08 M0 OCR truth:** the evaluation-only runner now uses sequence-aware
 NFKC/whitespace-normalized Levenshtein similarity. Corrected three-run A/B/C
@@ -162,6 +163,26 @@ happy-path click/status gate remains `PHYSICAL_PENDING` because the CPU-only
 host's OCR/revalidation sequence expires the visual reference before
 foreground-safe input can begin. No automatic retry or focus-policy bypass
 was added; see `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_08.md`.
+
+### Native desktop application addendum — 2026-09-19
+
+`d6848c1` adds the bounded `InstalledApplicationRegistry` and wires it through
+the existing Computer Use authority. Discovery is limited to standard Start
+Menu roots, Windows App Paths, and explicit known-app fallbacks. The UI now
+exposes installed applications and owner-controlled `AUTO`/`DESKTOP`/
+`BROWSER`/`API` surface preferences without exposing private launch identity.
+The default `AUTO` resolution is native desktop for a verified launchable
+non-denied app; browser/API preferences remain explicit selections and do not
+claim that their provider is configured.
+
+The bounded host discovery observed 162 catalog entries on the inspected
+Windows machine. Deterministic registry and boundary tests pass, and the
+frontend tests/build pass. A canonical physical Notepad probe launched the
+verified target and observed its window, but the non-interactive runner could
+not verify foreground ownership (`application_focus_not_verified`); cleanup
+used the canonical safe-process path. This is `PARTIAL`/launch-only evidence,
+not Tier A/B acceptance. No arbitrary executable path, shell, remote-phone
+launch, credential, cookie, or normal Brave profile path was introduced.
 
 ### Browser/research/MCP/skills
 
@@ -286,6 +307,10 @@ Do not inflate these states:
   `PARTIAL` because the current desktop has multiple inactive exact Brave
   windows. Brave navigation/authentication is a `CROSS_WORKSTREAM_BLOCKER`
   until the approved Browser V2 adapter exists.
+- Native installed-app control: bounded catalog and exact native launch/focus
+  code are present, but the current generic-app physical probe is
+  `LAUNCH_ONLY`; focus verification failed closed and no Tier A/B status is
+  claimed.
 
 ## 6. Evidence references
 

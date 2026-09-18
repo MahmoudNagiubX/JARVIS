@@ -175,6 +175,21 @@ attempt remained `PARTIAL` (3/3 fail-closed `brave_window_ambiguous`); no
 browser navigation/authentication was attempted. `GAP-0105` remains `PARTIAL`;
 no full multi-application acceptance claim is made.
 
+**Native desktop application addendum (2026-09-19):** `d6848c1` adds the
+bounded `InstalledApplicationRegistry` as the preferred local application
+surface. Standard Start Menu roots, Windows App Paths, and explicit known-app
+fallbacks produce opaque `app_ref` descriptors; exact targets are
+SHA-256/fingerprint revalidated before launch, duplicate aliases fail closed,
+and admin/installer/background targets remain denied. `ComputerActionService`
+owns open/focus, fresh window identity, foreground verification, audit, and
+local-only enforcement; the UI exposes owner enable/disable and surface
+preferences. The inspected host catalogued 162 bounded entries. Deterministic
+registry/boundary tests and frontend tests/build are green. The canonical
+physical Notepad probe launched and observed the app but failed closed on
+foreground verification (`application_focus_not_verified`) in the
+non-interactive runner, so this remains `PARTIAL`/launch-only and does not
+close the broad real-app matrix or grant Tier A/B acceptance.
+
 ### GAP-0106 — Multi-monitor/DPI/secure-desktop behavior needs explicit proof
 **Status:** `PARTIAL`  
 Computer Use V2 must handle DPI/window movement/multiple monitors and fail safely on secure/locked/UAC-style surfaces it cannot control.  
@@ -536,3 +551,11 @@ gaps:
 Owner-authenticated integrations, physical voice, and the final natural-
 language cross-app mission remain blocked by missing owner-controlled
 configuration/evidence, not silently treated as complete.
+
+## 16. Native desktop application addendum — 2026-09-19
+
+- **GAP-0105 — remains `PARTIAL`:** the native installed-application addendum
+  is implemented and is the preferred desktop surface, but only bounded
+  catalog/identity and launch/focus code are accepted. The generic-app
+  physical focus probe failed closed, and the broad multi-application,
+  semantic-workflow, recovery, and Tier A/B acceptance matrix remains open.

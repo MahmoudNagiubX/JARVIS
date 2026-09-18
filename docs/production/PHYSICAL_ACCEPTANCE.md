@@ -53,3 +53,26 @@ sanitized evidence boundary. Its automated closure is recorded in
 **PENDING / PARTIAL** until a human completes the microphone, wake, audible
 speaker, bilingual, follow-up, and barge-in steps in the app. No automated
 product test is a physical voice claim.
+
+## Native installed-application acceptance — 2026-09-19
+
+The native application addendum is code-backed at `d6848c1`. The installed-app
+catalog is bounded to standard Start Menu roots, Windows App Paths, and known
+fallback identities; it returns opaque refs and keeps target paths, launch
+arguments, and fingerprints internal. Use the authenticated local Command
+Center Settings surface or the canonical Computer Use tools to refresh and
+inspect the catalog. Do not add executable paths or shell commands to model
+context.
+
+Current physical evidence is `PARTIAL`/launch-only: a canonical Notepad probe
+launched the exact verified target and observed its window, but the
+non-interactive runner could not verify foreground ownership and returned
+`application_focus_not_verified`. The process was cleaned up through the
+canonical safe-process service. This does not establish Tier A/B support.
+
+For a future physical gate, the owner must observe the exact application on
+the target desktop, record the opaque ref and identity-safe receipt, verify
+the intended window is foreground after open/focus, perform only the named
+bounded workflow, verify its postcondition, and repeat three clean times.
+Admin tools, installers, background services, credentials, cookies, QR codes,
+normal Brave profiles, and arbitrary shell/process paths remain out of scope.

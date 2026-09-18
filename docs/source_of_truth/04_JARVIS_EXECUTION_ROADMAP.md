@@ -1,7 +1,7 @@
 # JARVIS — EXECUTION ROADMAP
 
 **Status:** CANONICAL WORK ORDER  
-**Reviewed:** 2026-09-18
+**Reviewed:** 2026-09-19
 
 ## 1. Phase numbering rule
 
@@ -144,6 +144,20 @@ but its host-only open/focus attempt remained `PARTIAL` after fail-closed
 authenticated web control are a `CROSS_WORKSTREAM_BLOCKER` until Workstream B
 provides Browser V2/Playwright. No T3-T6 work started; the broader real-app
 matrix remains unproven.
+
+**Native desktop application addendum (2026-09-19):** before continuing
+Browser V2 T06, the installed-app surface was added under the existing
+Computer authority. `InstalledApplicationRegistry` uses only bounded standard
+Windows discovery sources and returns opaque `app_ref` descriptors. Native
+open/focus is preferred for verified launchable apps, exact target identity is
+revalidated before launch, duplicate names fail closed, and admin/installer/
+background targets are denied. Owner settings persist only opaque refs and
+surface preferences. The UI and authenticated local API expose the catalog;
+remote/satellite app control is denied. Deterministic registry/boundary tests
+pass. A physical Notepad probe launched and observed the target but could not
+verify foreground ownership in the non-interactive runner, so current support
+is `PARTIAL`/launch-only and no Tier A/B claim is made. Brave page control
+continues to belong exclusively to BrowserActionService.
 
 Deliver:
 - product-owned UIA target/inspection/action layer;

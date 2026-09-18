@@ -11,6 +11,7 @@
 | Physical voice | PARTIAL | Explicit local wake/VAD/STT/TTS/playback runner and safe local smoke checks; human/operator acceptance remains open; `docs/phase13/evidence/PHYSICAL_LOCAL_VOICE.json` |
 | Windows satellite | PASS | Same-host process-separated Core/typed agent authority-path observation passed; second-host deployment not claimed; bounded evidence in `docs/phase09/evidence/PHYSICAL_COMPUTER_AUTHORITY_ACCEPTANCE.json` |
 | Computer control | PASS | Phase 11 grounded window, clipboard, and literal keyboard acceptance; bounded media-key volume; mute-state query remains explicitly unavailable |
+| Installed desktop applications | PARTIAL | `InstalledApplicationRegistry` and native-first opaque-ref launch/focus path are implemented at `d6848c1`; bounded discovery and deterministic tests pass, but the current physical Notepad probe is launch-only because foreground verification failed closed; no Tier A/B claim |
 | Browser/Playwright | PARTIAL | Deterministic controller tested; no Node/Playwright |
 | Authenticated WebSocket | PARTIAL | Loopback handshake, auth, topic allowlist, bounded queue/lifetime; no full client-frame adapter |
 | Jupyter/KiCad | DEFERRED | Adapter boundaries only |
@@ -58,3 +59,14 @@ truthfully `NOT_CONFIGURED` until the owner supplies exact destinations and
 performs any required manual sign-in in the dedicated profile. ChatGPT web is
 recorded separately as a service-surface block when it returns 403; an installed
 OpenAI Codex package is not treated as ChatGPT.
+
+Native desktop application setup is intentionally local and bounded. Set
+`JARVIS_INSTALLED_APPS_CONFIG` only to the owner-approved local JSON settings
+file (the default is `data/installed_apps.json`), refresh the catalog from the
+authenticated Settings surface, and review the displayed support tier/login
+status before using an app. The file stores only opaque disabled refs and
+surface preferences. Do not persist executable paths, launch arguments,
+cookies, credentials, or raw window identity. `AUTO` selects native desktop
+for a verified launchable app; choosing `BROWSER` or `API` is only a surface
+preference and does not configure that provider. Physical Tier A/B status still
+requires a three-run foreground/postcondition receipt.

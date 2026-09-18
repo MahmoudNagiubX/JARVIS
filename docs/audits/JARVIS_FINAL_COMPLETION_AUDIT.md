@@ -244,7 +244,7 @@ runtime on every assertion path.
 | C1 public Browser V2 | `PASS` | Three sequential dedicated-profile controller runs against `https://example.com/`, each with open, DOM read, accessibility read, opaque target metadata, and clean close; targeted Brave processes were absent after close. |
 | C2 owner integrations | `OWNER_ACTION_REQUIRED` | Owner-session opt-in and owner/device identity are not configured in the runner; no service destination or credential was inspected or guessed. |
 | C3 ChatGPT | `SERVICE_SURFACE_BLOCKED` / `CHATGPT_DESKTOP_IDENTITY_UNVERIFIED` | The exact ChatGPT web surface returned 403/empty content. The installed OpenAI package was independently identified as Codex, not ChatGPT; no UI/auth-store automation was attempted. |
-| C4 Computer Use | `PARTIAL` | Existing `RW-CALC-001` physical evidence is 3/3; file workflow tests are `43 passed`; the safe-paste physical probe failed closed because Windows did not grant verified foreground ownership to the disposable fixture. No focus bypass or clipboard inspection was used. |
+| C4 Computer Use | `PARTIAL` | Existing `RW-CALC-001` physical evidence is 3/3; the native installed-app addendum is code-backed and bounded, but the generic Notepad physical probe is launch-only because Windows did not grant verified foreground ownership. File workflow tests are `43 passed`; the safe-paste physical probe also failed closed. No focus bypass or clipboard inspection was used. |
 | C5 voice/device | `PHYSICAL_PENDING` | No owner microphone/speaker wizard was inferred from deterministic tests. |
 | C6 desktop/UI | `PARTIAL` | The exact Start Menu shortcut launched one locked product instance; local `/app`, `/hud`, and `/health` returned 200; rendered routes showed truthful core/model/memory/approval/automation/voice states. Three cold shutdown cycles and native tray proof were not claimed. |
 | C7 hardening | `PARTIAL` | Current live DB backup/isolated restore integrity passed; security/recovery suites passed locally. Performance remains unbenchmarked as a separate release gate. |
@@ -347,6 +347,32 @@ The end-to-end fixture is deterministic evidence of the coordinator boundary,
 not live provider or physical acceptance. A real Codex coding run remains
 owner/configuration-gated and must still supply an independent verifier result.
 
+## 11D. Native desktop application addendum — 2026-09-19
+
+The native desktop addendum is implemented in `d6848c1` under the existing
+Computer authority. `InstalledApplicationRegistry` discovers only bounded
+standard Windows sources and returns opaque `app_ref` descriptors. Exact
+targets are fingerprinted and revalidated immediately before launch; duplicate
+aliases fail closed; admin, installer, uninstaller, and background targets are
+denied; and remote/satellite app control is refused. `ComputerActionService`
+owns open/focus, fresh window identity, foreground verification, audit, and
+approval. The authenticated local Settings surface exposes the bounded catalog,
+owner enable/disable, and `AUTO`/`DESKTOP`/`BROWSER`/`API` preferences.
+
+| Gate | Evidence | Truth |
+|---|---|---|
+| Bounded discovery | 162 entries observed from Start Menu/App Paths/known-app sources; no broad disk scan | `PASS` |
+| Opaque model boundary | public descriptors omit raw target paths, launch args, AUMID, process/window identity, and target fingerprint | `PASS` |
+| Deterministic regression | installed-app registry/boundary tests `45 passed` in the focused native boundary set; broader computer/browser/Phase-18 selection `466 passed, 3 skipped, 17 subtests` | `PASS` |
+| Physical generic-app gate | canonical Notepad launch/observation succeeded; foreground verification returned `application_focus_not_verified` in the non-interactive runner; canonical cleanup completed | `PARTIAL` / `LAUNCH_ONLY` |
+| Tier A/B application acceptance | no three-run semantic/postcondition receipt exists | `NOT_CLAIMED` |
+
+The native surface is therefore preferred for verified launchable desktop apps,
+but the release remains partial. Brave page navigation/authentication is not
+covered by this addendum and remains exclusively a Browser V2/Playwright gate;
+no credential, cookie, normal Brave profile, arbitrary shell path, or remote
+phone launch was used.
+
 ## 12. Ultimate Completion Requirement Matrix
 
 This matrix is evaluated against the current feature-branch HEAD
@@ -384,7 +410,7 @@ them.
 | YouTube | `NOT_CONFIGURED` | No accepted search/open/play workflow is configured. |
 | Study preparation | `NOT_CONFIGURED` | No configured lecture/OneNote/Notion/YouTube/Spotify mission target set exists. |
 | Laptop control | `PARTIAL` | Calculator physical proof is 3/3 and bounded file/input suites pass; safe-paste foreground proof failed closed. |
-| Application control | `PARTIAL` | Exact JARVIS shortcut and local UI routes pass; broad owner-application acceptance is not claimed. |
+| Application control | `PARTIAL` | Native-first bounded installed-app catalog, opaque refs, exact target revalidation, local-only open/focus, and owner surface settings are implemented at `d6848c1`; the physical generic-app probe is launch-only and broad/Tier A/B owner-application acceptance is not claimed. |
 | Wake word | `PHYSICAL_PENDING` | Local wake pipeline exists; human reliability acceptance is not complete. |
 | Voice conversation | `PHYSICAL_PENDING` | VoiceCore and local adapters exist; English/Egyptian Arabic/mixed, follow-up, barge-in, and device recovery remain physical gates. |
 | Frontend | `PARTIAL` | React Command Center tests/build pass and routes render truthful state; final physical visual/accessibility review remains open. |

@@ -1,5 +1,48 @@
 # Computer control
 
+## Native installed-application surface
+
+Installed desktop applications are the preferred local surface for application
+requests. The product-owned `InstalledApplicationRegistry` is a bounded
+identity catalog, not an execution authority. It reads only the per-user and
+all-users Start Menu program roots, Windows App Paths entries, and a small
+legacy allowlist for known system applications. It does not scan arbitrary
+drives, return executable paths to the model, or accept a model-supplied shell
+command, executable path, script, or launch argument.
+
+The model-facing descriptor contains only an opaque `app_ref`, bounded display
+names/aliases, publisher/version when available, support tier, risk/class,
+login status, surface preference, and capability flags. The registry keeps the
+resolved target, launch arguments, process/window identity, and SHA-256
+fingerprint private. Duplicate friendly-name identities fail closed; a
+previously resolved target is re-fingerprinted immediately before launch.
+
+All launch and focus requests travel through `ComputerActionService` and the
+local `WindowsNativeComputerController`:
+
+```text
+observe catalog -> resolve opaque app_ref -> policy/approval
+-> exact native launch or existing-window focus -> fresh window/foreground verification
+-> audit/event receipt
+```
+
+`open_application` may focus an existing uniquely identified window or launch
+the exact verified `.exe`/approved MSIX identity with `shell=False`. It never
+falls back to a generic shell. `focus_application` never launches. Generic
+hosts such as Windows Calculator require a bounded title rule in addition to
+the verified process identity. Admin tools, installers, uninstallers, and
+background components are catalogued only as denied/unsupported Tier D items.
+Remote/satellite application control is denied; installed-app control is a
+same-host native capability.
+
+Current support is truthful Tier C launch/focus only. Semantic application
+workflows and visual fallback remain explicit capabilities and are not inferred
+from discovery. Tier A/B status requires fresh physical evidence for the exact
+application and workflow. Brave host open/focus is separate from browser page
+control: page navigation, DOM/accessibility interaction, transfers, and
+authenticated sessions remain under `BrowserActionService` and its dedicated
+Brave profile policy.
+
 The runtime exposes computer actions through `ComputerActionService` and the
 typed `ComputerAction`/`ComputerResult` contracts. Every request carries an
 authenticated identity, device, scope, capability set, session, and
