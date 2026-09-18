@@ -14,9 +14,6 @@ class ModelGatewayConfig:
     primary_model: str
     fallback_model: str
     local_model: str
-    openai_enabled: bool
-    openai_model: str
-    openai_timeout_seconds: float
     groq_enabled: bool
     groq_model: str
     groq_timeout_seconds: float
@@ -39,9 +36,6 @@ class ModelGatewayConfig:
             primary_model=config.primary_model,
             fallback_model=config.fallback_model,
             local_model=config.local_model,
-            openai_enabled=config.openai_enabled,
-            openai_model=config.openai_model,
-            openai_timeout_seconds=config.openai_timeout_seconds,
             groq_enabled=config.groq_enabled,
             groq_model=config.groq_model,
             groq_timeout_seconds=config.groq_timeout_seconds,

@@ -13,7 +13,7 @@ hybrid route; direct `JarvisConfig()` construction remains mock-compatible for
 deterministic tests.
 
 ```text
-JARVIS_MODEL_PROVIDER=hybrid|mock|ollama|gguf|llama_cpp|openai
+JARVIS_MODEL_PROVIDER=hybrid|mock|ollama|gguf|llama_cpp
 JARVIS_PRIMARY_MODEL=qwen3.5:4b
 JARVIS_FALLBACK_MODEL=qwen3.5-heretic:9b-q4km
 JARVIS_LOCAL_MODEL=Qwen3.5-4B-Heretic

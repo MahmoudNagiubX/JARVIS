@@ -40,9 +40,6 @@ class JarvisConfig:
     # legacy primary/fallback fields remain compatible with existing local
     # Ollama/llama.cpp profiles and tests.
     local_model: str = "Qwen3.5-4B-Heretic"
-    openai_enabled: bool = False
-    openai_model: str = "gpt-5.2"
-    openai_timeout_seconds: float = 30.0
     groq_enabled: bool = False
     groq_model: str = "openai/gpt-oss-120b"
     groq_timeout_seconds: float = 30.0
@@ -93,15 +90,6 @@ class JarvisConfig:
         primary_model = os.getenv("JARVIS_PRIMARY_MODEL", defaults.primary_model).strip()
         fallback_model = os.getenv("JARVIS_FALLBACK_MODEL", defaults.fallback_model).strip()
         local_model = os.getenv("JARVIS_LOCAL_MODEL", defaults.local_model).strip()
-        openai_enabled_text = os.getenv(
-            "JARVIS_OPENAI_ENABLED",
-            "true" if defaults.openai_enabled else "false",
-        ).strip().lower()
-        openai_model = os.getenv("JARVIS_OPENAI_MODEL", defaults.openai_model).strip()
-        openai_timeout_text = os.getenv(
-            "JARVIS_OPENAI_TIMEOUT_SECONDS",
-            str(defaults.openai_timeout_seconds),
-        ).strip()
         groq_enabled_text = os.getenv(
             "JARVIS_GROQ_ENABLED",
             "true" if defaults.groq_enabled else "false",
@@ -174,10 +162,6 @@ class JarvisConfig:
         except ValueError as exc:
             raise ValueError("JARVIS_MAX_AGENT_STEPS must be an integer") from exc
         try:
-            openai_timeout = float(openai_timeout_text)
-        except ValueError as exc:
-            raise ValueError("JARVIS_OPENAI_TIMEOUT_SECONDS must be numeric") from exc
-        try:
             groq_timeout = float(groq_timeout_text)
             gemini_timeout = float(gemini_timeout_text)
         except ValueError as exc:
@@ -196,8 +180,6 @@ class JarvisConfig:
         if awareness_text not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
             raise ValueError("JARVIS_DESKTOP_AWARENESS_ENABLED must be boolean")
         boolean_values = {"true", "false", "1", "0", "yes", "no", "on", "off"}
-        if openai_enabled_text not in boolean_values:
-            raise ValueError("JARVIS_OPENAI_ENABLED must be boolean")
         if groq_enabled_text not in boolean_values:
             raise ValueError("JARVIS_GROQ_ENABLED must be boolean")
         if gemini_enabled_text not in boolean_values:
@@ -218,8 +200,8 @@ class JarvisConfig:
             raise ValueError("database_path cannot be empty")
         if not installed_apps_config_path or len(installed_apps_config_path) > 1_000:
             raise ValueError("JARVIS_INSTALLED_APPS_CONFIG must be a bounded non-empty path")
-        if model_provider not in {"mock", "ollama", "gguf", "llama_cpp", "openai", "hybrid"}:
-            raise ValueError("JARVIS_MODEL_PROVIDER must be mock, ollama, gguf, llama_cpp, openai, or hybrid")
+        if model_provider not in {"mock", "ollama", "gguf", "llama_cpp", "hybrid"}:
+            raise ValueError("JARVIS_MODEL_PROVIDER must be mock, ollama, gguf, llama_cpp, or hybrid")
         if browser_backend not in {"local", "playwright"}:
             raise ValueError("JARVIS_BROWSER_BACKEND must be local or playwright")
         if not primary_model or not fallback_model:
@@ -231,10 +213,6 @@ class JarvisConfig:
         ):
             if not value or len(value) > 200 or any(char.isspace() for char in value):
                 raise ValueError(f"{name} must be a bounded non-empty token")
-        if not openai_model or len(openai_model) > 200 or any(char.isspace() for char in openai_model):
-            raise ValueError("JARVIS_OPENAI_MODEL must be a bounded non-empty token")
-        if not 1.0 <= openai_timeout <= 180.0:
-            raise ValueError("JARVIS_OPENAI_TIMEOUT_SECONDS must be between 1 and 180")
         if not 1.0 <= groq_timeout <= 180.0 or not 1.0 <= gemini_timeout <= 180.0:
             raise ValueError("JARVIS cloud provider timeouts must be between 1 and 180")
         if groq_reasoning_effort not in {"none", "default", "minimal", "low", "medium", "high", "xhigh", "max"}:
@@ -261,9 +239,6 @@ class JarvisConfig:
             primary_model=primary_model,
             fallback_model=fallback_model,
             local_model=local_model,
-            openai_enabled=openai_enabled_text in {"true", "1", "yes", "on"},
-            openai_model=openai_model,
-            openai_timeout_seconds=openai_timeout,
             groq_enabled=groq_enabled_text in {"true", "1", "yes", "on"},
             groq_model=groq_model,
             groq_timeout_seconds=groq_timeout,

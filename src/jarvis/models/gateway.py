@@ -15,7 +15,6 @@ from .cloud import GeminiProvider, GroqProvider
 from .config import ModelGatewayConfig
 from .health import ModelHealth
 from .llama_runtime import LlamaCppRuntimeConfig, LlamaCppRuntimeSupervisor, LlamaRuntimeStatus
-from .openai import OpenAIProvider
 from .providers import LlamaCppProvider, MockModelProvider, ModelProviderError, OllamaProvider, UnavailableModelProvider
 from .routing import CapabilityRouter, ModelRoute, ModelSelection, default_selections, hybrid_selections
 
@@ -68,12 +67,6 @@ class ModelGateway:
                         runtime_config.endpoint,
                         model_alias=runtime_config.model_alias,
                     )
-            elif provider_name == "openai":
-                self.providers["openai"] = OpenAIProvider(
-                    model=gateway_config.openai_model,
-                    enabled=gateway_config.openai_enabled,
-                    timeout_seconds=gateway_config.openai_timeout_seconds,
-                )
             else:
                 self.providers[provider_name] = UnavailableModelProvider("provider_adapter_not_configured")
         if provider_name == "hybrid":
@@ -83,9 +76,11 @@ class ModelGateway:
                 gateway_config.gemini_model,
             )
         else:
-            primary_model = gateway_config.openai_model if provider_name == "openai" else gateway_config.primary_model
-            fallback_model = gateway_config.openai_model if provider_name == "openai" else gateway_config.fallback_model
-            self.selections = default_selections(provider_name, primary_model, fallback_model)
+            self.selections = default_selections(
+                provider_name,
+                gateway_config.primary_model,
+                gateway_config.fallback_model,
+            )
 
     def _configure_hybrid(self, config: JarvisConfig, gateway_config: ModelGatewayConfig) -> None:
         """Build all three adapters behind this gateway without contacting them."""
@@ -247,7 +242,7 @@ class ModelGateway:
 
     @classmethod
     def _request_for_provider(cls, request: LLMRequest, model: str, provider: str) -> LLMRequest:
-        if provider not in {"groq", "gemini", "openai"}:
+        if provider not in {"groq", "gemini"}:
             return replace(request, model=model)
         return replace(request, model=model, messages=cls._compact_cloud_messages(request.messages))
 

@@ -51,26 +51,12 @@ The executable must already exist and the model must be an existing external
 imported, or deleted. `JARVIS_LOCAL_MODEL_AUTOSTART` defaults to false, so
 test/development composition does not launch a heavy model.
 
-## Explicit OpenAI route
+## Direct OpenAI API route
 
-The cloud route is optional and never a hidden fallback. Select it explicitly
-only when the owner has chosen a current model and intentionally provided the
-key through the process environment:
-
-```powershell
-$env:JARVIS_MODEL_PROVIDER = "openai"
-$env:JARVIS_OPENAI_ENABLED = "true"
-$env:JARVIS_OPENAI_MODEL = "<owner-selected-current-model>"
-$env:OPENAI_API_KEY = "<process-only-secret>"
-python -m jarvis --model-smoke
-```
-
-JARVIS uses the official Responses API endpoint with bounded timeouts and
-`store=false`; the key is not part of `JarvisConfig`, logs, events, or audit
-payloads. Without both explicit enablement and `OPENAI_API_KEY`, health is
-reported as unavailable and no network request is made. The direct
-`JarvisConfig()` test default remains mock-compatible; production environment
-bootstrap defaults to the hybrid route with cloud flags disabled.
+There is no direct OpenAI API provider in the JARVIS production architecture.
+The `openai/gpt-oss-120b` identifier is used only through the Groq-compatible
+provider. The local Heretic model remains the offline fallback and Groq/Gemini
+keys remain process-only environment secrets.
 
 ## Hybrid cloud routes
 

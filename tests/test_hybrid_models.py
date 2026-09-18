@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import unittest
 import urllib.error
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
+from unittest.mock import patch
 from urllib.request import Request
 
 from jarvis.config import JarvisConfig
@@ -81,6 +83,18 @@ class _Repository:
 
 
 class HybridRoutingTests(unittest.TestCase):
+    def test_exact_hybrid_model_contract_is_preserved(self) -> None:
+        config = JarvisConfig(environment="test", model_provider="hybrid")
+        self.assertEqual(config.local_model, "Qwen3.5-4B-Heretic")
+        self.assertEqual(config.groq_model, "openai/gpt-oss-120b")
+        self.assertEqual(config.gemini_model, "gemini-3.5-flash")
+
+    def test_direct_openai_provider_is_rejected_and_legacy_env_is_not_consumed(self) -> None:
+        with patch.dict(os.environ, {"JARVIS_MODEL_PROVIDER": "openai"}, clear=False):
+            with self.assertRaisesRegex(ValueError, "JARVIS_MODEL_PROVIDER must be"):
+                JarvisConfig.from_env()
+        self.assertFalse(hasattr(JarvisConfig(), "openai_enabled"))
+
     def test_capability_router_is_deterministic_and_does_not_call_a_model(self) -> None:
         router = CapabilityRouter()
         simple = router.decide(LLMRequest("1", (LLMMessage(LLMRole.USER, "open calculator"),)), ModelRoute.TOOL_ORCHESTRATION)
