@@ -5,7 +5,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from jarvis.bootstrap import create_runtime
+from jarvis.bootstrap import RuntimeState, create_runtime
 from jarvis.config import JarvisConfig
 from jarvis.contracts import DeviceIdentity, ResearchPlan, ResearchRequest, ResearchRun, ResearchStep
 from jarvis.experience.websocket import accept_key, text_frame
@@ -15,6 +15,7 @@ from jarvis.models.routing import ModelRoute
 from jarvis.persistence.adapters import PostgresDatabase
 from jarvis.persistence.backup import SQLiteBackupService
 from jarvis.persistence.db import SQLiteDatabase
+from jarvis.research.providers import LocalDocumentProvider
 from jarvis.runtime.lifecycle import RuntimeLifecycle
 from jarvis.security import redact
 
@@ -49,36 +50,43 @@ class PhaseSixIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_research_ledger_survives_restart_and_reconciles_transient_work(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             database_path = str(Path(folder) / "jarvis.sqlite3")
+            evidence_path = Path(folder) / "research-evidence.md"
+            evidence_path.write_text("Durable evidence for the restart ledger.\n", encoding="utf-8")
             runtime = create_runtime(JarvisConfig(database_path=database_path))
-            await runtime.start()
-            owner = await runtime.identity.bootstrap_owner("Durable Owner")
-            device = DeviceIdentity("durable-device", owner.owner_id, "desktop", "windows", frozenset({"research.local"}), frozenset({"tool.request"}))
-            completed = await runtime.research.start(
-                ResearchRequest("durable evidence", owner.owner_id, device.device_id), owner, device
-            )
-            self.assertEqual(completed.status, "completed")
-            stale = ResearchRun(
-                "research-stale", ResearchRequest("stale", owner.owner_id, device.device_id),
-                ResearchPlan(("search local documents",)), "running",
-                (ResearchStep("step-1", "search local documents", "running"),),
-                created_at=datetime.now(UTC),
-            )
-            runtime.repository.insert_research_run(stale)
-            lifecycle = RuntimeLifecycle(runtime)
-            await lifecycle.stop()
-
-            restarted = create_runtime(JarvisConfig(database_path=database_path))
-            await restarted.start()
             try:
-                recovered = restarted.research.get("research-stale", owner.owner_id)
-                durable = restarted.research.get(completed.run_id, owner.owner_id)
-                self.assertIsNotNone(recovered)
-                self.assertEqual(recovered.status if recovered else None, "failed")
-                self.assertEqual(recovered.error_code if recovered else None, "process_restarted")
-                self.assertIsNotNone(durable)
-                self.assertEqual(durable.status if durable else None, "completed")
+                await runtime.start()
+                runtime.research.local = LocalDocumentProvider((folder,))
+                owner = await runtime.identity.bootstrap_owner("Durable Owner")
+                device = DeviceIdentity("durable-device", owner.owner_id, "desktop", "windows", frozenset({"research.local"}), frozenset({"tool.request"}))
+                completed = await runtime.research.start(
+                    ResearchRequest("durable evidence", owner.owner_id, device.device_id), owner, device
+                )
+                self.assertEqual(completed.status, "completed")
+                stale = ResearchRun(
+                    "research-stale", ResearchRequest("stale", owner.owner_id, device.device_id),
+                    ResearchPlan(("search local documents",)), "running",
+                    (ResearchStep("step-1", "search local documents", "running"),),
+                    created_at=datetime.now(UTC),
+                )
+                runtime.repository.insert_research_run(stale)
+                lifecycle = RuntimeLifecycle(runtime)
+                await lifecycle.stop()
+
+                restarted = create_runtime(JarvisConfig(database_path=database_path))
+                await restarted.start()
+                try:
+                    recovered = restarted.research.get("research-stale", owner.owner_id)
+                    durable = restarted.research.get(completed.run_id, owner.owner_id)
+                    self.assertIsNotNone(recovered)
+                    self.assertEqual(recovered.status if recovered else None, "failed")
+                    self.assertEqual(recovered.error_code if recovered else None, "process_restarted")
+                    self.assertIsNotNone(durable)
+                    self.assertEqual(durable.status if durable else None, "completed")
+                finally:
+                    await restarted.shutdown()
             finally:
-                await restarted.shutdown()
+                if runtime.state is RuntimeState.READY:
+                    await runtime.shutdown()
 
     async def test_backup_restore_model_probe_and_lifecycle_boundaries(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
