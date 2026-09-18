@@ -153,13 +153,14 @@ is pushed to `origin/feature/jarvis-final-completion`.
 | Brave version | `153.1.95.102` |
 | Brave publisher/signature | `Brave Software, Inc.` / Authenticode `Valid` |
 | Brave SHA-256 | `A2DE73C6657B98E12A2811BA43D12F35ABBCEC46C253D7A7D9F12E9AAA6438E5` |
-| Owner-session preflight after reconciliation | `BROWSER_V2_PARTIAL`; Playwright runtime unavailable in active interpreter |
-| Playwright package install attempts | bounded network retries stalled on the 38 MB wheel and were cancelled; no browser binary download was attempted |
-| Manual ChatGPT login / nonce / persistence | not reached; no live browser process or normal Brave profile touch was claimed |
+| Owner-session preflight after reconciliation | `BROWSER_V2_PARTIAL`; Playwright `1.63.0` is now importable, exact signed Brave and the dedicated JARVIS profile launched, then the runner stopped at `OWNER_LOGIN_REQUIRED` |
+| Playwright package install attempts | earlier bounded network retries stalled on the 38 MB wheel and were cancelled; the current active interpreter now reports Playwright `1.63.0`; no browser binary download was attempted |
+| Manual ChatGPT login / nonce / persistence | owner action required; the dedicated profile reached the ChatGPT boundary but no credential interaction, nonce action, or authenticated persistence check was attempted |
 
 The deterministic owner runner continued to report zero wrong targets,
 duplicate actions, unapproved actions, credential interactions, secret/raw
 screenshot persistence, prompt-injection escalations, private-network allows,
-and normal-profile touches. W1 therefore remains `PARTIAL` at the optional
-Playwright runtime gate; W2 must not begin until the live owner-session gate is
-green or the owner resumes after this environment dependency is available.
+and normal-profile touches. W1 therefore remains `PARTIAL` at the manual owner
+authentication gate; W2 must not begin until the owner logs in manually and
+resumes for the nonce/persistence acceptance, or the gate is otherwise closed
+with truthful evidence.

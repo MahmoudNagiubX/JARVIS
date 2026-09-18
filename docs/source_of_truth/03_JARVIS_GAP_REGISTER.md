@@ -204,10 +204,11 @@ deterministic generated-fixture evidence; physical owner/authenticated
 acceptance and the T6 red-team matrix remain open.
 **Final-completion W1 (2026-09-18):** `FINAL-001` fixed the product desktop
 capability profile so the canonical existing owner device can advertise the
-Browser V2 action set during normal identity reconciliation. The live gate is
-still pending because the active interpreter does not currently have the
-optional Playwright Python runtime available; no authenticated browser result
-is claimed.
+Browser V2 action set during normal identity reconciliation. The active
+interpreter now has Playwright `1.63.0`; the bounded owner runner launched the
+exact signed Brave executable with the dedicated JARVIS profile and stopped at
+`OWNER_LOGIN_REQUIRED`. No authenticated browser result is claimed until the
+owner manually authenticates and the nonce/persistence checks complete.
 **Batch 09 boundary (2026-09-15):** the existing `LocalBrowserController` is
 not a live authenticated Brave/session adapter. `RW-BRAVE-001` therefore stops
 after the bounded host-only phase and classifies navigation/authenticated web
