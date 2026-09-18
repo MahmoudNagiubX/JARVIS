@@ -13,6 +13,9 @@ class ModelGatewayConfig:
     provider: str
     primary_model: str
     fallback_model: str
+    openai_enabled: bool
+    openai_model: str
+    openai_timeout_seconds: float
     ollama_base_url: str
     llama_cpp_server_path: Path | None
     llama_cpp_model_path: Path | None
@@ -27,6 +30,9 @@ class ModelGatewayConfig:
             config.model_provider,
             config.primary_model,
             config.fallback_model,
+            config.openai_enabled,
+            config.openai_model,
+            config.openai_timeout_seconds,
             config.ollama_base_url,
             Path(config.llama_cpp_server_path).expanduser() if config.llama_cpp_server_path else None,
             Path(config.llama_cpp_model_path).expanduser() if config.llama_cpp_model_path else None,

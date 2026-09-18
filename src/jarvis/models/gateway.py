@@ -12,6 +12,7 @@ from ..events import Event, EventCategory, EventState
 from .config import ModelGatewayConfig
 from .health import ModelHealth
 from .llama_runtime import LlamaCppRuntimeConfig, LlamaCppRuntimeSupervisor, LlamaRuntimeStatus
+from .openai import OpenAIProvider
 from .providers import LlamaCppProvider, MockModelProvider, ModelProviderError, OllamaProvider, UnavailableModelProvider
 from .routing import ModelRoute, ModelSelection, default_selections
 
@@ -53,10 +54,18 @@ class ModelGateway:
                         runtime_config.endpoint,
                         model_alias=runtime_config.model_alias,
                     )
+            elif provider_name == "openai":
+                self.providers["openai"] = OpenAIProvider(
+                    model=gateway_config.openai_model,
+                    enabled=gateway_config.openai_enabled,
+                    timeout_seconds=gateway_config.openai_timeout_seconds,
+                )
             else:
                 self.providers[provider_name] = UnavailableModelProvider("provider_adapter_not_configured")
+        primary_model = gateway_config.openai_model if provider_name == "openai" else gateway_config.primary_model
+        fallback_model = gateway_config.openai_model if provider_name == "openai" else gateway_config.fallback_model
         self.selections = default_selections(
-            provider_name, gateway_config.primary_model, gateway_config.fallback_model
+            provider_name, primary_model, fallback_model
         )
 
     async def start(self) -> LlamaRuntimeStatus | None:
