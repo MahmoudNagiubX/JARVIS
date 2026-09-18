@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -15,7 +16,7 @@ from jarvis.api.core import CoreApplication
 from jarvis.bootstrap import create_runtime
 from jarvis.contracts import DeviceIdentity, DeveloperWorkerProvider
 from jarvis.config import JarvisConfig
-from jarvis.developer.service import CodexDeveloperWorkerAdapter, DeveloperWorkerGateway, _ProcessExecution
+from jarvis.developer.service import CodexDeveloperWorkerAdapter, CodexSubdelegationBoundary, DeveloperWorkerGateway, _ProcessExecution
 
 
 class DeveloperWorkerTests(unittest.IsolatedAsyncioTestCase):
@@ -326,3 +327,85 @@ class DeveloperWorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(completed["result"]["status"], "completed")
         finally:
             await runtime.shutdown()
+
+    async def test_codex_child_boundary_enforces_parent_scope_limit_and_trace(self) -> None:
+        calls: list[tuple[str, Path, float]] = []
+
+        async def child_executor(task: str, scope: Path, timeout: float) -> dict[str, object]:
+            calls.append((task, scope, timeout))
+            return {"status": "completed", "summary": "reviewed api_key=secret", "changes": ["ui.md"]}
+
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, ".git").mkdir()
+            boundary = CodexSubdelegationBoundary(child_executor)
+            result = await boundary.request(
+                parent_provider="codex",
+                task="review the bounded UI fixture",
+                workspace_scope=folder,
+                timeout_seconds=10,
+                expected_paths=("ui.md",),
+            )
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["verification_status"], "unverified")
+            self.assertNotIn("secret", str(result))
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(result["trace"], ["requested", "claimed", "completed"])
+
+            limited = await boundary.request(
+                parent_provider="codex",
+                task="review another fixture",
+                workspace_scope=folder,
+                timeout_seconds=10,
+            )
+            self.assertEqual(limited["error_code"], "codex_child_limit_reached")
+            self.assertEqual(len(calls), 1)
+
+    async def test_codex_child_boundary_fails_closed_for_parent_scope_timeout_and_cancel(self) -> None:
+        async def never_child(*_: object) -> dict[str, object]:
+            await asyncio.sleep(10)
+            return {"status": "completed"}
+
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as non_git:
+            Path(folder, ".git").mkdir()
+            wrong_parent = CodexSubdelegationBoundary(never_child)
+            rejected = await wrong_parent.request(
+                parent_provider="antigravity",
+                task="review",
+                workspace_scope=folder,
+                timeout_seconds=5,
+            )
+            self.assertEqual(rejected["error_code"], "codex_parent_required")
+
+            missing_scope = CodexSubdelegationBoundary(never_child)
+            scope_result = await missing_scope.request(
+                parent_provider="codex",
+                task="review",
+                workspace_scope=non_git,
+                timeout_seconds=5,
+            )
+            self.assertEqual(scope_result["error_code"], "codex_child_workspace_scope_required")
+
+            timed = CodexSubdelegationBoundary(never_child)
+            timeout_result = await timed.request(
+                parent_provider="codex",
+                task="review",
+                workspace_scope=folder,
+                timeout_seconds=0.01,
+            )
+            self.assertEqual(timeout_result["error_code"], "codex_child_timeout")
+            self.assertEqual(timeout_result["trace"], ["requested", "claimed", "timed_out"])
+
+            cancelled = CodexSubdelegationBoundary(never_child)
+            cancel_event = asyncio.Event()
+            task = asyncio.create_task(cancelled.request(
+                parent_provider="codex",
+                task="review",
+                workspace_scope=folder,
+                timeout_seconds=5,
+                cancel_event=cancel_event,
+            ))
+            await asyncio.sleep(0)
+            cancel_event.set()
+            cancel_result = await task
+            self.assertEqual(cancel_result["error_code"], "codex_child_cancelled")
+            self.assertEqual(cancel_result["trace"], ["requested", "claimed", "cancelled"])

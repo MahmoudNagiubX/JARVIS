@@ -23,6 +23,7 @@ _MAX_TASK_CHARS = 8_000
 _MAX_OUTPUT_BYTES = 256 * 1024
 _MAX_SUMMARY_CHARS = 2_000
 _MAX_TIMEOUT_SECONDS = 300.0
+_MAX_CHILD_TIMEOUT_SECONDS = 120.0
 _SENSITIVE_TASK_MARKERS = (
     ".env",
     "api key",
@@ -81,6 +82,7 @@ class _ProcessExecution:
 
 
 ProcessExecutor = Callable[[tuple[str, ...], Path, float], Awaitable[_ProcessExecution]]
+ChildExecutor = Callable[[str, Path, float], Awaitable[dict[str, object]]]
 
 
 def _bounded_timeout(value: float) -> float:
@@ -152,6 +154,143 @@ def _safe_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key.casefold() in _ALLOWED_ENVIRONMENT_CASEFOLDED}
 
 
+class CodexSubdelegationBoundary:
+    """Validate one optional child request made through a Codex boundary.
+
+    This object deliberately has no executable discovery, authentication, or
+    process-launch code. Production JARVIS leaves the executor unset unless a
+    separately approved Codex integration supplies it. Tests can inject a
+    deterministic callback to exercise the same scope, timeout, cancellation,
+    and single-child rules without creating a runtime AntiGravity dependency.
+    """
+
+    def __init__(self, child_executor: ChildExecutor | None = None) -> None:
+        self._child_executor = child_executor
+        self._claimed = False
+
+    async def request(
+        self,
+        *,
+        parent_provider: str,
+        task: str,
+        workspace_scope: str | Path,
+        timeout_seconds: float,
+        expected_paths: tuple[str, ...] = (),
+        cancel_event: asyncio.Event | None = None,
+    ) -> dict[str, object]:
+        trace = ["requested"]
+
+        def outcome(status: str, error_code: str | None = None, **values: object) -> dict[str, object]:
+            result: dict[str, object] = {
+                "status": status,
+                "provider": "codex",
+                "verification_status": "unverified",
+                "trace": list(trace),
+            }
+            if error_code is not None:
+                result["error_code"] = error_code
+            result.update(values)
+            return result
+
+        if parent_provider.casefold() != "codex":
+            trace.append("rejected_parent")
+            return outcome("rejected", "codex_parent_required")
+        if self._claimed:
+            trace.append("rejected_limit")
+            return outcome("rejected", "codex_child_limit_reached")
+        if self._child_executor is None:
+            trace.append("unavailable")
+            return outcome("unavailable", "codex_child_executor_not_configured")
+        bounded_task = str(task).strip()
+        if not bounded_task or len(bounded_task) > 4_000 or any(marker in bounded_task.casefold() for marker in _SENSITIVE_TASK_MARKERS):
+            trace.append("rejected_task")
+            return outcome("rejected", "codex_child_task_rejected")
+        try:
+            scope = Path(workspace_scope).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            trace.append("rejected_scope")
+            return outcome("rejected", "codex_child_workspace_scope_required")
+        if not scope.is_dir() or not (scope / ".git").exists():
+            trace.append("rejected_scope")
+            return outcome("rejected", "codex_child_workspace_scope_required")
+        normalized_expected = {CodexDeveloperWorkerAdapter._normalize_relative_path(item) for item in expected_paths}
+        if any(item is None for item in normalized_expected):
+            trace.append("rejected_paths")
+            return outcome("rejected", "codex_child_expected_path_invalid")
+        try:
+            bounded_timeout = min(max(float(timeout_seconds), 0.01), _MAX_CHILD_TIMEOUT_SECONDS)
+        except (TypeError, ValueError):
+            trace.append("rejected_timeout")
+            return outcome("rejected", "codex_child_timeout_invalid")
+
+        self._claimed = True
+        trace.append("claimed")
+        child_id = f"codex-child-{uuid4()}"
+        work = asyncio.create_task(self._child_executor(bounded_task, scope, bounded_timeout))
+        cancel_task: asyncio.Task[bool] | None = None
+        try:
+            if cancel_event is None:
+                try:
+                    raw = await asyncio.wait_for(work, timeout=bounded_timeout)
+                except asyncio.TimeoutError:
+                    trace.append("timed_out")
+                    return outcome("failed", "codex_child_timeout", child_id=child_id)
+            else:
+                cancel_task = asyncio.create_task(cancel_event.wait())
+                done, _ = await asyncio.wait(
+                    {work, cancel_task},
+                    timeout=bounded_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done:
+                    trace.append("timed_out")
+                    return outcome("failed", "codex_child_timeout", child_id=child_id)
+                if cancel_task in done and cancel_event.is_set() and work not in done:
+                    trace.append("cancelled")
+                    return outcome("cancelled", "codex_child_cancelled", child_id=child_id)
+                raw = work.result()
+        except Exception as exc:
+            trace.append("failed")
+            return outcome("failed", f"codex_child_failed:{exc.__class__.__name__}", child_id=child_id)
+        finally:
+            if cancel_task is not None and not cancel_task.done():
+                cancel_task.cancel()
+                await asyncio.gather(cancel_task, return_exceptions=True)
+            if not work.done():
+                work.cancel()
+                await asyncio.gather(work, return_exceptions=True)
+
+        if not isinstance(raw, dict):
+            trace.append("failed")
+            return outcome("failed", "codex_child_result_invalid", child_id=child_id)
+        raw_status = str(raw.get("status", "")).casefold()
+        if raw_status not in {"completed", "succeeded"}:
+            trace.append("failed")
+            return outcome("failed", "codex_child_result_not_completed", child_id=child_id)
+        changes: list[str] = []
+        raw_changes = raw.get("changes", ())
+        if not isinstance(raw_changes, (list, tuple)) or not all(isinstance(item, str) for item in raw_changes):
+            trace.append("failed")
+            return outcome("failed", "codex_child_changes_invalid", child_id=child_id)
+        for item in raw_changes:
+            normalized = CodexDeveloperWorkerAdapter._normalize_relative_path(item)
+            if normalized is None:
+                trace.append("failed")
+                return outcome("failed", "codex_child_change_scope_invalid", child_id=child_id)
+            changes.append(normalized)
+        if normalized_expected and not normalized_expected.issubset(set(changes)):
+            trace.append("failed")
+            return outcome("failed", "codex_child_expected_change_missing", child_id=child_id, changes=changes)
+        trace.append("completed")
+        return outcome(
+            "completed",
+            child_id=child_id,
+            summary=_safe_output(str(raw.get("summary", "Codex child completed."))),
+            changes=changes,
+            verification_reason="child output is untrusted; Codex parent must review and verify",
+        )
+
+
 class DeveloperWorkerGateway:
     """Capability discovery and explicit adapter boundary for developer workers."""
 
@@ -218,19 +357,76 @@ class DeveloperWorkerGateway:
             result = self.adapter(task, workspace_scope, bounded_timeout)
         return await result if inspect.isawaitable(result) else result
 
+    async def request_codex_child(
+        self,
+        task: str,
+        workspace_scope: str,
+        *,
+        timeout_seconds: float = 60.0,
+        expected_paths: tuple[str, ...] = (),
+        cancel_event: asyncio.Event | None = None,
+    ) -> dict[str, object]:
+        """Expose the optional child seam only through the Codex adapter."""
+
+        selected = next((item for item in self._providers if item.name == "codex"), None)
+        if selected is None or not selected.available:
+            return {"status": "unavailable", "provider": "codex", "error_code": "developer_cli_not_available"}
+        if not isinstance(self.adapter, CodexDeveloperWorkerAdapter):
+            return {"status": "unavailable", "provider": "codex", "error_code": "codex_child_boundary_not_configured"}
+        return await self.adapter.request_child(
+            task,
+            workspace_scope,
+            timeout_seconds=timeout_seconds,
+            expected_paths=expected_paths,
+            cancel_event=cancel_event,
+        )
+
 
 class CodexDeveloperWorkerAdapter:
     """Run Codex in a bounded read-only or approved workspace-write scope."""
 
     name = "codex"
 
-    def __init__(self, executable: str | None = None, *, process_executor: ProcessExecutor | None = None) -> None:
+    def __init__(
+        self,
+        executable: str | None = None,
+        *,
+        process_executor: ProcessExecutor | None = None,
+        child_boundary: CodexSubdelegationBoundary | None = None,
+    ) -> None:
         self.executable = executable or shutil.which("codex")
         self._process_executor = process_executor
+        self._child_boundary = child_boundary
 
     @property
     def available(self) -> bool:
         return bool(self.executable)
+
+    async def request_child(
+        self,
+        task: str,
+        workspace_scope: str,
+        *,
+        timeout_seconds: float = 60.0,
+        expected_paths: tuple[str, ...] = (),
+        cancel_event: asyncio.Event | None = None,
+    ) -> dict[str, object]:
+        """Request a child only through an explicitly supplied Codex seam.
+
+        No default boundary is created here; a normal JARVIS deployment cannot
+        launch or authenticate to AntiGravity by calling this method.
+        """
+
+        if self._child_boundary is None:
+            return {"status": "unavailable", "provider": self.name, "error_code": "codex_child_boundary_not_configured"}
+        return await self._child_boundary.request(
+            parent_provider=self.name,
+            task=task,
+            workspace_scope=workspace_scope,
+            timeout_seconds=timeout_seconds,
+            expected_paths=expected_paths,
+            cancel_event=cancel_event,
+        )
 
     @staticmethod
     def _scope(workspace_scope: str | None) -> Path | None:
