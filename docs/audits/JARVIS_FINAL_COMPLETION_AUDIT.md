@@ -284,7 +284,7 @@ desktop package.
 ## 12. Ultimate Completion Requirement Matrix
 
 This matrix is evaluated against the current feature-branch HEAD
-`7c04c42`. `PASS` means the code-controlled requirement has current evidence;
+`5eaffa8`. `PASS` means the code-controlled requirement has current evidence;
 `PARTIAL` means a bounded foundation or non-authenticated slice exists;
 `NOT_CONFIGURED` means the adapter/configuration seam is absent or empty;
 `OWNER_ACTION_REQUIRED` means the next step is owner-controlled; and
