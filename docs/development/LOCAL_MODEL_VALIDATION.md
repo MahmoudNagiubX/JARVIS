@@ -8,8 +8,8 @@ local GGUF provider; `gguf` is a compatibility alias.
 ```powershell
 $env:PYTHONPATH = "src"
 $env:JARVIS_MODEL_PROVIDER = "ollama"
-$env:JARVIS_PRIMARY_MODEL = "qwen3.5:4b"
-$env:JARVIS_FALLBACK_MODEL = "qwen3.5-heretic:9b-q4km"
+$env:JARVIS_PRIMARY_MODEL = "Qwen3.5-4B-Heretic"
+$env:JARVIS_FALLBACK_MODEL = "Qwen3.5-4B-Heretic"
 $env:JARVIS_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 python -m jarvis --model-probe
 python -m jarvis --model-probe --model-exercise

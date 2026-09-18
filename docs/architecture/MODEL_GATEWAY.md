@@ -14,8 +14,8 @@ deterministic tests.
 
 ```text
 JARVIS_MODEL_PROVIDER=hybrid|mock|ollama|gguf|llama_cpp
-JARVIS_PRIMARY_MODEL=qwen3.5:4b
-JARVIS_FALLBACK_MODEL=qwen3.5-heretic:9b-q4km
+JARVIS_PRIMARY_MODEL=Qwen3.5-4B-Heretic
+JARVIS_FALLBACK_MODEL=Qwen3.5-4B-Heretic
 JARVIS_LOCAL_MODEL=Qwen3.5-4B-Heretic
 JARVIS_MODEL_LOOPBACK_ENDPOINT=http://127.0.0.1:11434
 JARVIS_GROQ_ENABLED=false

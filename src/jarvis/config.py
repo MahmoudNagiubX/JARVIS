@@ -34,8 +34,8 @@ class JarvisConfig:
     event_handler_timeout_seconds: float = 5.0
     database_path: str = "data/jarvis.sqlite3"
     model_provider: str = "mock"
-    primary_model: str = "qwen3.5:4b"
-    fallback_model: str = "qwen3.5-heretic:9b-q4km"
+    primary_model: str = "Qwen3.5-4B-Heretic"
+    fallback_model: str = "Qwen3.5-4B-Heretic"
     # The hybrid route uses the owner-provisioned Heretic alias while the
     # legacy primary/fallback fields remain compatible with existing local
     # Ollama/llama.cpp profiles and tests.
