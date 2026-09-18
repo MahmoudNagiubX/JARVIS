@@ -596,6 +596,23 @@ class CoreHttpServer:
                         result = asyncio.run(application.engineering_approval(principal.identity, route.rsplit("/", 1)[-1], bool(body.get("approved", False)), str(body.get("decided_by", principal.identity.identity_id))))
                         self._respond(HTTPStatus.OK, result)
                         return
+                    if route == "/workers/developer/run":
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.developer_run(principal.identity, principal.device, body))
+                        status = HTTPStatus.ACCEPTED if result.get("result", {}).get("status") == "approval_required" else HTTPStatus.OK
+                        self._respond(status, result)
+                        return
+                    if route.startswith("/workers/developer/approvals/"):
+                        principal = self._authenticated(body)
+                        result = asyncio.run(application.decide_developer_approval(
+                            principal.identity,
+                            principal.device,
+                            route.rsplit("/", 1)[-1],
+                            body.get("approved"),
+                            str(body.get("decided_by", principal.identity.identity_id)),
+                        ))
+                        self._respond(HTTPStatus.OK, result)
+                        return
                     if route == "/perception/screen":
                         principal = self._authenticated(body)
                         result = asyncio.run(application.perception_screen(principal.identity, principal.device, body))

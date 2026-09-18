@@ -213,12 +213,31 @@ class WorkerCoordinator:
         result = await self._with_verification(envelope, result)
         return await self._store_delegation(owner_id, selected, workspace_scope, task, result, started)
 
-    async def decide(self, approval_id: str, approved: bool, decided_by: str) -> WorkerDelegation:
+    async def decide(
+        self,
+        approval_id: str,
+        approved: bool,
+        decided_by: str,
+        *,
+        identity: Identity | None = None,
+        device: DeviceIdentity | None = None,
+    ) -> WorkerDelegation:
         """Consume one write approval and execute the pending Codex task once."""
 
         pending = self._pending_developer_writes.get(approval_id)
         if pending is None or self.approvals is None:
             raise KeyError(approval_id)
+        if (
+            identity is None
+            or device is None
+            or identity.identity_id != pending.identity.identity_id
+            or identity.owner_id != pending.owner_id
+            or device.device_id != pending.device.device_id
+            or device.owner_id != pending.owner_id
+        ):
+            raise PermissionError("developer_approval_principal_mismatch")
+        if decided_by != identity.identity_id:
+            raise PermissionError("developer_approval_decider_mismatch")
         decide_with_claim = getattr(self.approvals, "decide_with_claim", None)
         if decide_with_claim is not None:
             decision, claimed = await decide_with_claim(approval_id, approved, decided_by)

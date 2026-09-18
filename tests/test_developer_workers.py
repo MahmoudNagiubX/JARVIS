@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from jarvis.agents.workers.coordination import WorkerCoordinator
 from jarvis.agents.workers.runtime import VerificationStatus, WorkerVerification
+from jarvis.api.core import CoreApplication
 from jarvis.bootstrap import create_runtime
 from jarvis.contracts import DeviceIdentity, DeveloperWorkerProvider
 from jarvis.config import JarvisConfig
@@ -244,12 +245,84 @@ class DeveloperWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(pending.result["status"], "approval_required")
                 self.assertEqual(calls, [])
 
-                completed = await coordinator.decide(approval_id, True, identity.identity_id)
+                with self.assertRaises(PermissionError):
+                    await coordinator.decide(
+                        approval_id,
+                        True,
+                        identity.identity_id,
+                        identity=identity,
+                        device=DeviceIdentity(
+                            "other-device",
+                            identity.owner_id,
+                            "desktop",
+                            "windows",
+                            frozenset({"computer_control"}),
+                            frozenset({"tool.request"}),
+                            datetime.now(UTC),
+                        ),
+                    )
+                completed = await coordinator.decide(
+                    approval_id,
+                    True,
+                    identity.identity_id,
+                    identity=identity,
+                    device=device,
+                )
 
             self.assertEqual(completed.result["status"], "completed")
             self.assertEqual(completed.result["verification_status"], VerificationStatus.VERIFIED.value)
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0]["mode"], "workspace_write")
             self.assertTrue(calls[0]["allow"])
+        finally:
+            await runtime.shutdown()
+
+    async def test_core_developer_surface_binds_resume_to_authenticated_principal(self) -> None:
+        runtime = create_runtime(JarvisConfig(environment="test", database_path=":memory:"))
+        await runtime.start()
+        identity = await runtime.identity.bootstrap_owner("Developer API Fixture")
+        device = DeviceIdentity(
+            "device-api-fixture",
+            identity.owner_id,
+            "desktop",
+            "windows",
+            frozenset({"computer_control"}),
+            frozenset({"tool.request"}),
+            datetime.now(UTC),
+        )
+
+        class WriteAdapter:
+            async def run(self, task, scope, timeout, **kwargs):
+                return {"status": "completed", "provider": "codex", "worker_id": "codex-api", "summary": task, "changes": []}
+
+        try:
+            gateway = DeveloperWorkerGateway(adapter=WriteAdapter())
+            gateway._providers = (DeveloperWorkerProvider("codex", "codex", True, "fixture"),)
+            runtime.worker_coordinator.developer_gateway = gateway
+            application = CoreApplication(runtime)
+            pending = await application.developer_run(
+                identity,
+                device,
+                {"task": "implement the bounded API fixture code change", "workspace_scope": str(Path.cwd()), "read_only": False},
+            )
+            approval_id = str(pending["result"]["approval_id"])
+            with self.assertRaises(PermissionError):
+                await application.decide_developer_approval(
+                    identity,
+                    DeviceIdentity(
+                        "wrong-device",
+                        identity.owner_id,
+                        "desktop",
+                        "windows",
+                        frozenset({"computer_control"}),
+                        frozenset({"tool.request"}),
+                        datetime.now(UTC),
+                    ),
+                    approval_id,
+                    True,
+                    identity.identity_id,
+                )
+            completed = await application.decide_developer_approval(identity, device, approval_id, True, identity.identity_id)
+            self.assertEqual(completed["result"]["status"], "completed")
         finally:
             await runtime.shutdown()

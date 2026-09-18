@@ -756,6 +756,84 @@ class CoreApplication:
     def developer_providers(self) -> list[dict[str, Any]]:
         return [asdict(item) for item in self.runtime.developer_workers.providers()]
 
+    async def developer_run(
+        self,
+        identity: Identity,
+        device: DeviceIdentity,
+        values: dict[str, object],
+    ) -> dict[str, Any]:
+        """Run a bounded Codex worker task through the canonical coordinator.
+
+        The authenticated principal supplies owner/device identity. Request
+        bodies cannot select another owner or device, and write mode remains a
+        durable-approval pause until ``developer_approval`` is called.
+        """
+
+        task = values.get("task")
+        if not isinstance(task, str) or not task.strip():
+            raise ValueError("developer_task_required")
+        workspace_value = values.get("workspace_scope")
+        if workspace_value is not None and not isinstance(workspace_value, str):
+            raise ValueError("developer_workspace_scope_invalid")
+
+        def _strings(name: str) -> tuple[str, ...]:
+            raw = values.get(name, ())
+            if raw is None:
+                return ()
+            if not isinstance(raw, (list, tuple)) or not all(isinstance(item, str) for item in raw):
+                raise ValueError(f"developer_{name}_invalid")
+            return tuple(raw)
+
+        read_only = values.get("read_only", True)
+        if not isinstance(read_only, bool):
+            raise ValueError("developer_read_only_must_be_boolean")
+        allow_antigravity = values.get("allow_antigravity_subdelegation", False)
+        if not isinstance(allow_antigravity, bool):
+            raise ValueError("developer_antigravity_flag_must_be_boolean")
+        timeout = values.get("timeout_seconds", 60.0)
+        try:
+            timeout_seconds = float(timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("developer_timeout_invalid") from exc
+        result = await self.runtime.worker_coordinator.run(
+            identity.owner_id,
+            task,
+            workspace_scope=workspace_value,
+            read_only=read_only,
+            timeout_seconds=timeout_seconds,
+            required_capability=values.get("required_capability") if isinstance(values.get("required_capability"), str) else None,
+            identity=identity,
+            device=device,
+            mission_id=values.get("mission_id") if isinstance(values.get("mission_id"), str) else None,
+            goal=values.get("goal") if isinstance(values.get("goal"), str) else None,
+            allowed_capabilities=_strings("allowed_capabilities"),
+            budget=int(values.get("budget", 1)),
+            input_evidence=_strings("input_evidence"),
+            expected_output=_strings("expected_output"),
+            verifier_requirements=_strings("verifier_requirements"),
+            expected_paths=_strings("expected_paths"),
+            allow_antigravity_subdelegation=allow_antigravity,
+        )
+        return asdict(result)
+
+    async def decide_developer_approval(
+        self,
+        identity: Identity,
+        device: DeviceIdentity,
+        approval_id: str,
+        approved: bool,
+        decided_by: str,
+    ) -> dict[str, Any]:
+        if not isinstance(approved, bool):
+            raise ValueError("developer_approval_must_be_boolean")
+        return asdict(await self.runtime.worker_coordinator.decide(
+            approval_id,
+            approved,
+            decided_by,
+            identity=identity,
+            device=device,
+        ))
+
     # Computer, browser, device, home, communications, and UI use cases
     async def list_devices(self, owner_id: str) -> list[dict[str, Any]]:
         return [self._device_dict(item) for item in await self.runtime.device_fabric.list(owner_id)]
