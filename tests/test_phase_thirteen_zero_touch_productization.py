@@ -202,8 +202,9 @@ def test_product_device_uses_minimal_scopes_and_expected_capabilities(tmp_path: 
         assert row is not None
         assert json.loads(row["scopes_json"]) == ["tool.request"]
         assert json.loads(row["capabilities_json"]) == [
-            "browser.extract_text", "browser.find_element", "browser.inspect_accessibility_tree",
-            "browser.navigate", "browser.open_url", "browser.read_page", "browser.tabs",
+            "browser.click", "browser.download_file", "browser.extract_text", "browser.find_element",
+            "browser.inspect_accessibility_tree", "browser.navigate", "browser.open_url", "browser.read_page",
+            "browser.screenshot", "browser.select", "browser.tabs", "browser.type", "browser.upload_file",
             "computer.input", "computer.observe", "perception.screen", "research.local",
         ]
     finally:

@@ -40,6 +40,8 @@ PRODUCT_CAPABILITIES = (
     "computer.observe", "computer.input", "perception.screen", "research.local",
     "browser.open_url", "browser.navigate", "browser.read_page", "browser.extract_text",
     "browser.find_element", "browser.inspect_accessibility_tree", "browser.tabs",
+    "browser.click", "browser.type", "browser.select",
+    "browser.download_file", "browser.upload_file", "browser.screenshot",
 )
 
 

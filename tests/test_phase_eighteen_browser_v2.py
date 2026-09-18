@@ -16,6 +16,7 @@ from jarvis.browser.service import BrowserActionService, LocalBrowserController,
 from jarvis.browser.policy import BrowserURLPolicy
 from jarvis.computer.file_access import FileAccessPolicy
 from jarvis.config import JarvisConfig
+from jarvis.desktop.lifecycle import PRODUCT_CAPABILITIES
 from scripts.phase18.browser_v2_owner_acceptance import OwnerAcceptanceConfig, run_acceptance
 from jarvis.contracts import BrowserAction, BrowserSessionMode, DeviceIdentity, ToolContext
 
@@ -45,6 +46,17 @@ class PhaseEighteenBrowserV2FoundationTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         await self.runtime.shutdown()
+
+    def test_desktop_product_profile_advertises_browser_v2_action_capabilities(self) -> None:
+        required = {
+            "browser.click",
+            "browser.type",
+            "browser.select",
+            "browser.download_file",
+            "browser.upload_file",
+            "browser.screenshot",
+        }
+        self.assertTrue(required.issubset(set(PRODUCT_CAPABILITIES)))
 
     async def test_missing_playwright_is_a_typed_failure_without_static_fallback(self) -> None:
         def missing(_: str) -> object:
