@@ -87,7 +87,7 @@ from .memory import (
     MemoryStore,
 )
 from .missions import Mission, MissionBudget, MissionCheckpoint, MissionDependency, MissionEvidence, MissionPlan, MissionResult, MissionStatus, MissionStep
-from .model import LLMMessage, LLMProvider, LLMRequest, LLMResponse, LLMRole, LLMRouter
+from .model import LLMInputMedia, LLMMessage, LLMProvider, LLMRequest, LLMResponse, LLMRole, LLMRouter
 from .nodes import (
     NodeDescriptor,
     NodeHealth,
@@ -242,6 +242,7 @@ __all__ = [
     "Identity",
     "IdentityService",
     "LLMMessage",
+    "LLMInputMedia",
     "LLMProvider",
     "LLMRequest",
     "LLMResponse",

@@ -36,9 +36,20 @@ class JarvisConfig:
     model_provider: str = "mock"
     primary_model: str = "qwen3.5:4b"
     fallback_model: str = "qwen3.5-heretic:9b-q4km"
+    # The hybrid route uses the owner-provisioned Heretic alias while the
+    # legacy primary/fallback fields remain compatible with existing local
+    # Ollama/llama.cpp profiles and tests.
+    local_model: str = "Qwen3.5-4B-Heretic"
     openai_enabled: bool = False
     openai_model: str = "gpt-5.2"
     openai_timeout_seconds: float = 30.0
+    groq_enabled: bool = False
+    groq_model: str = "openai/gpt-oss-120b"
+    groq_timeout_seconds: float = 30.0
+    groq_reasoning_effort: str = "low"
+    gemini_enabled: bool = False
+    gemini_model: str = "gemini-3.5-flash"
+    gemini_timeout_seconds: float = 45.0
     ollama_base_url: str = "http://127.0.0.1:11434"
     llama_cpp_server_path: str | None = None
     llama_cpp_model_path: str | None = None
@@ -76,9 +87,10 @@ class JarvisConfig:
             str(defaults.event_handler_timeout_seconds),
         )
         database_path = os.getenv("JARVIS_DATABASE_PATH", defaults.database_path).strip()
-        model_provider = os.getenv("JARVIS_MODEL_PROVIDER", defaults.model_provider).strip().lower()
+        model_provider = os.getenv("JARVIS_MODEL_PROVIDER", "hybrid").strip().lower()
         primary_model = os.getenv("JARVIS_PRIMARY_MODEL", defaults.primary_model).strip()
         fallback_model = os.getenv("JARVIS_FALLBACK_MODEL", defaults.fallback_model).strip()
+        local_model = os.getenv("JARVIS_LOCAL_MODEL", defaults.local_model).strip()
         openai_enabled_text = os.getenv(
             "JARVIS_OPENAI_ENABLED",
             "true" if defaults.openai_enabled else "false",
@@ -87,6 +99,25 @@ class JarvisConfig:
         openai_timeout_text = os.getenv(
             "JARVIS_OPENAI_TIMEOUT_SECONDS",
             str(defaults.openai_timeout_seconds),
+        ).strip()
+        groq_enabled_text = os.getenv(
+            "JARVIS_GROQ_ENABLED",
+            "true" if defaults.groq_enabled else "false",
+        ).strip().lower()
+        groq_model = os.getenv("JARVIS_GROQ_MODEL", defaults.groq_model).strip()
+        groq_timeout_text = os.getenv("JARVIS_GROQ_TIMEOUT_SECONDS", str(defaults.groq_timeout_seconds)).strip()
+        groq_reasoning_effort = os.getenv(
+            "JARVIS_GROQ_REASONING_EFFORT",
+            defaults.groq_reasoning_effort,
+        ).strip().lower()
+        gemini_enabled_text = os.getenv(
+            "JARVIS_GEMINI_ENABLED",
+            "true" if defaults.gemini_enabled else "false",
+        ).strip().lower()
+        gemini_model = os.getenv("JARVIS_GEMINI_MODEL", defaults.gemini_model).strip()
+        gemini_timeout_text = os.getenv(
+            "JARVIS_GEMINI_TIMEOUT_SECONDS",
+            str(defaults.gemini_timeout_seconds),
         ).strip()
         ollama_base_url = os.getenv(
             "JARVIS_MODEL_LOOPBACK_ENDPOINT",
@@ -140,6 +171,11 @@ class JarvisConfig:
         except ValueError as exc:
             raise ValueError("JARVIS_OPENAI_TIMEOUT_SECONDS must be numeric") from exc
         try:
+            groq_timeout = float(groq_timeout_text)
+            gemini_timeout = float(gemini_timeout_text)
+        except ValueError as exc:
+            raise ValueError("JARVIS cloud provider timeouts must be numeric") from exc
+        try:
             llama_cpp_context_size = int(context_text)
             llama_cpp_threads = int(threads_text)
             llama_cpp_gpu_layers = int(gpu_layers_text) if gpu_layers_text else None
@@ -155,6 +191,10 @@ class JarvisConfig:
         boolean_values = {"true", "false", "1", "0", "yes", "no", "on", "off"}
         if openai_enabled_text not in boolean_values:
             raise ValueError("JARVIS_OPENAI_ENABLED must be boolean")
+        if groq_enabled_text not in boolean_values:
+            raise ValueError("JARVIS_GROQ_ENABLED must be boolean")
+        if gemini_enabled_text not in boolean_values:
+            raise ValueError("JARVIS_GEMINI_ENABLED must be boolean")
         if browser_headless_text not in boolean_values:
             raise ValueError("JARVIS_BROWSER_HEADLESS must be boolean")
         if browser_owner_opt_in_text not in boolean_values:
@@ -167,16 +207,27 @@ class JarvisConfig:
             raise ValueError("event handler timeout must be positive")
         if not database_path:
             raise ValueError("database_path cannot be empty")
-        if model_provider not in {"mock", "ollama", "gguf", "llama_cpp", "openai"}:
-            raise ValueError("JARVIS_MODEL_PROVIDER must be mock, ollama, gguf, llama_cpp, or openai")
+        if model_provider not in {"mock", "ollama", "gguf", "llama_cpp", "openai", "hybrid"}:
+            raise ValueError("JARVIS_MODEL_PROVIDER must be mock, ollama, gguf, llama_cpp, openai, or hybrid")
         if browser_backend not in {"local", "playwright"}:
             raise ValueError("JARVIS_BROWSER_BACKEND must be local or playwright")
         if not primary_model or not fallback_model:
             raise ValueError("model aliases cannot be empty")
+        for name, value in (
+            ("JARVIS_LOCAL_MODEL", local_model),
+            ("JARVIS_GROQ_MODEL", groq_model),
+            ("JARVIS_GEMINI_MODEL", gemini_model),
+        ):
+            if not value or len(value) > 200 or any(char.isspace() for char in value):
+                raise ValueError(f"{name} must be a bounded non-empty token")
         if not openai_model or len(openai_model) > 200 or any(char.isspace() for char in openai_model):
             raise ValueError("JARVIS_OPENAI_MODEL must be a bounded non-empty token")
         if not 1.0 <= openai_timeout <= 180.0:
             raise ValueError("JARVIS_OPENAI_TIMEOUT_SECONDS must be between 1 and 180")
+        if not 1.0 <= groq_timeout <= 180.0 or not 1.0 <= gemini_timeout <= 180.0:
+            raise ValueError("JARVIS cloud provider timeouts must be between 1 and 180")
+        if groq_reasoning_effort not in {"none", "default", "minimal", "low", "medium", "high", "xhigh", "max"}:
+            raise ValueError("JARVIS_GROQ_REASONING_EFFORT is unsupported")
         if not 1024 <= llama_cpp_context_size <= 32768:
             raise ValueError("JARVIS_LLAMA_CPP_CONTEXT_SIZE must be between 1024 and 32768")
         logical_cpus = os.cpu_count() or 1
@@ -198,9 +249,17 @@ class JarvisConfig:
             model_provider=model_provider,
             primary_model=primary_model,
             fallback_model=fallback_model,
+            local_model=local_model,
             openai_enabled=openai_enabled_text in {"true", "1", "yes", "on"},
             openai_model=openai_model,
             openai_timeout_seconds=openai_timeout,
+            groq_enabled=groq_enabled_text in {"true", "1", "yes", "on"},
+            groq_model=groq_model,
+            groq_timeout_seconds=groq_timeout,
+            groq_reasoning_effort=groq_reasoning_effort,
+            gemini_enabled=gemini_enabled_text in {"true", "1", "yes", "on"},
+            gemini_model=gemini_model,
+            gemini_timeout_seconds=gemini_timeout,
             ollama_base_url=ollama_base_url,
             llama_cpp_server_path=llama_cpp_server_path,
             llama_cpp_model_path=llama_cpp_model_path,

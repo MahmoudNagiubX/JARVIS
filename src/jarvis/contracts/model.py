@@ -16,9 +16,18 @@ class LLMRole(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class LLMInputMedia:
+    """Transient multimodal input; never persisted by the model contract."""
+
+    mime_type: str
+    data: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class LLMMessage:
     role: LLMRole
     content: str
+    media: tuple[LLMInputMedia, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

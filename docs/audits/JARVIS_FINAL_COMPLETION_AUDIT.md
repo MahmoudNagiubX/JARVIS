@@ -294,8 +294,11 @@ them.
 
 | Owner requirement | Status | Current evidence / remaining gate |
 |---|---|---|
-| Local models connected | `PARTIAL` | llama.cpp/Qwen foundation and historical physical local-model evidence exist; the current default desktop baseline does not claim a live model turn at this HEAD. |
-| OpenAI API provider | `NOT_CONFIGURED` | No optional OpenAI provider or owner key is configured. |
+| Local models connected | `PARTIAL` | Existing llama.cpp/Qwen foundation and historical physical evidence remain; the hybrid route names `Qwen3.5-4B-Heretic` as the local capability, but no fresh live local turn is claimed at this HEAD. |
+| Hybrid capability router | `PARTIAL` | Deterministic local/Groq/Gemini selection, bounded fallback, cloud-history compaction, transient multimodal input, and route events are implemented/tested; live provider enablement is not configured. |
+| OpenAI API provider | `NOT_CONFIGURED` | Optional Responses adapter is implemented, but no owner key or explicit enablement is configured. |
+| Groq `openai/gpt-oss-120b` | `NOT_CONFIGURED` | Optional standard-library adapter and deterministic reasoning/tool route are implemented; `JARVIS_GROQ_ENABLED` and `GROQ_API_KEY` are not configured. |
+| Gemini `gemini-3.5-flash` | `NOT_CONFIGURED` | Optional GenerateContent adapter, transient inline media path, and visual fallback route are implemented; `JARVIS_GEMINI_ENABLED` and `GEMINI_API_KEY` are not configured. |
 | Codex worker | `NOT_CONFIGURED` | Codex discovery seam exists; no bounded live executor is configured or accepted. |
 | AntiGravity delegation | `NOT_CONFIGURED` | No approved installed adapter or manual authentication is present; no invocation was attempted. |
 | Agent orchestration | `PARTIAL` | AgentRuntime, missions, worker envelope, permissions, approvals, and verification state are implemented; full live daily-use acceptance remains open. |

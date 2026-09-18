@@ -24,6 +24,8 @@ class ClassifiedRequest:
 class RequestRouter:
     def classify(self, text: str) -> ClassifiedRequest:
         lowered = text.casefold()
+        if any(token in lowered for token in ("screenshot", "screen shot", "image", "photo", "picture", "visual", "pdf", "document", "look at")):
+            return ClassifiedRequest(RequestRoute.DIRECT, ModelRoute.VISION, "visual_keyword")
         if any(token in lowered for token in ("research", "investigate", "code", "implement")):
             return ClassifiedRequest(RequestRoute.WORKER, ModelRoute.CODING_WORKER, "worker_keyword")
         if any(token in lowered for token in ("tool", "status", "echo", "computer", "open")):

@@ -13,9 +13,17 @@ class ModelGatewayConfig:
     provider: str
     primary_model: str
     fallback_model: str
+    local_model: str
     openai_enabled: bool
     openai_model: str
     openai_timeout_seconds: float
+    groq_enabled: bool
+    groq_model: str
+    groq_timeout_seconds: float
+    groq_reasoning_effort: str
+    gemini_enabled: bool
+    gemini_model: str
+    gemini_timeout_seconds: float
     ollama_base_url: str
     llama_cpp_server_path: Path | None
     llama_cpp_model_path: Path | None
@@ -27,17 +35,25 @@ class ModelGatewayConfig:
     @classmethod
     def from_config(cls, config: JarvisConfig) -> "ModelGatewayConfig":
         return cls(
-            config.model_provider,
-            config.primary_model,
-            config.fallback_model,
-            config.openai_enabled,
-            config.openai_model,
-            config.openai_timeout_seconds,
-            config.ollama_base_url,
-            Path(config.llama_cpp_server_path).expanduser() if config.llama_cpp_server_path else None,
-            Path(config.llama_cpp_model_path).expanduser() if config.llama_cpp_model_path else None,
-            config.llama_cpp_context_size,
-            config.llama_cpp_threads,
-            config.llama_cpp_gpu_layers,
-            config.local_model_autostart,
+            provider=config.model_provider,
+            primary_model=config.primary_model,
+            fallback_model=config.fallback_model,
+            local_model=config.local_model,
+            openai_enabled=config.openai_enabled,
+            openai_model=config.openai_model,
+            openai_timeout_seconds=config.openai_timeout_seconds,
+            groq_enabled=config.groq_enabled,
+            groq_model=config.groq_model,
+            groq_timeout_seconds=config.groq_timeout_seconds,
+            groq_reasoning_effort=config.groq_reasoning_effort,
+            gemini_enabled=config.gemini_enabled,
+            gemini_model=config.gemini_model,
+            gemini_timeout_seconds=config.gemini_timeout_seconds,
+            ollama_base_url=config.ollama_base_url,
+            llama_cpp_server_path=Path(config.llama_cpp_server_path).expanduser() if config.llama_cpp_server_path else None,
+            llama_cpp_model_path=Path(config.llama_cpp_model_path).expanduser() if config.llama_cpp_model_path else None,
+            llama_cpp_context_size=config.llama_cpp_context_size,
+            llama_cpp_threads=config.llama_cpp_threads,
+            llama_cpp_gpu_layers=config.llama_cpp_gpu_layers,
+            local_model_autostart=config.local_model_autostart,
         )

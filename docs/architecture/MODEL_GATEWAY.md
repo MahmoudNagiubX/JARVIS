@@ -8,13 +8,21 @@
 - `vision`
 - `coding_worker`
 
-Configuration is environment-driven:
+Configuration is environment-driven. Production bootstrap defaults to the
+hybrid route; direct `JarvisConfig()` construction remains mock-compatible for
+deterministic tests.
 
 ```text
-JARVIS_MODEL_PROVIDER=mock|ollama|gguf|llama_cpp
+JARVIS_MODEL_PROVIDER=hybrid|mock|ollama|gguf|llama_cpp|openai
 JARVIS_PRIMARY_MODEL=qwen3.5:4b
 JARVIS_FALLBACK_MODEL=qwen3.5-heretic:9b-q4km
+JARVIS_LOCAL_MODEL=Qwen3.5-4B-Heretic
 JARVIS_MODEL_LOOPBACK_ENDPOINT=http://127.0.0.1:11434
+JARVIS_GROQ_ENABLED=false
+JARVIS_GROQ_MODEL=openai/gpt-oss-120b
+JARVIS_GROQ_REASONING_EFFORT=low
+JARVIS_GEMINI_ENABLED=false
+JARVIS_GEMINI_MODEL=gemini-3.5-flash
 ```
 
 The default provider is deterministic mock mode. The Ollama adapter only
@@ -34,6 +42,30 @@ weights.
 
 No model provider is contacted during import or runtime composition. Tests
 inject mock providers and can verify routing without GPU or model state.
+
+## Hybrid capability routing
+
+The hybrid gateway keeps one common `LLMProvider` boundary and chooses a
+provider from request capability facts, never by asking another model to make
+the choice:
+
+| Capability | Primary | Bounded fallback order |
+|---|---|---|
+| simple/fast/basic command | local `Qwen3.5-4B-Heretic` | Groq, then Gemini |
+| complex reasoning, planning, coding, tools | Groq `openai/gpt-oss-120b` | Gemini, then local |
+| screenshot/image/document/multimodal | Gemini `gemini-3.5-flash` | local only when no media bytes are present |
+
+Only the first provider is called when it succeeds. Cloud requests retain the
+system instruction and recent bounded evidence rather than sending the entire
+conversation history. Groq and Gemini keys are read only from `GROQ_API_KEY`
+and `GEMINI_API_KEY`; their enablement flags default to false so a local-only
+machine remains offline-capable. Groq use is limited by configuration to the
+owner's Groq account/model choice; the owner must keep that account on the
+Groq Free Tier.
+
+The gateway emits `model.route.selected` and `model.route.fallback` events and
+writes bounded provider/model/route/reason fields to the operational logger.
+It never records prompts, media bytes, or API keys.
 
 `JARVIS_OLLAMA_BASE_URL` remains a compatibility input, while
 `model_loopback_endpoint` is the profile-neutral health/configuration name.

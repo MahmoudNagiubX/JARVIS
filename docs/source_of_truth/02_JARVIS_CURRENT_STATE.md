@@ -105,11 +105,13 @@ voice/device, and hosted CI/branch-protection evidence remain external gates.
 
 | Capability | Status | Current truth |
 |---|---|---|
-| Local text LLM | `IMPLEMENTED` | llama.cpp path and existing Qwen GGUF were physically validated in Phase 12 |
+| Local text LLM | `PARTIAL` | Existing llama.cpp/Qwen evidence remains valid; production bootstrap now names the owner-provisioned `Qwen3.5-4B-Heretic` local capability, but no fresh live turn is claimed at this HEAD |
 | English/Arabic/mixed text generation | `IMPLEMENTED` | validated in Phase 12 |
 | Model-facing bounded tool selection | `IMPLEMENTED` | schema/tool budget exists |
-| Local vision model | `PLANNED` | not part of the current local-Qwen text proof |
-| Role-based ModelRouter enhancement | `PARTIAL` | model gateway/router concepts exist; richer role-specific routing remains enhancement work |
+| Local vision model | `PLANNED` | multimodal work is delegated to the optional Gemini provider; no local vision model is claimed |
+| Hybrid capability router | `PARTIAL` | deterministic local/Groq/Gemini routing, bounded fallback, cloud-history compaction, transient media, and route events are implemented and tested; provider keys and live cloud acceptance remain disabled/not configured |
+| Groq `openai/gpt-oss-120b` provider | `NOT_CONFIGURED` | modular adapter exists; `JARVIS_GROQ_ENABLED` and `GROQ_API_KEY` are owner-controlled and not configured in the repository |
+| Gemini `gemini-3.5-flash` provider | `NOT_CONFIGURED` | modular GenerateContent adapter exists with transient inline media; `JARVIS_GEMINI_ENABLED` and `GEMINI_API_KEY` are owner-controlled and not configured |
 
 ### Memory/personal intelligence
 

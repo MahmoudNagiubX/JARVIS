@@ -277,6 +277,7 @@ class DesktopProductConfig:
             model_provider=provider,
             primary_model=self.model_alias,
             ollama_base_url=self.model_endpoint,
+            local_model=self.model_alias,
             llama_cpp_server_path=str(self.llama_cpp_server_path) if self.llama_cpp_server_path else base.llama_cpp_server_path,
             llama_cpp_model_path=str(self.llama_cpp_model_path) if self.llama_cpp_model_path else base.llama_cpp_model_path,
             llama_cpp_context_size=self.model_context_size,

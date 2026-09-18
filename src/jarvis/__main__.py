@@ -28,7 +28,7 @@ async def _main(args: argparse.Namespace) -> None:
             result = await application.send_message(args.text, principal.identity, principal.device)
             print(json.dumps(result, ensure_ascii=False))
         if args.model_smoke:
-            if runtime.config.model_provider not in {"ollama", "gguf", "llama_cpp", "openai"}:
+            if runtime.config.model_provider not in {"ollama", "gguf", "llama_cpp", "openai", "hybrid"}:
                 print("MODEL SMOKE: NOT RUN (set an explicit local or OpenAI model provider)")
             else:
                 health = await runtime.models.health(ModelRoute.GENERAL_REASONING)

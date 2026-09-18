@@ -15,6 +15,19 @@ The smoke test only checks `/api/tags` and sends one bounded chat request. It
 does not run `ollama pull`, change the model store, copy GGUF files, or start
 Ollama. Existing local Qwen assets are referenced by alias only.
 
+For the production hybrid route, the local capability is the existing
+owner-provisioned `Qwen3.5-4B-Heretic` alias:
+
+```powershell
+$env:JARVIS_MODEL_PROVIDER = "hybrid"
+$env:JARVIS_LOCAL_MODEL = "Qwen3.5-4B-Heretic"
+$env:JARVIS_MODEL_LOOPBACK_ENDPOINT = "http://127.0.0.1:11434"
+```
+
+The route remains local-first for short/basic commands and is the offline
+fallback. The provider does not download, rename, replace, or copy model
+weights.
+
 ## llama.cpp / GGUF
 
 The explicit local path uses the existing `ModelGateway` and one bounded
@@ -54,5 +67,26 @@ python -m jarvis --model-smoke
 JARVIS uses the official Responses API endpoint with bounded timeouts and
 `store=false`; the key is not part of `JarvisConfig`, logs, events, or audit
 payloads. Without both explicit enablement and `OPENAI_API_KEY`, health is
-reported as unavailable and no network request is made. The default provider
-remains local/mock.
+reported as unavailable and no network request is made. The direct
+`JarvisConfig()` test default remains mock-compatible; production environment
+bootstrap defaults to the hybrid route with cloud flags disabled.
+
+## Hybrid cloud routes
+
+The optional cloud adapters are selected by deterministic capability facts:
+
+```powershell
+$env:JARVIS_MODEL_PROVIDER = "hybrid"
+$env:JARVIS_GROQ_ENABLED = "true"
+$env:GROQ_API_KEY = "<process-only-groq-key>"
+$env:JARVIS_GEMINI_ENABLED = "true"
+$env:GEMINI_API_KEY = "<process-only-gemini-key>"
+python -m jarvis --model-probe
+```
+
+Groq handles complex reasoning/tool routes with
+`openai/gpt-oss-120b`; Gemini handles visual/media/large-context routes and is
+the cloud fallback when appropriate. Keep the Groq account on its Free Tier.
+The gateway calls only one provider initially, compacts cloud history to the
+system instruction plus recent bounded evidence, and falls back only after a
+normalized provider/offline/rate-limit failure. API keys remain process-only.
