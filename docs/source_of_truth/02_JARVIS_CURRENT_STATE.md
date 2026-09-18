@@ -52,7 +52,7 @@ subsequent Phase 18 checkpoints:
 | 15 MCP/Skills/Browser/Research | `IMPLEMENTED` foundation/final pass; some live adapters remain optional/deferred |
 | 16 Personal Intelligence | `IMPLEMENTED` / final pass |
 | 17 VENOM/Home/Multi-device/Room Fabric | code/architecture + real-network readiness `IMPLEMENTED`; physical deployment gates remain `PHYSICAL_PENDING`/`NOT_CONFIGURED` |
-| 18 | Phase 18A baseline/stabilization remains complete; Workstream A Batch 09 T0 visual acceptance is physically green 3/3, `RW-CALC-001` is physically green 3/3 through the explicit owner-session boundary, and Brave binary provenance is recorded. Workstream B Batch 10 T0-T3 are now green: optional Playwright navigation/read foundation, dedicated ephemeral/owner-persistent session policy, and deterministic DOM/accessibility-first approval-bound actions are implemented and tested. T4-T6 remain pending; physical owner/authenticated acceptance is not claimed by T3. |
+| 18 | Phase 18A baseline/stabilization remains complete; Workstream A Batch 09 T0 visual acceptance is physically green 3/3, `RW-CALC-001` is physically green 3/3 through the explicit owner-session boundary, and Brave binary provenance is recorded. Workstream B Batch 10 T0-T4 are now green: optional Playwright navigation/read/extraction foundation, dedicated ephemeral/owner-persistent session policy, deterministic DOM/accessibility-first approval-bound actions, and bounded provenance-aware static/dynamic extraction are implemented and tested. T5-T6 remain pending; physical owner/authenticated acceptance is not claimed. |
 | 19 | final physical end-to-end acceptance/release not started |
 
 **Important:** the 2026-09-05 Master's Phase 17 HOLD was superseded by the later `54b67ba` closure. Do not re-open those code gaps without regression evidence.
@@ -144,8 +144,8 @@ was added; see `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_08.md`.
 | Browser session/profile policy | `IMPLEMENTED` | default isolated ephemeral contexts plus explicit owner-persistent dedicated JARVIS profile; normal Brave/Chrome/Edge profiles rejected (DEC-049, Batch 10 T2) |
 | Browser upload/download/screenshots | `PLANNED` | current path reports missing adapter |
 | Research evidence/provenance | `IMPLEMENTED` | local-first ResearchService/evidence ledger exists |
-| Advanced static main-content extraction | `PLANNED` enhancement | Trafilatura/selectolax/BS4 direction not yet canonical live integration |
-| Dynamic authenticated extraction | `PLANNED` | tied to live Playwright work |
+| Advanced static main-content extraction | `IMPLEMENTED` bounded | Local static parser now prefers bounded visible `<main>` text, headings, safe links/metadata, and provenance; heavier third-party main-content parsers remain optional |
+| Dynamic authenticated extraction | `PARTIAL` optional | Playwright dynamic DOM extraction returns bounded provenance-aware content; broader research-provider integration and owner-authenticated acceptance remain pending |
 | MCP governed foundation | `IMPLEMENTED` | Phase 15 final pass; schemas bounded/sanitized |
 | MCP-backed reviewed workspace skill | `IMPLEMENTED` | Phase 15 closure |
 | External MCP servers | `NOT_CONFIGURED` unless explicitly configured | no arbitrary external internet MCP authority |

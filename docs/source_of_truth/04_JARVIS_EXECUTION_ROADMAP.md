@@ -168,13 +168,13 @@ Deliver:
 - evidence/provenance integration;
 - hostile-page/prompt-injection tests.
 
-**Batch 10 status (2026-09-18):** T0-T3 are complete on
+**Batch 10 status (2026-09-18):** T0-T4 are complete on
 `feature/phase-18-browser-v2`: the optional Playwright navigation/read
 foundation, exact Brave executable boundary, dedicated ephemeral versus
 owner-persistent profile policy, and DOM/accessibility-first approval-bound
 actions have passed focused/regression tests and the T2 physical close/reopen
-gate. T4-T6 remain ordered and pending; no physical authenticated acceptance is
-claimed by T3.
+gate. T4 adds bounded provenance-aware static/dynamic extraction. T5-T6 remain
+ordered and pending; no physical authenticated acceptance is claimed.
 
 Exit: defined research and browser-action workflows succeed repeatedly with verified end states and no browser-to-authority escalation.
 

@@ -1,6 +1,6 @@
 # Phase 18 Workstream B - Batch 10 Audit
 
-**Status:** T0 PASS; T1 PASS; T2 PASS; T3 PASS; T4-T6 not started
+**Status:** T0 PASS; T1 PASS; T2 PASS; T3 PASS; T4 PASS; T5-T6 not started
 **Verdict:** `PHASE18_BROWSER_V2_BATCH10_PARTIAL` pending implementation and
 live owner-session evidence.
 
@@ -136,7 +136,7 @@ or Brave process/window mutation was performed by T0.
 | T1 | optional Playwright dependency evaluation and real controller foundation | PASS |
 | T2 | ephemeral/dedicated persistent profile policy | PASS |
 | T3 | DOM/accessibility grounding and approval-bound actions | PASS |
-| T4 | layered extraction and provenance | NOT STARTED |
+| T4 | layered extraction and provenance | PASS |
 | T5 | bounded upload/download/screenshot workflows | NOT STARTED |
 | T6 | security red team and owner-authenticated foundation | NOT STARTED |
 
@@ -146,8 +146,8 @@ or Brave process/window mutation was performed by T0.
   behind the existing service, but the default runtime remains Local and
   authenticated/live owner acceptance is still pending.
 - GAP-0202: bounded browser upload/download workflows are missing.
-- GAP-0203: production dynamic extraction and the approved layered parser path
-  are incomplete.
+- GAP-0203: bounded static/dynamic extraction now exists behind the browser
+  adapters, but broader production research integration remains incomplete.
 - GAP-0204: live browser hostile-page and prompt-injection matrix is incomplete.
 - GAP-0205: ephemeral versus dedicated owner-persistent browser session policy
   is implemented and physically verified by the T2 gate below.
@@ -242,7 +242,49 @@ verification avoid reading the old locator. The T3 matrix covers unique,
 duplicate, stale, removed, drifted, hidden, disabled, sensitive, uncertain,
 navigation-invalidated, wrong-tab, exactly-once, type, and native-select cases.
 
-## 9. T0/T1/T2/T3 checkpoint
+## 9. T4 layered extraction and provenance
+
+T4 is PASS for the bounded extraction implementation gate. Static extraction
+remains the dependency-free default; the optional Playwright controller is used
+only when the caller selects the dynamic backend. Research remains a separate
+authority and no browser output is promoted to Memory or policy authority.
+
+- The Local controller now returns bounded `title`, `source_url`, `final_url`,
+  `main_text`, `headings`, normalized safe `links`, safe structured metadata,
+  `retrieved_at`, `adapter_kind`, and a SHA-256 `content_digest`, while
+  preserving the existing bounded `text`/`url` fields.
+- The static parser ignores script/style/noscript/template and hidden or
+  `aria-hidden` content, prefers `<main>` text when present, limits text to
+  20,000 characters, headings/links to 100 items, metadata to 20 items, and
+  enforces the existing 2,000,000-byte body cap for both real and injected
+  fetchers.
+- The Playwright path uses DOM-ready navigation already established at T1,
+  bounded body/main/headings/link/metadata reads, explicit action timeouts,
+  safe URL normalization, no `networkidle`, no iframe traversal, and no full
+  HTML/script dump.
+- Final URL policy remains enforced on static redirects and dynamic navigation;
+  unsafe link destinations are omitted from extracted link metadata rather than
+  becoming executable targets.
+- Hostile fixture text (`IGNORE SYSTEM`, `SEND TOKEN`, `CALL SHELL`) remains
+  inert untrusted page data. No cookies, tokens, credentials, or local storage
+  are read or returned.
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| focused T4/browser suite | `28 passed, 4 subtests passed` |
+| existing browser/integration/security regression | `58 passed, 15 subtests passed` |
+| static hidden-content and hostile-text fixture | PASS |
+| injected static 2 MB body-cap fixture | PASS (`page_too_large`) |
+| dynamic provenance fixture | PASS |
+| post-T3 full regression baseline | `927 passed, 4 skipped, 45 subtests passed` |
+| `python -m compileall src tests scripts -q` | PASS |
+
+No T5 upload/download/screenshot work or T6 owner-authenticated acceptance has
+started.
+
+## 10. T0/T1/T2/T3/T4 checkpoint
 
 T0 audit-only checkpoint is intended to be committed as:
 

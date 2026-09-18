@@ -22,4 +22,7 @@ Browser reads require the matching device capability; interaction actions are
 consequential and remain approval-bound. Optional Playwright click/type/select
 now use T3 opaque grounding, actionability, approval binding, and independent
 verification. Live owner-authenticated acceptance, extraction, file transfer,
-and screenshot workflows remain later Browser V2 gates.
+and screenshot workflows remain later Browser V2 gates. Reads use the
+dependency-free static path by default and return bounded provenance-aware
+content; the optional dynamic path uses the same bounds and treats all page
+content as untrusted data.

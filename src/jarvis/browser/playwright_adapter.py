@@ -8,8 +8,9 @@ import hashlib
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
 from ..contracts import BrowserAction, BrowserCapability, BrowserResult, BrowserSessionMode, ToolContext
@@ -30,6 +31,7 @@ class _PlaywrightSession:
     page: Any
     browser: Any = None
     page_ref: str = ""
+    source_url: str = ""
     epoch: int = 0
     bindings: dict[str, "_ElementBinding"] = field(default_factory=dict)
 
@@ -238,14 +240,15 @@ class PlaywrightBrowserController:
         page = await browser_context.new_page()
         session_id = f"browser-{uuid4()}"
         session = _PlaywrightSession(
-            session_id,
-            context.identity.owner_id,
-            context.device.device_id,
-            mode,
-            browser_context,
-            page,
-            browser,
-            f"browser-page-{uuid4()}",
+            session_id=session_id,
+            owner_id=context.identity.owner_id,
+            device_id=context.device.device_id,
+            mode=mode,
+            context=browser_context,
+            page=page,
+            browser=browser,
+            page_ref=f"browser-page-{uuid4()}",
+            source_url=url,
         )
         self._sessions[session_id] = session
         try:
@@ -264,6 +267,7 @@ class PlaywrightBrowserController:
             return BrowserResult("denied", error_code="url_invalid")
         self._url_policy.validate(url)
         final_url = await self._goto(session.page, url)
+        session.source_url = url
         session.epoch += 1
         session.bindings.clear()
         return BrowserResult("succeeded", {"session_id": session.session_id, "url": final_url}, verified=True)
@@ -273,26 +277,46 @@ class PlaywrightBrowserController:
         response = await operation(wait_until="domcontentloaded", timeout=self._NAVIGATION_TIMEOUT_MS)
         final_url = str(session.page.url)
         self._url_policy.validate(final_url)
+        session.source_url = final_url
         session.epoch += 1
         session.bindings.clear()
         return BrowserResult("succeeded", {"session_id": session.session_id, "url": final_url, "moved": response is not None}, verified=True)
 
     async def _read(self, session: _PlaywrightSession, action: str) -> BrowserResult:
-        page = session.page
-        title = str(await page.title())[:500]
-        body = await page.locator("body").inner_text(timeout=self._ACTION_TIMEOUT_MS)
-        text = str(body)[: self._MAX_TEXT]
-        output: dict[str, object] = {
-            "session_id": session.session_id,
-            "url": self._safe_page_url(page),
-            "title": title,
-            "text": text,
-        }
-        if action == BrowserCapability.READ_PAGE.value:
-            output["links"] = await self._bounded_links(page)
+        output = await self._dynamic_extraction(session)
         if action == BrowserCapability.INSPECT_ACCESSIBILITY_TREE.value:
             output["accessibility_tree"] = await self._accessibility(session)
         return BrowserResult("succeeded", output, verified=True)
+
+    async def _dynamic_extraction(self, session: _PlaywrightSession) -> dict[str, object]:
+        page = session.page
+        final_url = self._safe_page_url(page)
+        title = str(await page.title())[:500]
+        text = str(await page.locator("body").inner_text(timeout=self._ACTION_TIMEOUT_MS)).strip()[: self._MAX_TEXT]
+        main_text = text
+        main = page.locator("main")
+        if await main.count():
+            candidate = str(await main.nth(0).inner_text(timeout=self._ACTION_TIMEOUT_MS)).strip()
+            if candidate:
+                main_text = candidate[: self._MAX_TEXT]
+        headings = await self._bounded_headings(page)
+        links = await self._bounded_links(page, final_url)
+        metadata = await self._bounded_metadata(page)
+        return {
+            "session_id": session.session_id,
+            "url": final_url,
+            "source_url": session.source_url or final_url,
+            "final_url": final_url,
+            "title": title,
+            "text": text,
+            "main_text": main_text,
+            "headings": headings,
+            "links": links,
+            "structured_metadata": metadata,
+            "retrieved_at": datetime.now(UTC).isoformat(),
+            "adapter_kind": "playwright_dynamic",
+            "content_digest": hashlib.sha256(main_text.encode("utf-8", errors="replace")).hexdigest(),
+        }
 
     async def _find(self, session: _PlaywrightSession, parameters: Mapping[str, object]) -> BrowserResult:
         needle = parameters.get("text")
@@ -710,20 +734,50 @@ class PlaywrightBrowserController:
         port = parsed.port or default_port
         return f"{parsed.scheme.casefold()}://{parsed.hostname.casefold()}:{port}"
 
-    async def _bounded_links(self, page: Any) -> list[dict[str, str]]:
-        links = page.locator("a")
+    async def _bounded_links(self, page: Any, final_url: str) -> list[dict[str, str]]:
+        links = page.locator("a[href]")
         count = min(await links.count(), 100)
         output: list[dict[str, str]] = []
         for index in range(count):
             item = links.nth(index)
             try:
-                output.append({
-                    "text": (await item.inner_text(timeout=self._ACTION_TIMEOUT_MS))[:200],
-                    "href": (await item.get_attribute("href") or "")[:4_096],
-                })
+                href = await item.get_attribute("href") or ""
+                absolute = urljoin(final_url, href)
+                self._url_policy.validate(absolute, resolve_dns=False)
+                output.append({"text": (await item.inner_text(timeout=self._ACTION_TIMEOUT_MS)).strip()[:200], "href": absolute[:4_096]})
+            except BrowserURLPolicyError:
+                continue
             except Exception:
                 continue
         return output
+
+    async def _bounded_headings(self, page: Any) -> list[str]:
+        headings = page.locator("h1, h2, h3")
+        count = min(await headings.count(), self._MAX_ELEMENTS)
+        output: list[str] = []
+        for index in range(count):
+            try:
+                text = (await headings.nth(index).inner_text(timeout=self._ACTION_TIMEOUT_MS)).strip()[:500]
+            except Exception:
+                continue
+            if text:
+                output.append(text)
+        return output[: self._MAX_ELEMENTS]
+
+    async def _bounded_metadata(self, page: Any) -> dict[str, str]:
+        metadata = page.locator('meta[name], meta[property]')
+        count = min(await metadata.count(), 20)
+        output: dict[str, str] = {}
+        for index in range(count):
+            item = metadata.nth(index)
+            try:
+                key = (await item.get_attribute("name") or await item.get_attribute("property") or "").casefold().strip()
+                value = (await item.get_attribute("content") or "").strip()
+            except Exception:
+                continue
+            if key in {"description", "og:title", "og:description", "author"} and value:
+                output[key] = value[:500]
+        return dict(list(output.items())[:20])
 
     async def _bounded_accessibility(self, page: Any) -> dict[str, object]:
         return {"page_ref": f"browser-page-{uuid4()}", "landmarks": [], "elements": [], "text": ""}

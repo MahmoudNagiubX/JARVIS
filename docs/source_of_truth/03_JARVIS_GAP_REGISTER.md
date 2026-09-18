@@ -129,7 +129,7 @@ Still explicitly absent, by design: visual actuation of any kind (no `click_visu
 **Batch 08 M0:** `PARTIAL` (unchanged). The corrected evaluator was re-run for three clean A/B/C configurations; Candidate C remained evaluation-only and failed its integration gates. The exact no-change outcome is `OCR_BOUNDED_TWO_PASS_EVALUATION_NO_CHANGE`; DEC-048 remains unchanged. Visual actuation is not yet implemented.
 
 ### GAP-0104 — Action verification/recovery needs full multi-app implementation
-**Status:** `PARTIAL`  
+**Status:** `PARTIAL`
 Build per-action verification, re-observation, stale-target recovery, moved-window handling, ambiguity handling, retry budgets, and explicit failure receipts.  
 **Batch 02 (Milestones 0-2):** `PARTIAL` — per-action fresh re-observation (never the pre-action object), stale/ambiguous-target refusal, and typed failure receipts are all now proven (unit tests + the `computer_use_v2` evaluation suite's "wrong-target execution count remains zero in fixture cases" contract). Retry budgets remain intentionally absent (no auto-retry anywhere, by design - AGENTS.md closed-loop rule), and there is still no autonomous multi-app replanning/recovery loop. Do not read this as full GAP-0104 closure.  
 **Batch 03:** `PARTIAL` (unchanged) — Milestone 0 generalized fresh re-observation/target-change refusal to element- and window-targeted actions alike (R18B02-001/003); still no autonomous multi-app replanning/recovery loop.
@@ -206,8 +206,14 @@ browser authority was added in Workstream A.
 Add bounded file selection/download destinations, explicit capability/risk rules, progress/result verification, and sensitive-path protection.
 
 ### GAP-0203 — Production web extraction stack needs implementation
-**Status:** `OPEN`  
-Add bounded static fetch + structured HTML parser + main-content extraction, with Playwright only when dynamic/authenticated rendering is required. Keep optional advanced crawling behind an adapter.
+**Status:** `PARTIAL`
+**Batch 10 T4 (2026-09-18):** the dependency-free Local controller now provides
+bounded static extraction with visible/main text, headings, normalized safe
+links, safe metadata, final URL validation, body/text/item limits, and
+provenance digests. The optional Playwright controller provides the equivalent
+bounded dynamic DOM extraction without `networkidle`, arbitrary JavaScript, or
+full HTML dumps. Research remains a separate authority; broader authenticated
+research-provider integration and advanced parser selection remain open.
 
 ### GAP-0204 — Real-world prompt-injection/red-team matrix needs expansion
 **Status:** `OPEN`  

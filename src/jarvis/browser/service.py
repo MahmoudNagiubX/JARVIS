@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import re
 import urllib.error
@@ -26,37 +27,104 @@ from .playwright_adapter import PlaywrightBrowserController
 
 
 class _PageParser(HTMLParser):
+    _IGNORED_TAGS = frozenset({"script", "style", "noscript", "template"})
+    _VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"})
+    _MAX_TEXT_CHARS = 20_000
+    _MAX_HEADINGS = 100
+    _MAX_LINKS = 100
+    _MAX_METADATA = 20
+
     def __init__(self) -> None:
         super().__init__()
         self.text: list[str] = []
         self.links: list[dict[str, str]] = []
         self.headings: list[str] = []
+        self.metadata: dict[str, str] = {}
         self._link: dict[str, str] | None = None
-        self._heading = False
+        self._link_text: list[str] = []
+        self._heading_tag: str | None = None
+        self._heading_text: list[str] = []
+        self._title_depth = 0
+        self._title_text: list[str] = []
+        self._main_depth = 0
+        self._main_text: list[str] = []
+        self._suppression_stack: list[bool] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = dict(attrs)
-        if tag == "a" and values.get("href"):
-            self._link = {"href": values["href"] or ""}
-        if tag in {"h1", "h2", "h3"}:
-            self._heading = True
+        suppressed = bool(self._suppression_stack and self._suppression_stack[-1]) or tag in self._IGNORED_TAGS or "hidden" in values or values.get("aria-hidden", "").casefold() == "true"
+        if tag in self._VOID_TAGS:
+            if not suppressed and tag == "meta" and len(self.metadata) < self._MAX_METADATA:
+                key = (values.get("name") or values.get("property") or "").casefold().strip()
+                content = (values.get("content") or "").strip()
+                if key in {"description", "og:title", "og:description", "author"} and content:
+                    self.metadata[key] = content[:500]
+            return
+        self._suppression_stack.append(suppressed)
+        if suppressed:
+            return
+        if tag == "a" and values.get("href") and len(self.links) < self._MAX_LINKS:
+            self._link = {"href": (values["href"] or "")[:4_096]}
+            self._link_text = []
+        if tag in {"h1", "h2", "h3"} and self._heading_tag is None:
+            self._heading_tag = tag
+            self._heading_text = []
+        if tag == "title":
+            self._title_depth += 1
+        if tag == "main":
+            self._main_depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        if tag not in self._VOID_TAGS:
+            self.handle_endtag(tag)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "a":
+        if not self._suppression_stack:
+            return
+        suppressed = self._suppression_stack.pop()
+        if suppressed:
+            return
+        if tag == "a" and self._link is not None:
+            if len(self.links) < self._MAX_LINKS:
+                self._link["text"] = " ".join(self._link_text).strip()[:200]
+                self.links.append(self._link)
             self._link = None
-        if tag in {"h1", "h2", "h3"}:
-            self._heading = False
+            self._link_text = []
+        if tag == self._heading_tag:
+            heading = " ".join(self._heading_text).strip()
+            if heading and len(self.headings) < self._MAX_HEADINGS:
+                self.headings.append(heading[:500])
+            self._heading_tag = None
+            self._heading_text = []
+        if tag == "title" and self._title_depth:
+            self._title_depth -= 1
+        if tag == "main" and self._main_depth:
+            self._main_depth -= 1
 
     def handle_data(self, data: str) -> None:
+        if self._suppression_stack and self._suppression_stack[-1]:
+            return
         value = " ".join(data.split())
         if not value:
             return
         self.text.append(value)
-        if self._heading and len(self.headings) < 100:
-            self.headings.append(value)
-        if self._link is not None and len(self.links) < 100:
-            self._link["text"] = value
-            self.links.append(dict(self._link))
+        if self._main_depth:
+            self._main_text.append(value)
+        if self._heading_tag is not None:
+            self._heading_text.append(value)
+        if self._title_depth:
+            self._title_text.append(value)
+        if self._link is not None:
+            self._link_text.append(value)
+
+    @property
+    def title(self) -> str:
+        return " ".join(self._title_text).strip()[:500]
+
+    @property
+    def main_text(self) -> str:
+        return " ".join(self._main_text).strip()[: self._MAX_TEXT_CHARS]
 
 
 class _ElementParser(HTMLParser):
@@ -71,6 +139,12 @@ class _ElementParser(HTMLParser):
 
 class LocalBrowserController:
     """Use urllib and HTML parsing for bounded read-only browser actions."""
+
+    _MAX_BODY_BYTES = 2_000_000
+    _MAX_TEXT_CHARS = 20_000
+    _MAX_LINKS = 100
+    _MAX_HEADINGS = 100
+    _MAX_METADATA = 20
 
     def __init__(self, fetcher: Callable[[str], tuple[str, str]] | None = None, *, interaction_timeout_seconds: float = 10.0, url_policy: BrowserURLPolicy | None = None) -> None:
         self._fetcher = fetcher
@@ -176,19 +250,36 @@ class LocalBrowserController:
     async def _read(self, session: BrowserSession, capability: BrowserCapability) -> BrowserResult:
         if session.current_url is None:
             return BrowserResult("failed", error_code="browser_url_missing")
+        source_url = session.current_url
         try:
-            html, final_url = await asyncio.to_thread(self._fetch, session.current_url)
+            html, final_url = await asyncio.to_thread(self._fetch, source_url)
         except BrowserURLPolicyError as exc:
             return BrowserResult("denied", error_code=exc.code)
         except (OSError, urllib.error.URLError, ValueError) as exc:
-            return BrowserResult("failed", error_code=f"page_fetch_failed:{exc.__class__.__name__}")
+            return BrowserResult("failed", error_code=self._fetch_error_code(exc))
         parser = _PageParser()
         parser.feed(html)
-        output: dict[str, object] = {"session_id": session.session_id, "url": final_url, "text": " ".join(parser.text)[:20000], "title": parser.headings[0] if parser.headings else None}
+        text = " ".join(parser.text).strip()[: self._MAX_TEXT_CHARS]
+        main_text = (parser.main_text or text)[: self._MAX_TEXT_CHARS]
+        links = self._normalize_links(parser.links, final_url)
+        headings = parser.headings[: self._MAX_HEADINGS]
+        output: dict[str, object] = {
+            "session_id": session.session_id,
+            "url": final_url,
+            "source_url": source_url,
+            "final_url": final_url,
+            "text": text,
+            "main_text": main_text,
+            "title": parser.title or (headings[0] if headings else None),
+            "headings": headings,
+            "links": links,
+            "structured_metadata": dict(list(parser.metadata.items())[: self._MAX_METADATA]),
+            "retrieved_at": datetime.now(UTC).isoformat(),
+            "adapter_kind": "local_static",
+            "content_digest": hashlib.sha256(main_text.encode("utf-8", errors="replace")).hexdigest(),
+        }
         if capability is BrowserCapability.INSPECT_ACCESSIBILITY_TREE:
-            output["accessibility_tree"] = {"headings": parser.headings, "links": parser.links}
-        if capability is BrowserCapability.READ_PAGE:
-            output["links"] = parser.links
+            output["accessibility_tree"] = {"headings": headings, "links": links}
         self._sessions[session.session_id] = replace(session, current_url=final_url, history=session.history + ((final_url,) if final_url != session.current_url else ()))
         return BrowserResult("succeeded", output, verified=True)
 
@@ -221,7 +312,7 @@ class LocalBrowserController:
         except BrowserURLPolicyError as exc:
             return BrowserResult("denied", error_code=exc.code)
         except (OSError, urllib.error.URLError, ValueError) as exc:
-            return BrowserResult("failed", error_code=f"page_fetch_failed:{exc.__class__.__name__}")
+            return BrowserResult("failed", error_code=self._fetch_error_code(exc))
         parser = _ElementParser()
         parser.feed(html)
         matches = [(tag, attrs) for tag, attrs in parser.elements if self._matches_selector(tag, attrs, selector)]
@@ -261,17 +352,39 @@ class LocalBrowserController:
         self._validate_url(url)
         if self._fetcher is not None:
             body, final_url = self._fetcher(url)
+            self._enforce_body_limit(body)
             self._validate_url(final_url)
             return body, final_url
         request = urllib.request.Request(url, headers={"User-Agent": "JARVIS-local-browser/1"})
         opener = urllib.request.build_opener(_SafeRedirectHandler(self._url_policy))
         with opener.open(request, timeout=10) as response:
-            body = response.read(2_000_001)
-            if len(body) > 2_000_000:
+            body = response.read(self._MAX_BODY_BYTES + 1)
+            if len(body) > self._MAX_BODY_BYTES:
                 raise ValueError("page_too_large")
             final_url = response.geturl()
             self._url_policy.validate(final_url)
             return body.decode("utf-8", errors="replace"), final_url
+
+    @classmethod
+    def _enforce_body_limit(cls, body: str) -> None:
+        if len(body.encode("utf-8", errors="replace")) > cls._MAX_BODY_BYTES:
+            raise ValueError("page_too_large")
+
+    @staticmethod
+    def _fetch_error_code(exc: Exception) -> str:
+        return "page_too_large" if str(exc) == "page_too_large" else f"page_fetch_failed:{exc.__class__.__name__}"
+
+    def _normalize_links(self, links: list[dict[str, str]], final_url: str) -> list[dict[str, str]]:
+        output: list[dict[str, str]] = []
+        for link in links[: self._MAX_LINKS]:
+            href = link.get("href", "")
+            try:
+                absolute = urljoin(final_url, href)
+                self._url_policy.validate(absolute, resolve_dns=False)
+            except BrowserURLPolicyError:
+                continue
+            output.append({"text": link.get("text", "")[:200], "href": absolute[:4_096]})
+        return output
 
     def _validate_url(self, url: str) -> str:
         # Injected deterministic fetchers are intentionally allowed to use
