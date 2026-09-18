@@ -186,3 +186,8 @@ Commit `eadaa70` also prevents a Playwright runtime from being started merely
 to report a missing session, preserving clean provider ownership and removing
 the optional-dependency resource leak exposed after Playwright became
 available locally. Browser-focused regression is `46 passed, 4 subtests`.
+
+After both checkpoints, the full Python regression completed with `947
+passed, 3 skipped, 45 subtests passed` in `399.57s`. The three skips are the
+existing optional EasyOCR/torch/torchvision reproducibility checks; no
+unexplained test failure remains.
