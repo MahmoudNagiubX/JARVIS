@@ -97,10 +97,18 @@ class PhaseFourIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Hello JARVIS", str(page.output["text"]))
         click = await service.execute(BrowserAction("click", {"session_id": session_id, "selector": "a"}), self.identity, self.device)
         self.assertEqual(click.status, "approval_required")
-        playwright = await PlaywrightBrowserController().execute(
+        playwright_controller = PlaywrightBrowserController()
+        playwright = await playwright_controller.execute(
             BrowserAction("read_page", {"session_id": session_id}), ToolContext(self.identity, self.device, "browser", "browser-test")
         )
-        self.assertEqual(playwright.error_code, "playwright_adapter_not_available")
+        # The optional adapter is installed in the current development
+        # interpreter, so a LocalBrowserController session is correctly
+        # invisible to the separate Playwright controller. Keep the legacy
+        # assertion valid for environments where the optional dependency is
+        # absent as well.
+        self.assertIn(playwright.error_code, {"playwright_adapter_not_available", "browser_session_missing"})
+        self.assertIsNone(playwright_controller.playwright)
+        await playwright_controller.close()
 
     async def test_device_fabric_registers_heartbeats_stale_state_and_revocation(self) -> None:
         device = DeviceRecord(

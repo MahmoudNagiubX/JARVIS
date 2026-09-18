@@ -167,8 +167,8 @@ class PlaywrightBrowserController:
         if context.identity.owner_id != context.device.owner_id:
             return BrowserResult("denied", error_code="owner_binding_mismatch")
         try:
-            await self._ensure_runtime()
             if action.action == BrowserCapability.OPEN_URL.value:
+                await self._ensure_runtime()
                 return await self._open(action.parameters, context, session_mode)
             if action.action == BrowserCapability.TABS.value:
                 await self._ensure_runtime()

@@ -62,12 +62,14 @@ class PhaseEighteenBrowserV2FoundationTests(unittest.IsolatedAsyncioTestCase):
         def missing(_: str) -> object:
             raise ModuleNotFoundError("playwright")
 
-        result = await PlaywrightBrowserController(playwright_module_loader=missing).execute(
-            BrowserAction("read_page", {"session_id": "browser-missing"}),
+        controller = PlaywrightBrowserController(playwright_module_loader=missing)
+        result = await controller.execute(
+            BrowserAction("open_url", {"url": "https://example.test"}),
             ToolContext(self.identity, self.device, "browser", "browser-v2-test"),
         )
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.error_code, "playwright_adapter_not_available")
+        self.assertIsNone(controller.playwright)
         self.assertNotEqual(result.error_code, "page_fetch_failed:HTTPError")
 
     async def test_provider_exception_is_normalized(self) -> None:
