@@ -79,11 +79,11 @@ release when their states remain truthfully `NOT_CONFIGURED`,
 | Missions | PASS | Bounded mission, approval-consumption, and restart-reconciliation paths exist. |
 | Automations | PARTIAL | Canonical scheduler/EventBus automation foundation exists; final UI and physical reminder acceptance is pending. |
 | Computer Use | PARTIAL | Deterministic and owned-fixture physical foundations pass; broad real-app matrix and some physical gates remain open. |
-| Browser | PARTIAL | T0-T5 implementation and deterministic security evidence pass; T6 live owner-authenticated acceptance is not configured. |
+| Browser | PARTIAL | T0-T5 implementation and deterministic security evidence pass; the exact Brave/Playwright live probe reaches `chatgpt.com` but receives HTTP 403 before DOM content, so T6 owner-authenticated acceptance is not proven. |
 | Research | PASS | Local-first research/evidence ledger foundation exists; dynamic authenticated research remains partial. |
 | Communications | PARTIAL | CommunicationsHub and local deterministic channel exist; live providers are not configured. |
 | Notion | NOT_CONFIGURED | No exact owner-approved test page or authenticated workflow configured. |
-| ChatGPT | NOT_CONFIGURED | Dedicated profile/authenticated shell/nonce acceptance has not been run. |
+| ChatGPT | PARTIAL | The Microsoft Store desktop app is installed and was opened separately for owner use; the required Brave web surface returns HTTP 403 and neither app nor web nonce acceptance is claimed. |
 | Gmail | NOT_CONFIGURED | No authenticated provider workflow configured. |
 | Spotify | NOT_CONFIGURED | No authenticated provider workflow configured. |
 | WhatsApp | NOT_CONFIGURED | No authenticated self-chat workflow configured. |
@@ -106,14 +106,16 @@ Service, DeviceFabricService, and VoiceCore.
 Current Browser V2 evidence records no normal Brave profile attachment, no
 credential automation, no cookie/token export, no arbitrary model-facing
 JavaScript/CDP, no broad Brave process kill, no hidden browser download, and
-no raw screenshot persistence. T6 remains partial because the live owner
-session has not been opt-in configured and manually authenticated.
+no raw screenshot persistence. T6 remains partial because the exact Brave web
+surface returns HTTP 403 before an authenticated DOM shell can be observed;
+the separately opened desktop app is not substituted for Browser V2.
 
 ## 6. Open release gates at W0
 
-- Complete the W1 inherited Browser V2 review and, if the owner performs the
-  manual login checkpoint, run two ChatGPT nonce interactions plus persistence
-  proof through the reviewed owner-session runner.
+- Complete the W1 inherited Browser V2 review and run two ChatGPT nonce
+  interactions plus persistence proof only if the exact Brave web surface
+  becomes observable; retain the desktop-app check as a separate, manual-only
+  result rather than substituting it for Browser V2.
 - Implement or verify only the selected real web workflows that can be safely
   configured; keep absent service destinations `NOT_CONFIGURED`.
 - Close justified Computer Use, delegation, automation, lifecycle,
@@ -153,14 +155,17 @@ is pushed to `origin/feature/jarvis-final-completion`.
 | Brave version | `153.1.95.102` |
 | Brave publisher/signature | `Brave Software, Inc.` / Authenticode `Valid` |
 | Brave SHA-256 | `A2DE73C6657B98E12A2811BA43D12F35ABBCEC46C253D7A7D9F12E9AAA6438E5` |
-| Owner-session preflight after reconciliation | `BROWSER_V2_PARTIAL`; Playwright `1.63.0` is now importable, exact signed Brave and the dedicated JARVIS profile launched, then the runner stopped at `OWNER_LOGIN_REQUIRED` |
+| Owner-session preflight after reconciliation | `BROWSER_V2_PARTIAL`; Playwright `1.63.0` is importable and the exact signed Brave/dedicated profile launch succeeds, but the reviewed runner observes an empty shell and stops at `authenticated_shell_uncertain` |
 | Playwright package install attempts | earlier bounded network retries stalled on the 38 MB wheel and were cancelled; the current active interpreter now reports Playwright `1.63.0`; no browser binary download was attempted |
-| Manual ChatGPT login / nonce / persistence | owner action required; the dedicated profile reached the ChatGPT boundary but no credential interaction, nonce action, or authenticated persistence check was attempted |
+| Exact Brave non-authenticated feasibility probe | HTTP `403` from `https://chatgpt.com/`; title/body lengths were zero; no credentials, nonce, or page content were persisted |
+| ChatGPT desktop app | Microsoft Store app `OpenAI.Codex_2p2nqsd0c76g0!App` is installed and was opened separately; it is not counted as Browser V2 evidence |
+| Manual ChatGPT login / nonce / persistence | not reached; no credential interaction, nonce action, or authenticated persistence check was attempted |
 
 The deterministic owner runner continued to report zero wrong targets,
 duplicate actions, unapproved actions, credential interactions, secret/raw
 screenshot persistence, prompt-injection escalations, private-network allows,
-and normal-profile touches. W1 therefore remains `PARTIAL` at the manual owner
-authentication gate; W2 must not begin until the owner logs in manually and
-resumes for the nonce/persistence acceptance, or the gate is otherwise closed
-with truthful evidence.
+and normal-profile touches. W1 therefore remains `PARTIAL` at the external
+ChatGPT web-response boundary; W2 must not begin until the Brave web gate is
+observable and the nonce/persistence acceptance is proven, or the gate is
+closed with truthful evidence. The desktop-app surface remains a separate
+manual-only check.
