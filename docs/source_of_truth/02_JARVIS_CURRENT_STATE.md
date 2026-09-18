@@ -1,7 +1,7 @@
 # JARVIS — CURRENT STATE
 
 **Status:** SNAPSHOT / IMPLEMENTATION TRUTH SUMMARY  
-**Reviewed:** 2026-09-15
+**Reviewed:** 2026-09-18
 **Repository:** `MahmoudNagiubX/JARVIS`  
 **Reviewed HEAD:** `54b67ba396ec45180f1b60ea472ef94c9ac181a9`
 
@@ -52,7 +52,7 @@ subsequent Phase 18 checkpoints:
 | 15 MCP/Skills/Browser/Research | `IMPLEMENTED` foundation/final pass; some live adapters remain optional/deferred |
 | 16 Personal Intelligence | `IMPLEMENTED` / final pass |
 | 17 VENOM/Home/Multi-device/Room Fabric | code/architecture + real-network readiness `IMPLEMENTED`; physical deployment gates remain `PHYSICAL_PENDING`/`NOT_CONFIGURED` |
-| 18 | Phase 18A baseline/stabilization remains complete; Workstream A Batch 09 T0 visual acceptance is physically green 3/3, `RW-CALC-001` is physically green 3/3 through the explicit owner-session boundary, and Brave binary provenance is recorded. Workstream B Batch 10 T0-T2 are now green: optional Playwright navigation/read foundation and dedicated ephemeral/owner-persistent session policy are implemented and physically exercised. T3-T6 remain not started. |
+| 18 | Phase 18A baseline/stabilization remains complete; Workstream A Batch 09 T0 visual acceptance is physically green 3/3, `RW-CALC-001` is physically green 3/3 through the explicit owner-session boundary, and Brave binary provenance is recorded. Workstream B Batch 10 T0-T3 are now green: optional Playwright navigation/read foundation, dedicated ephemeral/owner-persistent session policy, and deterministic DOM/accessibility-first approval-bound actions are implemented and tested. T4-T6 remain pending; physical owner/authenticated acceptance is not claimed by T3. |
 | 19 | final physical end-to-end acceptance/release not started |
 
 **Important:** the 2026-09-05 Master's Phase 17 HOLD was superseded by the later `54b67ba` closure. Do not re-open those code gaps without regression evidence.
@@ -140,7 +140,7 @@ was added; see `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_08.md`.
 | Browser URL/SSRF/redirect safety | `IMPLEMENTED` | hardened Phase 15 |
 | Browser model-facing read path | `IMPLEMENTED` | Phase 15 closure |
 | Live Playwright navigation/read foundation | `IMPLEMENTED` (optional) | `PlaywrightBrowserController` is lazy and subordinate to `BrowserActionService`; exact configured Brave executable and optional dependency are required, while default runtime remains Local/offline |
-| Live Playwright click/type/select | `PLANNED` | T3 grounding, opaque refs, approval binding, and independent verification remain |
+| Live Playwright click/type/select | `IMPLEMENTED` (optional) | T3 opaque refs, actionability, approval binding, exactly-once behavior, and independent verification are covered by deterministic tests; physical owner/authenticated acceptance remains pending |
 | Browser session/profile policy | `IMPLEMENTED` | default isolated ephemeral contexts plus explicit owner-persistent dedicated JARVIS profile; normal Brave/Chrome/Edge profiles rejected (DEC-049, Batch 10 T2) |
 | Browser upload/download/screenshots | `PLANNED` | current path reports missing adapter |
 | Research evidence/provenance | `IMPLEMENTED` | local-first ResearchService/evidence ledger exists |

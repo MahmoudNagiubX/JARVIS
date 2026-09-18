@@ -68,12 +68,19 @@ class ToolSpec:
                 raise ValueError("perception_region_invalid")
         properties = self.parameters_schema.get("properties", {})
         required = self.parameters_schema.get("required", ())
+        legacy_browser_selector = (
+            self.name in {"browser.click", "browser.type", "browser.select"}
+            and "selector" in normalized
+            and "element_ref" not in normalized
+        )
         if isinstance(properties, Mapping) and self.parameters_schema.get("additionalProperties") is False:
-            unknown = set(normalized) - set(properties)
+            allowed = set(properties) | ({"selector"} if legacy_browser_selector else set())
+            unknown = set(normalized) - allowed
             if unknown:
                 raise ValueError(f"unknown_arguments:{sorted(unknown)}")
         if isinstance(required, (list, tuple)):
-            missing = [key for key in required if key not in normalized]
+            required_keys = tuple(key for key in required if not (legacy_browser_selector and key == "element_ref"))
+            missing = [key for key in required_keys if key not in normalized]
             if missing:
                 raise ValueError(f"missing_arguments:{sorted(missing)}")
         return normalized
@@ -198,12 +205,12 @@ def register_browser_tools(registry: ToolRegistry, browser_actions: object) -> N
         ("navigate", "Navigate an existing browser session to a bounded public URL.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "url": {"type": "string", "maxLength": 4096}}, "required": ["session_id", "url"], "additionalProperties": False}, ("session_id", "url")),
         ("read_page", "Read bounded untrusted text from an existing browser session.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}}, "required": ["session_id"], "additionalProperties": False}, ("session_id",)),
         ("extract_text", "Extract bounded untrusted page text from an existing browser session.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}}, "required": ["session_id"], "additionalProperties": False}, ("session_id",)),
-        ("find_element", "Find a bounded element or link in an untrusted browser page.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "text": {"type": "string", "maxLength": 200}, "selector": {"type": "string", "maxLength": 200}}, "required": ["session_id"], "additionalProperties": False}, ("session_id",)),
+        ("find_element", "Find a bounded element or link by visible text and return an opaque browser element reference.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "text": {"type": "string", "maxLength": 200}}, "required": ["session_id", "text"], "additionalProperties": False}, ("session_id", "text")),
         ("inspect_accessibility_tree", "Read a bounded untrusted accessibility tree from a browser session.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}}, "required": ["session_id"], "additionalProperties": False}, ("session_id",)),
         ("tabs", "List bounded JARVIS browser tabs.", {"type": "object", "properties": {}, "additionalProperties": False}, ()),
-        ("click", "Click one bounded selector after the browser approval gate.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "selector": {"type": "string", "maxLength": 200}}, "required": ["session_id", "selector"], "additionalProperties": False}, ("session_id", "selector")),
-        ("type", "Type bounded text after the browser approval gate; content is never durable.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "selector": {"type": "string", "maxLength": 200}, "text": {"type": "string", "maxLength": 2000}}, "required": ["session_id", "selector", "text"], "additionalProperties": False}, ("session_id", "selector", "text")),
-        ("select", "Select a bounded option after the browser approval gate; value is never durable.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "selector": {"type": "string", "maxLength": 200}, "value": {"type": "string", "maxLength": 200}}, "required": ["session_id", "selector", "value"], "additionalProperties": False}, ("session_id", "selector", "value")),
+        ("click", "Click one opaque browser element reference after the browser approval gate.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "element_ref": {"type": "string", "maxLength": 100}}, "required": ["session_id", "element_ref"], "additionalProperties": False}, ("session_id", "element_ref")),
+        ("type", "Type bounded text into one opaque browser element reference after the browser approval gate; content is never durable.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "element_ref": {"type": "string", "maxLength": 100}, "text": {"type": "string", "maxLength": 2000}}, "required": ["session_id", "element_ref", "text"], "additionalProperties": False}, ("session_id", "element_ref", "text")),
+        ("select", "Select a bounded option from one opaque browser element reference after the browser approval gate; value is never durable.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "element_ref": {"type": "string", "maxLength": 100}, "value": {"type": "string", "maxLength": 200}}, "required": ["session_id", "element_ref", "value"], "additionalProperties": False}, ("session_id", "element_ref", "value")),
     )
     for action, description, schema, required in schemas:
         registry.register(ToolSpec(

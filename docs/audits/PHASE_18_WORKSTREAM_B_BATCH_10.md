@@ -1,6 +1,6 @@
 # Phase 18 Workstream B - Batch 10 Audit
 
-**Status:** T0 PASS; T1 PASS; T2 PASS; T3-T6 not started
+**Status:** T0 PASS; T1 PASS; T2 PASS; T3 PASS; T4-T6 not started
 **Verdict:** `PHASE18_BROWSER_V2_BATCH10_PARTIAL` pending implementation and
 live owner-session evidence.
 
@@ -130,19 +130,21 @@ or Brave process/window mutation was performed by T0.
 
 ## 5. Ordered task table
 
-| Gate | Scope | T0 disposition |
+| Gate | Scope | Disposition |
 |---|---|---|
 | T0 | Workstream-B bootstrap, current browser review, baseline | PASS |
 | T1 | optional Playwright dependency evaluation and real controller foundation | PASS |
 | T2 | ephemeral/dedicated persistent profile policy | PASS |
-| T3 | DOM/accessibility grounding and approval-bound actions | NOT STARTED |
+| T3 | DOM/accessibility grounding and approval-bound actions | PASS |
 | T4 | layered extraction and provenance | NOT STARTED |
 | T5 | bounded upload/download/screenshot workflows | NOT STARTED |
 | T6 | security red team and owner-authenticated foundation | NOT STARTED |
 
 ## 6. Open gaps at T0
 
-- GAP-0201: live Playwright action adapter is not active in the default runtime.
+- GAP-0201: optional live Playwright navigation/read/action support now exists
+  behind the existing service, but the default runtime remains Local and
+  authenticated/live owner acceptance is still pending.
 - GAP-0202: bounded browser upload/download workflows are missing.
 - GAP-0203: production dynamic extraction and the approved layered parser path
   are incomplete.
@@ -193,7 +195,54 @@ post-run process check found no Brave process attributable to the dedicated
 profile. Existing unrelated normal Brave processes were observed and left
 untouched; no normal profile was attached, inspected, or mutated.
 
-## 8. T0/T1/T2 checkpoint
+## 8. T3 DOM/accessibility grounding and approval-bound actions
+
+T3 is PASS for the deterministic implementation gate. This is not physical
+owner-session or authenticated-site acceptance; no owner account, credentials,
+normal Brave profile, or real authenticated web workflow was touched.
+
+- `PlaywrightBrowserController` now returns bounded page references, URL,
+  landmarks, bounded text, and accessibility-shaped interactive observations.
+- Model-visible interactive targets contain only opaque `browser-element-*`
+  references, role, accessible name, visibility/enabled state, relevant
+  checked/selected state, and short bounded context. Raw DOM, HTML, CSS/XPath,
+  node handles, bounding boxes, JavaScript, and CDP are not exposed.
+- Click/type/select re-resolve through the opaque reference, require one unique
+  actionable target, preserve session/page/epoch/origin/fingerprint/action
+  binding, and refuse stale, removed, ambiguous, hidden, disabled, sensitive,
+  wrong-tab, or navigation-drifted targets.
+- Consequential actions remain under `BrowserActionService` permission and
+  approval. Decide-time revalidation returns
+  `browser_approval_target_changed`; no target migration or automatic second
+  click is used.
+- Click verification uses a changed URL or changed bounded state; uncertain
+  same-state clicks return `verified=False`. Type and native select use fresh
+  redacted value readback. Password/OTP/recovery/financial/security-sensitive
+  input is denied with `browser_sensitive_input_denied`.
+- Browser model schemas use `element_ref` for interaction and text-only
+  grounding for find; a narrowly scoped legacy selector compatibility path
+  remains only for direct dependency-free Local-controller callers and is not
+  present in model-facing schemas or approval previews.
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| focused T3 suite | `25 passed, 4 subtests passed` |
+| existing browser/integration/security regression | `50 passed, 13 subtests passed` |
+| full repository suite | `927 passed, 4 skipped, 45 subtests passed` in `432.10s` |
+| optional-dependency skips | EasyOCR, torch, torchvision; one no-active-window test |
+| `python -m compileall src tests scripts -q` | PASS |
+| `git diff --check` | PASS |
+
+The T3 bug-fix loop corrected approval-service handling of a valid `None`
+revalidation result, distinguished implicit from explicit accessibility roles in
+the owned deterministic test surface, and made post-navigation click
+verification avoid reading the old locator. The T3 matrix covers unique,
+duplicate, stale, removed, drifted, hidden, disabled, sensitive, uncertain,
+navigation-invalidated, wrong-tab, exactly-once, type, and native-select cases.
+
+## 9. T0/T1/T2/T3 checkpoint
 
 T0 audit-only checkpoint is intended to be committed as:
 

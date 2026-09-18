@@ -314,7 +314,7 @@ class BrowserActionService:
         self.permission = permission
         self.audit = audit
         self.approvals = approvals
-        self._pending: dict[str, tuple[BrowserAction, Identity, DeviceIdentity, str, str, BrowserSessionMode]] = {}
+        self._pending: dict[str, tuple[BrowserAction, Identity, DeviceIdentity, str, str, BrowserSessionMode, object | None]] = {}
 
     async def execute(
         self,
@@ -335,9 +335,14 @@ class BrowserActionService:
         if decision.effect.value != "allow":
             await self.audit.record(AuditRecord(f"audit-{uuid4()}", "browser.permission_denied", datetime.now(UTC), identity.identity_id, device.device_id, correlation, decision.effect.value, decision.reason_code, {"action": action.action}))
             if decision.effect.value == "require_approval" and self.approvals is not None:
+                target_error, target_binding = await self._prepare_target(action, identity, device, session_id, correlation, session_mode)
+                if target_error is not None:
+                    await self._emit("browser.action_failed", identity.owner_id, correlation, {"action": action.action, "error_code": target_error.error_code}, EventState.FAILED)
+                    await self.audit.record(AuditRecord(f"audit-{uuid4()}", "browser.action_failed", datetime.now(UTC), identity.identity_id, device.device_id, correlation, target_error.status, target_error.error_code, {"action": action.action}))
+                    return target_error
                 approval_id = f"approval-{uuid4()}"
                 await self.approvals.request(ApprovalRequest(approval_id, required_capability, identity.owner_id, device.device_id, "browser action requires approval", datetime.now(UTC), datetime.now(UTC) + timedelta(minutes=10), self._approval_preview(action)))
-                self._pending[approval_id] = (action, identity, device, session_id, correlation, session_mode)
+                self._pending[approval_id] = (action, identity, device, session_id, correlation, session_mode, target_binding)
                 await self._emit("browser.action_requested", identity.owner_id, correlation, {"action": action.action, "approval_id": approval_id}, EventState.ACCEPTED)
                 return BrowserResult("approval_required", error_code=decision.reason_code, approval_id=approval_id)
             await self._emit("browser.action_failed", identity.owner_id, correlation, {"action": action.action, "reason": decision.reason_code}, EventState.FAILED)
@@ -348,16 +353,22 @@ class BrowserActionService:
         pending = self._pending.get(approval_id)
         if pending is None or self.approvals is None:
             return BrowserResult("failed", error_code="browser_approval_unavailable", approval_id=approval_id)
-        action, identity, device, session_id, correlation, session_mode = pending
+        action, identity, device, session_id, correlation, session_mode, target_binding = pending
         decision = await self.approvals.decide(approval_id, approved, decided_by)
         self._pending.pop(approval_id, None)
         if decision.status.value != "approved":
             return BrowserResult("denied", error_code=decision.status.value, approval_id=approval_id)
+        target_error = await self._revalidate_target(action, identity, device, session_id, correlation, session_mode, target_binding)
+        if target_error is not None:
+            await self._emit("browser.action_failed", identity.owner_id, correlation, {"action": action.action, "error_code": target_error.error_code, "approval_id": approval_id}, EventState.FAILED)
+            await self.audit.record(AuditRecord(f"audit-{uuid4()}", "browser.action_failed", datetime.now(UTC), identity.identity_id, device.device_id, correlation, target_error.status, target_error.error_code, {"action": action.action, "approval_id": approval_id}))
+            return BrowserResult(target_error.status, target_error.output, target_error.error_code, target_error.verified, approval_id)
         return await self._execute_controller(action, identity, device, session_id, correlation, session_mode, approval_id)
 
     async def _execute_controller(self, action: BrowserAction, identity: Identity, device: DeviceIdentity, session_id: str, correlation: str, session_mode: BrowserSessionMode, approval_id: str | None = None) -> BrowserResult:
         await self._emit("browser.action_started", identity.owner_id, correlation, {"action": action.action}, EventState.ACCEPTED)
-        result = await self.controller.execute(action, ToolContext(identity, device, session_id, correlation), session_mode=session_mode)
+        metadata = {"browser_approval_id": approval_id} if approval_id is not None else {}
+        result = await self.controller.execute(action, ToolContext(identity, device, session_id, correlation, metadata=metadata), session_mode=session_mode)
         if action.action == BrowserCapability.OPEN_URL.value and result.status == "succeeded":
             await self._emit(
                 "browser.session_started", identity.owner_id, correlation,
@@ -377,13 +388,62 @@ class BrowserActionService:
         if inspect.isawaitable(result):
             await result
 
+    async def _prepare_target(
+        self,
+        action: BrowserAction,
+        identity: Identity,
+        device: DeviceIdentity,
+        session_id: str,
+        correlation: str,
+        session_mode: BrowserSessionMode,
+    ) -> tuple[BrowserResult | None, object | None]:
+        prepare = getattr(self.controller, "prepare_approval", None)
+        if prepare is None:
+            return None, None
+        result = prepare(action, ToolContext(identity, device, session_id, correlation), session_mode)
+        if inspect.isawaitable(result):
+            result = await result
+        if not isinstance(result, tuple) or len(result) != 2:
+            return BrowserResult("failed", error_code="browser_target_preparation_failed"), None
+        error, binding = result
+        if error is None:
+            return None, binding
+        if isinstance(error, BrowserResult):
+            return error, None
+        return BrowserResult("failed", error_code="browser_target_preparation_failed"), None
+
+    async def _revalidate_target(
+        self,
+        action: BrowserAction,
+        identity: Identity,
+        device: DeviceIdentity,
+        session_id: str,
+        correlation: str,
+        session_mode: BrowserSessionMode,
+        binding: object | None,
+    ) -> BrowserResult | None:
+        revalidate = getattr(self.controller, "revalidate_approval", None)
+        if revalidate is None:
+            return None
+        result = revalidate(
+            action,
+            ToolContext(identity, device, session_id, correlation),
+            session_mode,
+            binding,
+        )
+        if inspect.isawaitable(result):
+            result = await result
+        if result is None:
+            return None
+        return result if isinstance(result, BrowserResult) else BrowserResult("failed", error_code="browser_approval_target_changed")
+
     @staticmethod
     def _approval_preview(action: BrowserAction) -> dict[str, object]:
         parameters = action.parameters
         preview: dict[str, object] = {"action": action.action}
-        selector = parameters.get("selector")
-        if isinstance(selector, str):
-            preview["selector"] = selector[:200]
+        element_ref = parameters.get("element_ref")
+        if isinstance(element_ref, str):
+            preview["element_ref"] = element_ref[:100]
         session_id = parameters.get("session_id")
         if isinstance(session_id, str):
             preview["session_id"] = session_id[:100]

@@ -188,8 +188,13 @@ Computer Use V2 must handle DPI/window movement/multiple monitors and fail safel
 Batch 10 T1 adds the optional lazy Playwright controller and live
 navigation/read foundation behind the existing `BrowserActionService`, with
 exact Brave executable validation, typed provider failures, and owned
-context/process cleanup. Live click/type/select grounding, screenshots, and
-default-runtime activation remain open under the later Batch 10 gates.
+context/process cleanup. **Batch 10 T3 (2026-09-18)** adds bounded
+DOM/accessibility grounding, opaque element references, actionability checks,
+approval-bound click/type/select, target-drift refusal, and independent
+verification behind the same service. The implementation gate is PASS with
+deterministic evidence; the default runtime remains Local and physical owner /
+authenticated acceptance, extraction, screenshots, and file transfer remain
+open under later Batch 10 gates.
 **Batch 09 boundary (2026-09-15):** the existing `LocalBrowserController` is
 not a live authenticated Brave/session adapter. `RW-BRAVE-001` therefore stops
 after the bounded host-only phase and classifies navigation/authenticated web
