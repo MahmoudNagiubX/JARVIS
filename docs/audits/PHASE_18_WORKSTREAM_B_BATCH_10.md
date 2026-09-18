@@ -1,6 +1,6 @@
 # Phase 18 Workstream B - Batch 10 Audit
 
-**Status:** T0 PASS; T1 PASS; T2 PARTIAL; T3-T6 not started
+**Status:** T0 PASS; T1 PASS; T2 PASS; T3-T6 not started
 **Verdict:** `PHASE18_BROWSER_V2_BATCH10_PARTIAL` pending implementation and
 live owner-session evidence.
 
@@ -134,7 +134,7 @@ or Brave process/window mutation was performed by T0.
 |---|---|---|
 | T0 | Workstream-B bootstrap, current browser review, baseline | PASS |
 | T1 | optional Playwright dependency evaluation and real controller foundation | PASS |
-| T2 | ephemeral/dedicated persistent profile policy | PARTIAL - policy seam and tests pass; physical persistent restart pending |
+| T2 | ephemeral/dedicated persistent profile policy | PASS |
 | T3 | DOM/accessibility grounding and approval-bound actions | NOT STARTED |
 | T4 | layered extraction and provenance | NOT STARTED |
 | T5 | bounded upload/download/screenshot workflows | NOT STARTED |
@@ -148,8 +148,7 @@ or Brave process/window mutation was performed by T0.
   are incomplete.
 - GAP-0204: live browser hostile-page and prompt-injection matrix is incomplete.
 - GAP-0205: ephemeral versus dedicated owner-persistent browser session policy
-  has an implementation seam and tests, but its physical restart evidence is
-  still pending.
+  is implemented and physically verified by the T2 gate below.
 
 ## 7. T1/T2 implementation evidence
 
@@ -174,23 +173,32 @@ T1 is PASS for the implementation and dependency foundation:
   verified Brave executable (`launch=PASS`, `contexts=1`, `pages=1`,
   `url=about:blank`), with no remaining Brave process.
 
-### T2 - session/profile policy foundation
+### T2 - session/profile policy
 
-T2 currently has a PARTIAL implementation status pending the physical profile
-restart gate. `BrowserSessionMode` contains only product-owned `EPHEMERAL` and
+T2 is PASS. `BrowserSessionMode` contains only product-owned `EPHEMERAL` and
 `OWNER_PERSISTENT` modes. The default is ephemeral; owner-persistent mode
 requires explicit local opt-in and resolves a dedicated JARVIS profile path.
 Known Brave, Chrome, and Edge `User Data` profile paths are rejected, and no
-profile path or mode is present in model-facing browser schemas. The remaining
-evidence is an actual dedicated-profile launch, clean close, and controlled
-reopen without touching the normal Brave profile.
+profile path or mode is present in model-facing browser schemas. Focused policy
+evidence is `12 passed, 2 subtests passed` in
+`tests/test_phase_eighteen_browser_v2.py`.
 
-## 8. T0/T1 checkpoint
+The physical gate used the exact verified Brave executable and an explicitly
+configured dedicated JARVIS profile root supplied only through the local
+environment. Two sequential owner-persistent launches against
+`https://example.com` returned `succeeded` with
+`mode=owner_persistent`; each context was closed before the next launch. The
+dedicated profile root remained present for the controlled restart. A bounded
+post-run process check found no Brave process attributable to the dedicated
+profile. Existing unrelated normal Brave processes were observed and left
+untouched; no normal profile was attached, inspected, or mutated.
+
+## 8. T0/T1/T2 checkpoint
 
 T0 audit-only checkpoint is intended to be committed as:
 
 `docs: start phase 18 browser v2 workstream`
 
-T2-T6 evidence, commit chain, dependency audit, security counters, physical
+T3-T6 evidence, commit chain, dependency audit, security counters, physical
 receipts, source-of-truth updates, limitations, and final remote verification
 will be appended here as each gate completes. No Batch 11 work is in scope.

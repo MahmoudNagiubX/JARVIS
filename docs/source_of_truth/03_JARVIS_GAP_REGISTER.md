@@ -69,7 +69,7 @@ Current grounded control is intentionally narrow. Add product-owned UIA inspecti
 **Batch 03 Milestone 2 — GAP-0101 final call:** `RESOLVED` for the semantic capability defined by this gap (per the Batch 03 task's own Section 9.9 criterion: "If all 3 pass reliably 3/3: GAP-0101 may be marked RESOLVED for the semantic capability defined by that gap"). Re-run 3 more clean iterations in Milestone 2 alongside the expanded input scenarios: invoke/toggle/select again all 3/3 with the same independent evidence as Milestone 0. **This does not mean all of Computer Use V2 is complete** - see GAP-0102 (paste/drag-drop/richer hotkeys), GAP-0104 (autonomous multi-app recovery), GAP-0105 (full real-app evaluation breadth), and GAP-0106 (DPI/secure-desktop physical proof), all of which remain open/partial by design.
 
 ### GAP-0102 — Mouse and rich keyboard input are incomplete
-**Status:** `PARTIAL`  
+**Status:** `PARTIAL`
 General mouse click/move/drag/drop and arbitrary bounded hotkeys/keys/paste are not supported by the current Phase 11 path. Add native bounded input only after target grounding and policy checks.  
 **Batch 02 Milestone 1 (grounded native input fallback):** `PARTIAL` — added `WindowsNativeInputAdapter` (`src/jarvis/computer/native_input.py`), a bounded native `SendInput` execution provider reachable only through `ComputerActionService`. Mouse: `move_to_element`/`left_click_element` only, grounded exclusively by `element_ref` (never raw x/y/HWND), re-validated through the existing fail-closed `resolve_actionable_target` boundary both before and after focusing the containing window (focus can change layout), coordinates normalized against the full Windows virtual desktop (not just the primary monitor). Keyboard: a fixed 14-key named allowlist plus one reviewed `shift+tab` combination (`computer.keyboard.key`), with `GetAsyncKeyState`-based interference checks (fails safely if the owner is physically holding a modifier) and guaranteed release of any JARVIS-pressed modifier even on failure. Both new tools (`computer.pointer.act`, `computer.keyboard.key`) are consequential/approval-required with no auto-allow. Physically proven live on NIGHTFURY through the full approval-gated path on a disposable Calculator instance: native left-click on "Seven" (`pointer_target_verified: true` via independent `GetCursorPos` readback, generic click honestly reported `verified: false`, independent semantic read-back of the display showing "Display is 7" - not the action's own self-report) and native Tab key press (independent semantic read confirming keyboard focus moved from "Seven" to "Eight"). Still absent by design this milestone: raw coordinate move/click, right click, double click, drag/drop, wheel scroll, paste, richer hotkeys, OCR/visual fallback - see `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_02.md` §4.  
 **Batch 03 Milestone 2 (input expansion):** `PARTIAL` — added `right_click_element`, `double_click_element`, `scroll_element` (bounded `direction`/`steps`, internally a signed multiple of `WHEEL_DELTA`, never a raw wheel delta) to `computer.pointer.act`, all reusing the exact same element-grounding pipeline as move/left-click. Added a very small, explicit named-chord surface (`computer.keyboard.chord`: `ctrl+a`/`ctrl+c`/`ctrl+f`/`ctrl+z`/`ctrl+y` only - no paste, no save, no Alt+F4, no Windows-key combination, no Ctrl+Alt+Delete, no arbitrary modifier+key parser), sharing its modifier-press/guaranteed-release sequencing with `computer.keyboard.key` rather than a second implementation. All physically proven live on NIGHTFURY through the owned Win32 fixture, 3/3 each (right-click/scroll: delivery evidence only, honestly unverified since a standard button/listbox has no observable reaction; double-click/chord: delivery confirmed, double-click additionally confirmed via independent status read-back). Paste, drag/drop, and richer/arbitrary hotkeys remain explicitly deferred (Sections 9.6/9.7 of the task) - GAP-0102 stays `PARTIAL` by design even with this milestone green.  
@@ -184,8 +184,12 @@ Computer Use V2 must handle DPI/window movement/multiple monitors and fail safel
 ## 4. P1 — Browser + web extraction
 
 ### GAP-0201 — Live Playwright action adapter is not active in default runtime
-**Status:** `OPEN`  
-Implement real click/type/select/navigation/screenshot capability behind existing `BrowserActionService`, preserving URL policy, approvals, audit, and offline composition.
+**Status:** `PARTIAL`
+Batch 10 T1 adds the optional lazy Playwright controller and live
+navigation/read foundation behind the existing `BrowserActionService`, with
+exact Brave executable validation, typed provider failures, and owned
+context/process cleanup. Live click/type/select grounding, screenshots, and
+default-runtime activation remain open under the later Batch 10 gates.
 **Batch 09 boundary (2026-09-15):** the existing `LocalBrowserController` is
 not a live authenticated Brave/session adapter. `RW-BRAVE-001` therefore stops
 after the bounded host-only phase and classifies navigation/authenticated web
@@ -205,8 +209,13 @@ Add bounded static fetch + structured HTML parser + main-content extraction, wit
 Phase 15 closed schema/URL/security gaps, but the live browser/extraction stack must be tested against hostile page text, hidden instructions, poisoned metadata, download traps, cross-origin/redirect abuse, and attempts to exfiltrate secrets or escalate tools.
 
 ### GAP-0205 — Browser session/profile policy needs product decision and implementation
-**Status:** `OPEN`  
-Define isolated ephemeral contexts versus explicitly approved persistent owner profiles. Cookies/tokens must stay out of Memory/audit/model-visible data.
+**Status:** `RESOLVED` (Batch 10 T2, 2026-09-18)
+DEC-049 accepts isolated ephemeral contexts for anonymous work and an explicit
+owner-opt-in dedicated JARVIS persistent Brave profile for manually
+authenticated owner workflows. Normal Brave/Chrome/Edge profiles are rejected;
+cookies, tokens, credentials, and profile databases remain outside
+model-visible/audited data. T2 policy tests and a two-run dedicated-profile
+close/reopen gate passed in `docs/audits/PHASE_18_WORKSTREAM_B_BATCH_10.md`.
 
 ## 5. P1 — Agent delegation and execution quality
 

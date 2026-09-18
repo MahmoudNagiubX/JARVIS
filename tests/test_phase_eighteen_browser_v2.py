@@ -110,6 +110,16 @@ class PhaseEighteenBrowserV2FoundationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(self.runtime.browser, LocalBrowserController)
         self.assertIsNone(getattr(self.runtime.browser, "playwright", None))
 
+    async def test_local_backend_cannot_claim_owner_persistent_execution(self) -> None:
+        controller = LocalBrowserController(lambda url: ("<h1>anonymous</h1>", url))
+        result = await controller.execute(
+            BrowserAction("open_url", {"url": "https://example.test"}),
+            ToolContext(self.identity, self.device, "browser", "browser-v2-test"),
+            session_mode=BrowserSessionMode.OWNER_PERSISTENT,
+        )
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_code, "browser_persistent_requires_playwright")
+
     async def test_browser_tool_schemas_do_not_expose_session_mode_or_raw_execution(self) -> None:
         browser_specs = [spec for spec in self.runtime.tools.list() if spec.name.startswith("browser.")]
         self.assertTrue(browser_specs)

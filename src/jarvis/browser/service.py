@@ -82,6 +82,10 @@ class LocalBrowserController:
     async def execute(self, action: BrowserAction, context: ToolContext, *, session_mode: BrowserSessionMode = BrowserSessionMode.EPHEMERAL) -> BrowserResult:
         if context.device is None:
             return BrowserResult("denied", error_code="device_missing")
+        if not isinstance(session_mode, BrowserSessionMode):
+            return BrowserResult("denied", error_code="browser_session_mode_invalid")
+        if session_mode is BrowserSessionMode.OWNER_PERSISTENT:
+            return BrowserResult("failed", error_code="browser_persistent_requires_playwright")
         try:
             capability = BrowserCapability(action.action)
         except ValueError:
@@ -134,7 +138,13 @@ class LocalBrowserController:
         if not isinstance(session_id, str):
             return None
         session = self._sessions.get(session_id)
-        if session is None or not session.active or session.device_id != context.device.device_id:
+        if (
+            session is None
+            or not session.active
+            or session.device_id != context.device.device_id
+            or context.identity is None
+            or session.owner_id != context.identity.owner_id
+        ):
             return None
         return session
 
