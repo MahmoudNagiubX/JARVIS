@@ -24,8 +24,10 @@ now use T3 opaque grounding, actionability, approval binding, and independent
 verification. T5 adds approved-root, bounded download/upload workflows and
 on-demand transient screenshots through the same controller; no raw screenshot
 bytes enter model output, audit, filesystem history, or Memory. Live
-owner-authenticated acceptance and the T6 red-team matrix remain later Browser
-V2 gates. Reads use the
+owner-authenticated acceptance remains pending. T6's deterministic red-team
+matrix and fail-closed dedicated-profile acceptance runner preserve the same
+authority, but do not claim authenticated proof without explicit local opt-in.
+Reads use the
 dependency-free static path by default and return bounded provenance-aware
 content; the optional dynamic path uses the same bounds and treats all page
 content as untrusted data.

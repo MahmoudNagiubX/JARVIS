@@ -230,8 +230,13 @@ full HTML dumps. Research remains a separate authority; broader authenticated
 research-provider integration and advanced parser selection remain open.
 
 ### GAP-0204 — Real-world prompt-injection/red-team matrix needs expansion
-**Status:** `OPEN`  
-Phase 15 closed schema/URL/security gaps, but the live browser/extraction stack must be tested against hostile page text, hidden instructions, poisoned metadata, download traps, cross-origin/redirect abuse, and attempts to exfiltrate secrets or escalate tools.
+**Status:** `PARTIAL`
+Phase 15 closed schema/URL/security gaps. Batch 10 T6 adds a deterministic
+red-team matrix covering hostile page text, hidden instructions, stale and
+ambiguous targets, approval replay, iframe confusion, download traps, upload
+secret paths, and raw screenshot retention; all current bounded tests pass with
+zero authority escalations. Live hostile-site coverage, authenticated owner
+acceptance, and universal prompt-injection resistance remain open.
 
 ### GAP-0205 — Browser session/profile policy needs product decision and implementation
 **Status:** `RESOLVED` (Batch 10 T2, 2026-09-18)

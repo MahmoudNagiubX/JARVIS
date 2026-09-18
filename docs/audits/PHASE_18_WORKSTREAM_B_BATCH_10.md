@@ -1,6 +1,6 @@
 # Phase 18 Workstream B - Batch 10 Audit
 
-**Status:** T0 PASS; T1 PASS; T2 PASS; T3 PASS; T4 PASS; T5 PASS; T6 not started
+**Status:** T0 PASS; T1 PASS; T2 PASS; T3 PASS; T4 PASS; T5 PASS; T6 PARTIAL
 **Verdict:** `PHASE18_BROWSER_V2_BATCH10_PARTIAL` pending implementation and
 live owner-session evidence.
 
@@ -138,7 +138,7 @@ or Brave process/window mutation was performed by T0.
 | T3 | DOM/accessibility grounding and approval-bound actions | PASS |
 | T4 | layered extraction and provenance | PASS |
 | T5 | bounded upload/download/screenshot workflows | PASS |
-| T6 | security red team and owner-authenticated foundation | NOT STARTED |
+| T6 | security red team and owner-authenticated foundation | PARTIAL |
 
 ## 6. Open gaps at T0
 
@@ -328,12 +328,59 @@ Evidence:
 | `python -m compileall src tests scripts -q` | PASS |
 | `git diff --check` | PASS |
 
-This gate uses generated non-sensitive fixtures and deterministic provider
-fakes. No authenticated owner account, credential, cookie/token export, normal
-Brave profile, or T6 red-team/owner-authenticated acceptance was used or
+At the T5 checkpoint this gate used generated non-sensitive fixtures and
+deterministic provider fakes. No authenticated owner account, credential,
+cookie/token export, normal Brave profile, or live T6 acceptance was used or
 claimed.
 
-## 11. T0/T1/T2/T3/T4/T5 checkpoint
+## 11. T6 security red-team and owner-session foundation
+
+T6 is `PARTIAL`: the deterministic security matrix and a fail-closed dedicated
+owner-session runner are implemented, but live owner-authenticated proof was
+not configured in this workspace. The runner stops before any browser action
+when the process-local opt-in is absent and reports exactly
+`BROWSER_V2_PARTIAL` with `owner_session_opt_in_required`. It requires an
+exact configured Brave path, a dedicated JARVIS profile, existing owner/device
+identity with browser capabilities, and a separate local send-confirmation
+flag before it can type or click the ChatGPT nonce flow. It never automates
+credentials or reads cookies/tokens.
+
+| Red-team case | Result | Evidence |
+|---|---|---|
+| SSRF, scheme abuse, private redirect | PASS | existing URL-policy tests plus T5 private-redirect case |
+| prompt injection, hidden instructions, page requests another tool/Memory/policy change | PASS | hostile text remains inert; no approval or authority call |
+| stale, ambiguous, target drift, cross-tab | PASS | T3 binding matrix and T6 replay/drift tests |
+| iframe confusion | PASS | no iframe traversal or iframe target surfaced |
+| approval replay / duplicate side effect | PASS | second decision returns `browser_approval_unavailable`; click count remains one |
+| download trap / auto-execution | PASS | generated `.exe` remains an untrusted file; no open/execute path |
+| upload outside root / sensitive path | PASS | T5 `FileAccessPolicy` denial tests |
+| cookie/token exfiltration | PASS for bounded implementation | no cookie/storage/header API or raw secret output path |
+| raw screenshot persistence | PASS | transient-map/close/audit/filesystem assertions |
+| manual login / authenticated ChatGPT nonce | NOT_CONFIGURED | no process-local T6 opt-in/profile/owner identity in this run |
+
+The T6 runner is `scripts/phase18/browser_v2_owner_acceptance.py`. Its local
+preflight result was:
+
+```text
+status=BROWSER_V2_PARTIAL
+reason=owner_session_opt_in_required
+security_counters=all zero
+```
+
+Deterministic T6 evidence:
+
+| Check | Result |
+|---|---|
+| focused Browser V2/T6 suite | `39 passed, 4 subtests passed` |
+| owner runner no-opt-in preflight | PASS / truthful PARTIAL |
+| `python -m compileall src tests scripts -q` | PASS |
+| `git diff --check` | PASS |
+
+No live ChatGPT navigation, manual login, nonce send, authenticated-shell
+readback, or dedicated-profile persistence proof is claimed. Batch 10 therefore
+remains `PHASE18_BROWSER_V2_BATCH10_PARTIAL`, as required by the pass definition.
+
+## 12. T0/T1/T2/T3/T4/T5/T6 checkpoint
 
 T0 audit-only checkpoint is intended to be committed as:
 
@@ -341,5 +388,4 @@ T0 audit-only checkpoint is intended to be committed as:
 
 T3-T6 evidence, commit chain, dependency audit, security counters, physical
 receipts, source-of-truth updates, limitations, and final remote verification
-will be appended here as each gate completes. T6 remains ordered and no Batch
-11 work is in scope.
+are recorded above. No Batch 11 work is in scope.
