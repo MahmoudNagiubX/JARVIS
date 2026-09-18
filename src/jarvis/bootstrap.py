@@ -401,7 +401,13 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     communication_followups = CommunicationFollowUpService(repository, event_bus, communications_intelligence, communications, personalization)
     event_bus.subscribe("communication.received", communication_followups.handle_communication_event)
     event_bus.subscribe("communication.sent", communication_followups.handle_communication_event)
-    worker_coordinator = WorkerCoordinator(repository, event_bus, developer_gateway=None, permission=permission)
+    worker_coordinator = WorkerCoordinator(
+        repository,
+        event_bus,
+        developer_gateway=None,
+        permission=permission,
+        approvals=approval,
+    )
     evaluations = EvaluationService(repository, event_bus)
     evaluations.register_default_suites()
     from .evaluation.computer_use_v2 import build_suite as _build_computer_use_v2_suite

@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from ...authority.permissions.engine import PolicyPermissionEngine
 from ...bus import InMemoryEventBus
-from ...contracts import DeviceIdentity, Identity, PermissionEffect
+from ...contracts import ApprovalRequest, DeviceIdentity, Identity, PermissionEffect
 from ...events import Event, EventCategory, EventState
 from ...persistence.repositories import RuntimeRepository
 from .runtime import (
@@ -47,6 +47,20 @@ class WorkerDelegation:
     completed_at: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingDeveloperWrite:
+    owner_id: str
+    task: str
+    workspace_scope: str
+    timeout_seconds: float
+    identity: Identity
+    device: DeviceIdentity
+    envelope: SpecialistTaskEnvelope
+    expected_paths: tuple[str, ...]
+    allow_antigravity_subdelegation: bool
+    started_at: datetime
+
+
 class WorkerCoordinator:
     """Local handlers first; optional developer adapters remain explicit."""
 
@@ -58,6 +72,7 @@ class WorkerCoordinator:
         local: LocalWorkerRuntime | None = None,
         developer_gateway: Any = None,
         permission: PolicyPermissionEngine | None = None,
+        approvals: Any = None,
         verifier: WorkerVerifier | None = None,
     ) -> None:
         self.repository = repository
@@ -65,7 +80,9 @@ class WorkerCoordinator:
         self.local = local or LocalWorkerRuntime()
         self.developer_gateway = developer_gateway
         self.permission = permission
+        self.approvals = approvals
         self.verifier = verifier
+        self._pending_developer_writes: dict[str, _PendingDeveloperWrite] = {}
 
     def select(self, task: str, *, required_capability: str | None = None, workspace_scope: str | None = None, read_only: bool = True, internet_available: bool = False) -> WorkerSelection:
         text = task.casefold()
@@ -111,6 +128,8 @@ class WorkerCoordinator:
         input_evidence: tuple[str, ...] = (),
         expected_output: tuple[str, ...] = (),
         verifier_requirements: tuple[str, ...] = (),
+        expected_paths: tuple[str, ...] = (),
+        allow_antigravity_subdelegation: bool = False,
     ) -> WorkerDelegation:
         if workspace_scope is not None:
             scope = Path(workspace_scope).expanduser().resolve()
@@ -135,11 +154,51 @@ class WorkerCoordinator:
             verifier_requirements=tuple(str(item)[:200] for item in verifier_requirements)[:32],
         )
         if not read_only:
-            if self.permission is None or identity is None or device is None:
+            codex_available = bool(
+                self.developer_gateway
+                and getattr(self.developer_gateway, "enabled", True)
+                and any(item.available for item in self.developer_gateway.providers())
+            )
+            if not selected.available or not codex_available:
+                result = {"status": "unavailable", "error_code": "worker_unavailable", "worker": selected.worker}
+            elif self.permission is None or identity is None or device is None or not workspace_scope:
                 result: Mapping[str, object] = {"status": "approval_required", "error_code": "developer_change_requires_identity_and_approval"}
+            elif self.approvals is None:
+                result = {"status": "approval_required", "error_code": "developer_approval_engine_required"}
             else:
-                decision = await self.permission.evaluate(identity, device, "developer.worker", {"required_scope": "tool.request", "risk_level": "consequential", "requires_approval": True})
-                result = {"status": "approval_required" if decision.effect is PermissionEffect.REQUIRE_APPROVAL else "denied", "reason": decision.reason_code}
+                decision = await self.permission.evaluate(
+                    identity,
+                    device,
+                    "developer.worker.write",
+                    {"required_scope": "tool.request", "risk_level": "consequential", "requires_approval": True},
+                )
+                if decision.effect is PermissionEffect.DENY:
+                    result = {"status": "denied", "error_code": decision.reason_code}
+                else:
+                    approval_id = f"approval-{uuid4()}"
+                    await self.approvals.request(ApprovalRequest(
+                        approval_id,
+                        "developer.worker.write",
+                        owner_id,
+                        device.device_id,
+                        "Codex workspace-write coding task",
+                        started,
+                        started + timedelta(minutes=10),
+                        {
+                            "workspace": workspace_scope,
+                            "task": str(task)[:500],
+                            "mode": "workspace_write",
+                            "expected_paths": list(expected_paths)[:32],
+                            "allow_antigravity_subdelegation": bool(allow_antigravity_subdelegation),
+                        },
+                    ))
+                    self._pending_developer_writes[approval_id] = _PendingDeveloperWrite(
+                        owner_id, task[:8_000],
+                        workspace_scope, bounded_timeout, identity, device, envelope,
+                        tuple(str(item)[:300] for item in expected_paths)[:32],
+                        bool(allow_antigravity_subdelegation), started,
+                    )
+                    result = {"status": "approval_required", "approval_id": approval_id, "reason": decision.reason_code}
         elif not selected.available:
             result = {"status": "unavailable", "error_code": "worker_unavailable", "worker": selected.worker}
         elif selected.worker == "coding" and self.developer_gateway is not None and not self.local.handlers.get(WorkerCategory.CODING):
@@ -152,6 +211,62 @@ class WorkerCoordinator:
             )
             result = asdict(worker_result)
         result = await self._with_verification(envelope, result)
+        return await self._store_delegation(owner_id, selected, workspace_scope, task, result, started)
+
+    async def decide(self, approval_id: str, approved: bool, decided_by: str) -> WorkerDelegation:
+        """Consume one write approval and execute the pending Codex task once."""
+
+        pending = self._pending_developer_writes.get(approval_id)
+        if pending is None or self.approvals is None:
+            raise KeyError(approval_id)
+        decide_with_claim = getattr(self.approvals, "decide_with_claim", None)
+        if decide_with_claim is not None:
+            decision, claimed = await decide_with_claim(approval_id, approved, decided_by)
+        else:
+            decision = await self.approvals.decide(approval_id, approved, decided_by)
+            claimed = decision.status.value == "approved" and approved
+        if not claimed or decision.status.value != "approved":
+            self._pending_developer_writes.pop(approval_id, None)
+            result: Mapping[str, object] = {
+                "status": "denied",
+                "error_code": "approval_not_approved" if approved else "approval_rejected",
+                "approval_id": approval_id,
+            }
+        else:
+            provider = next((item.name for item in self.developer_gateway.providers() if item.available), "") if self.developer_gateway else ""
+            if not provider:
+                result = {"status": "unavailable", "error_code": "developer_cli_not_available", "approval_id": approval_id}
+            else:
+                result = await self.developer_gateway.run(
+                    provider,
+                    pending.task,
+                    pending.workspace_scope,
+                    timeout_seconds=pending.timeout_seconds,
+                    mode="workspace_write",
+                    allow_antigravity_subdelegation=pending.allow_antigravity_subdelegation,
+                    expected_paths=pending.expected_paths,
+                )
+                result = await self._with_verification(pending.envelope, result)
+            self._pending_developer_writes.pop(approval_id, None)
+        selected = WorkerSelection("coding", "approved Codex workspace-write task", True, pending.workspace_scope)
+        return await self._store_delegation(
+            pending.owner_id,
+            selected,
+            pending.workspace_scope,
+            pending.task,
+            result,
+            pending.started_at,
+        )
+
+    async def _store_delegation(
+        self,
+        owner_id: str,
+        selected: WorkerSelection,
+        workspace_scope: str | None,
+        task: str,
+        result: Mapping[str, object],
+        started: datetime,
+    ) -> WorkerDelegation:
         completed = datetime.now(UTC)
         delegation = WorkerDelegation(f"delegation-{uuid4()}", owner_id, selected.worker, selected.reason, workspace_scope, task[:1_000], result, started, completed)
         self.repository.insert_worker_delegation(delegation)

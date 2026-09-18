@@ -18,4 +18,13 @@ class DeveloperWorkerProvider:
 class DeveloperWorkerAdapter(Protocol):
     name: str
 
-    async def run(self, task: str, workspace_scope: str | None, timeout_seconds: float) -> dict[str, object]: ...
+    async def run(
+        self,
+        task: str,
+        workspace_scope: str | None,
+        timeout_seconds: float,
+        *,
+        mode: str = "read_only",
+        allow_antigravity_subdelegation: bool = False,
+        expected_paths: tuple[str, ...] = (),
+    ) -> dict[str, object]: ...

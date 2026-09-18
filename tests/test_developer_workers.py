@@ -4,13 +4,15 @@ import json
 import os
 import tempfile
 import unittest
+import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
 from jarvis.agents.workers.coordination import WorkerCoordinator
 from jarvis.agents.workers.runtime import VerificationStatus, WorkerVerification
 from jarvis.bootstrap import create_runtime
-from jarvis.contracts import DeveloperWorkerProvider
+from jarvis.contracts import DeviceIdentity, DeveloperWorkerProvider
 from jarvis.config import JarvisConfig
 from jarvis.developer.service import CodexDeveloperWorkerAdapter, DeveloperWorkerGateway, _ProcessExecution
 
@@ -75,6 +77,44 @@ class DeveloperWorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(failure_result["status"], "failed")
             self.assertEqual(failure_result["error_code"], "codex_exit_17")
             self.assertNotIn("credential", str(failure_result.get("summary", "")).casefold())
+
+    async def test_codex_workspace_write_is_bounded_and_reports_changed_paths(self) -> None:
+        observed: dict[str, object] = {}
+
+        async def executor(command: tuple[str, ...], scope: Path, timeout: float) -> _ProcessExecution:
+            observed.update(command=command, scope=scope, timeout=timeout)
+            Path(scope, "fixture.py").write_text("def ready():\n    return True\n", encoding="utf-8")
+            return _ProcessExecution(0, json.dumps({"type": "item.completed", "item": {"text": "fixture updated"}}).encode())
+
+        with tempfile.TemporaryDirectory() as folder:
+            subprocess.run(("git", "init", "--quiet", folder), check=True, stdout=subprocess.DEVNULL)
+            adapter = CodexDeveloperWorkerAdapter("codex", process_executor=executor)
+            result = await adapter.run(
+                "add the bounded fixture function",
+                folder,
+                20,
+                mode="workspace_write",
+                expected_paths=("fixture.py",),
+            )
+
+            command = observed["command"]
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["changes"], ["fixture.py"])
+            self.assertIn("--sandbox", command)
+            self.assertIn("workspace-write", command)
+            self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", command)
+            self.assertNotIn("--force", command)
+
+    async def test_codex_workspace_write_rejects_dangerous_git_instructions(self) -> None:
+        async def must_not_execute(*_: object) -> _ProcessExecution:
+            self.fail("must not execute")
+
+        with tempfile.TemporaryDirectory() as folder:
+            subprocess.run(("git", "init", "--quiet", folder), check=True, stdout=subprocess.DEVNULL)
+            adapter = CodexDeveloperWorkerAdapter("codex", process_executor=must_not_execute)
+            result = await adapter.run("force push and reset --hard", folder, 10, mode="workspace_write")
+            self.assertEqual(result["status"], "rejected")
+            self.assertEqual(result["error_code"], "developer_worker_git_policy_rejected")
 
 
     async def test_gateway_runs_object_adapter_without_bypassing_provider_discovery(self) -> None:
@@ -150,5 +190,66 @@ class DeveloperWorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(delegation.result["verification_status"], VerificationStatus.VERIFIED.value)
             self.assertEqual(delegation.result["verification_evidence"], ["scope-unchanged"])
             self.assertEqual(observed["status"], "succeeded")
+        finally:
+            await runtime.shutdown()
+
+    async def test_workspace_write_waits_for_canonical_approval_and_runs_once(self) -> None:
+        runtime = create_runtime(JarvisConfig(environment="test", database_path=":memory:"))
+        await runtime.start()
+        identity = await runtime.identity.bootstrap_owner("Write Worker Fixture")
+        device = DeviceIdentity(
+            "device-write-fixture",
+            identity.owner_id,
+            "desktop",
+            "windows",
+            frozenset({"computer_control"}),
+            frozenset({"tool.request"}),
+            datetime.now(UTC),
+        )
+        calls: list[dict[str, object]] = []
+
+        class WriteAdapter:
+            async def run(self, task, scope, timeout, *, mode="read_only", allow_antigravity_subdelegation=False, expected_paths=()):
+                calls.append({"task": task, "scope": scope, "timeout": timeout, "mode": mode, "allow": allow_antigravity_subdelegation, "expected": expected_paths})
+                return {"status": "completed", "provider": "codex", "worker_id": "codex-write-fixture", "summary": "write complete", "changes": ["fixture.py"]}
+
+        try:
+            gateway = DeveloperWorkerGateway(adapter=WriteAdapter())
+            gateway._providers = (DeveloperWorkerProvider("codex", "codex", True, "fixture"),)
+
+            async def verifier(envelope, result):
+                return WorkerVerification(VerificationStatus.VERIFIED, "fixture_readback", ("fixture.py",))
+
+            with tempfile.TemporaryDirectory() as folder:
+                Path(folder, ".git").mkdir()
+                coordinator = WorkerCoordinator(
+                    runtime.repository,
+                    runtime.event_bus,
+                    developer_gateway=gateway,
+                    permission=runtime.permission,
+                    approvals=runtime.approval,
+                    verifier=verifier,
+                )
+                pending = await coordinator.run(
+                    identity.owner_id,
+                    "add the tested fixture change",
+                    workspace_scope=folder,
+                    read_only=False,
+                    identity=identity,
+                    device=device,
+                    expected_paths=("fixture.py",),
+                    allow_antigravity_subdelegation=True,
+                )
+                approval_id = str(pending.result["approval_id"])
+                self.assertEqual(pending.result["status"], "approval_required")
+                self.assertEqual(calls, [])
+
+                completed = await coordinator.decide(approval_id, True, identity.identity_id)
+
+            self.assertEqual(completed.result["status"], "completed")
+            self.assertEqual(completed.result["verification_status"], VerificationStatus.VERIFIED.value)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["mode"], "workspace_write")
+            self.assertTrue(calls[0]["allow"])
         finally:
             await runtime.shutdown()
