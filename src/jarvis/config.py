@@ -50,6 +50,7 @@ class JarvisConfig:
     gemini_enabled: bool = False
     gemini_model: str = "gemini-3.5-flash"
     gemini_timeout_seconds: float = 45.0
+    codex_worker_enabled: bool = False
     ollama_base_url: str = "http://127.0.0.1:11434"
     llama_cpp_server_path: str | None = None
     llama_cpp_model_path: str | None = None
@@ -119,6 +120,10 @@ class JarvisConfig:
             "JARVIS_GEMINI_TIMEOUT_SECONDS",
             str(defaults.gemini_timeout_seconds),
         ).strip()
+        codex_worker_enabled_text = os.getenv(
+            "JARVIS_CODEX_WORKER_ENABLED",
+            "true" if defaults.codex_worker_enabled else "false",
+        ).strip().lower()
         ollama_base_url = os.getenv(
             "JARVIS_MODEL_LOOPBACK_ENDPOINT",
             os.getenv("JARVIS_OLLAMA_BASE_URL", defaults.ollama_base_url),
@@ -195,6 +200,8 @@ class JarvisConfig:
             raise ValueError("JARVIS_GROQ_ENABLED must be boolean")
         if gemini_enabled_text not in boolean_values:
             raise ValueError("JARVIS_GEMINI_ENABLED must be boolean")
+        if codex_worker_enabled_text not in boolean_values:
+            raise ValueError("JARVIS_CODEX_WORKER_ENABLED must be boolean")
         if browser_headless_text not in boolean_values:
             raise ValueError("JARVIS_BROWSER_HEADLESS must be boolean")
         if browser_owner_opt_in_text not in boolean_values:
@@ -260,6 +267,7 @@ class JarvisConfig:
             gemini_enabled=gemini_enabled_text in {"true", "1", "yes", "on"},
             gemini_model=gemini_model,
             gemini_timeout_seconds=gemini_timeout,
+            codex_worker_enabled=codex_worker_enabled_text in {"true", "1", "yes", "on"},
             ollama_base_url=ollama_base_url,
             llama_cpp_server_path=llama_cpp_server_path,
             llama_cpp_model_path=llama_cpp_model_path,

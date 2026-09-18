@@ -11,9 +11,12 @@
   never executed and raw perception/audio is not persisted by the core.
 - Use the shared redaction rules for credentials, tokens, passwords, cookies,
   raw audio, raw frames, and authorization values. Never log a raw credential.
-- Developer workers are discovery-only until a deployment explicitly injects
-  a scoped worker. No arbitrary shell, public endpoint, paid API, or model
-  download is part of the default runtime.
+- Developer workers use the optional bounded Codex adapter only when the local
+  CLI is present. It is read-only, workspace-scoped, ephemeral, output-bounded,
+  and environment-allowlisted; there is no arbitrary shell route, write mode,
+  public endpoint, paid API, or model download in the default runtime. A live
+  worker result still requires the existing independent verifier before it is
+  treated as verified.
 
 Known operational debt: query-string authentication is retained for the
 existing SSE/HUD client compatibility path, so reverse-proxy/access logging

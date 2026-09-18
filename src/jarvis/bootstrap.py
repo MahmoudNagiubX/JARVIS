@@ -547,7 +547,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     register_computer_tools(registry, computer_actions, target_resolver=resolve_computer_target)
     if effective_config.desktop_awareness_enabled:
         scheduler.add("desktop-metadata-awareness", 10.0, perception.poll_metadata_awareness)
-    developer_workers = DeveloperWorkerGateway()
+    developer_workers = DeveloperWorkerGateway(enabled=effective_config.codex_worker_enabled)
     worker_coordinator.developer_gateway = developer_workers
 
     async def skill_system_health(skill: object, values: dict[str, object], identity: object, device: object) -> dict[str, object]:

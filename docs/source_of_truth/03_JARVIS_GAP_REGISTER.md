@@ -273,7 +273,12 @@ Mission restart semantics are implemented, but run crash/restart/timeout/duplica
 
 ### GAP-0304 — Live developer worker adapter is not configured
 **Status:** `OPEN/P2`  
-The DeveloperWorkerGateway/provider seams exist; a safe live repository/developer worker remains optional until a bounded adapter is selected and tested. Runtime must not depend on AntiGravity/Google auth.
+`CodexDeveloperWorkerAdapter` now provides a bounded read-only `codex exec`
+path with exact workspace scope, ephemeral execution, output redaction, and no
+write mode. Focused tests pass, but the current disposable live smoke timed out
+before provider output, so authentication/provider availability and independent
+postcondition verification remain open. Runtime must not depend on
+AntiGravity/Google auth.
 
 ## 6. P1 — Personal intelligence expansion
 

@@ -281,6 +281,31 @@ produce bounded receipts, C2/C3/C5/C6/C8 remain as listed above; no browser
 acceptance is inferred from the public Brave proof or from the installed Codex
 desktop package.
 
+## 11A. T03 bounded Codex developer worker continuation
+
+The installed local Codex CLI was inspected without installation or broad
+machine scanning:
+
+| Check | Evidence | Truth |
+|---|---|---|
+| Exact executable | `C:\Users\mahmo\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe` | discovered |
+| CLI version | `codex-cli 0.154.0` | recorded |
+| Authenticode | `Valid`, signer `OpenAI OpCo, LLC` | recorded |
+| SHA-256 | `BE96B992178B1E467C225800DA0D65F2C86D5EBA1EF0B14632F65DB381CBDFDE` | recorded |
+| Adapter contract | explicit `codex exec --sandbox read-only --ephemeral --json --cd <scope>`; no write/yolo flags | PASS |
+| Focused regression | developer-worker, config/bootstrap, MCP discovery, hybrid-model, and worker integration suites | `38 passed` |
+| Full Python regression after explicit opt-in wiring | repository suite | `970 passed, 3 skipped, 45 subtests` |
+| Disposable live smoke | empty temporary Git scope; 45-second bounded run; no repository mutation | `PARTIAL`: normalized timeout before provider output |
+
+`CodexDeveloperWorkerAdapter` is now available behind the explicit
+`JARVIS_CODEX_WORKER_ENABLED=true` opt-in when the exact local CLI is installed.
+It rejects missing/non-Git scopes, oversized or credential-oriented
+tasks, passes only a minimal process environment, bounds output, redacts the
+persisted summary, and returns no changes in read-only mode. The live smoke did
+not produce provider output, so no authenticated/live worker acceptance is
+claimed. Results remain `UNVERIFIED` unless the existing independent verifier
+callback supplies evidence; no write-capable path was added.
+
 ## 12. Ultimate Completion Requirement Matrix
 
 This matrix is evaluated against the current feature-branch HEAD
@@ -300,7 +325,7 @@ them.
 | OpenAI API provider | `NOT_CONFIGURED` | Optional Responses adapter is implemented, but no owner key or explicit enablement is configured. |
 | Groq `openai/gpt-oss-120b` | `NOT_CONFIGURED` | Optional standard-library adapter and deterministic reasoning/tool route are implemented; `JARVIS_GROQ_ENABLED` and `GROQ_API_KEY` are not configured. |
 | Gemini `gemini-3.5-flash` | `NOT_CONFIGURED` | Optional GenerateContent adapter, transient inline media path, and visual fallback route are implemented; `JARVIS_GEMINI_ENABLED` and `GEMINI_API_KEY` are not configured. |
-| Codex worker | `NOT_CONFIGURED` | Codex discovery seam exists; no bounded live executor is configured or accepted. |
+| Codex worker | `PARTIAL` | Exact local Codex CLI is discovered and routed through a bounded read-only workspace adapter; focused tests pass, while the disposable live smoke timed out before provider output and no independent verification/live authentication is accepted. |
 | AntiGravity delegation | `NOT_CONFIGURED` | No approved installed adapter or manual authentication is present; no invocation was attempted. |
 | Agent orchestration | `PARTIAL` | AgentRuntime, missions, worker envelope, permissions, approvals, and verification state are implemented; full live daily-use acceptance remains open. |
 | Brave control | `PARTIAL` | Public dedicated-profile Browser V2 lifecycle passed; authenticated owner navigation/action acceptance is not proven. |

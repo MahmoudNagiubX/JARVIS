@@ -189,7 +189,7 @@ was added; see `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_08.md`.
 | Workspace intelligence/context | `IMPLEMENTED` foundation | scoped local workspace metadata/intelligence exists |
 | Read-only workspace skill | `IMPLEMENTED` | bounded Phase 15 path |
 | Developer/engineering service seams | `IMPLEMENTED` foundation | typed providers/gateway exist |
-| Live external developer worker | `NOT_CONFIGURED`/`PARTIAL` | gateway returns deferred if no adapter is configured |
+| Live external developer worker | `PARTIAL` | installed Codex is discovered by default but the bounded read-only, workspace-scoped adapter activates only with `JARVIS_CODEX_WORKER_ENABLED=true`; ephemeral execution, output redaction, and no write mode are implemented, while live authentication/provider availability and independent postcondition verification remain owner/deployment gates |
 | Full safe repository/Jupyter workflows | `PLANNED` | must remain capability-scoped and approval/audit bound |
 
 ### Communications and daily operations

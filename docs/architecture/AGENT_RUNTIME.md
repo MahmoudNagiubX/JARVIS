@@ -12,6 +12,7 @@ small idempotency/replay boundary.
 
 `LocalWorkerRuntime` provides typed worker requests and results for coding,
 research, browser, engineering, and general-background categories. Handlers
-are injected adapters with timeout and cancellation boundaries. A missing
-handler fails explicitly; no Codex process or external worker is required at
+are injected adapters with timeout and cancellation boundaries. The optional
+Codex adapter is read-only and workspace-scoped; a missing CLI or unavailable
+provider fails explicitly, and no write-capable external worker is required at
 startup.
