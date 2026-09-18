@@ -259,6 +259,11 @@ class FileAccessPolicy:
         `evaluate()`) is untouched by this method - it still resolves and
         checks the real target directly, unaffected by search-only policy.
         """
+        # The policy roots are canonicalized at construction. Canonicalize the
+        # caller's search root too so a Windows temp directory exposed through
+        # a junction/alias does not make every legitimate child look outside
+        # the approved root during pre-descent checks.
+        root = root.expanduser().resolve(strict=False)
         matches: list[str] = []
         filtered = 0
         scanned = 0

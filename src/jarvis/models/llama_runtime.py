@@ -10,14 +10,14 @@ import socket
 import subprocess
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from ..config import validate_loopback_http_origin
+from ..config import default_llama_cpp_threads, validate_loopback_http_origin
 
 
 class LlamaRuntimeState(StrEnum):
@@ -37,7 +37,7 @@ class LlamaCppRuntimeConfig:
     endpoint: str
     model_alias: str = "jarvis-local-qwen"
     context_size: int = 4096
-    threads: int = 8
+    threads: int = field(default_factory=default_llama_cpp_threads)
     gpu_layers: int | None = None
     ready_timeout_seconds: float = 30.0
 

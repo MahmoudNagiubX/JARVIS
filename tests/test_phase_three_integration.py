@@ -5,6 +5,7 @@ import json
 import threading
 import unittest
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from urllib.request import Request, urlopen
 
 from jarvis.autonomy.policy import AutonomyPolicy
@@ -23,6 +24,9 @@ from jarvis.contracts import (
 )
 from jarvis.offline.service import OfflineModeService
 from jarvis.scheduler.service import BackgroundScheduler
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class PhaseThreeIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -79,7 +83,7 @@ class PhaseThreeIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_proactive_detector_cooldown_and_safe_action(self) -> None:
         await self.runtime.world_state.set_fact(self.identity.owner_id, "build.status", "failed", source="build")
-        await self.runtime.world_state.set_fact(self.identity.owner_id, "workspace.project_path", "C:\\Jarivs\\00_final\\jarvis", source="git")
+        await self.runtime.world_state.set_fact(self.identity.owner_id, "workspace.project_path", str(REPO_ROOT), source="git")
         findings = await self.runtime.proactive.detect(self.identity.owner_id)
         build = next(finding for finding in findings if finding.finding_type == "build_failed")
         self.assertTrue(build.auto_action_allowed)

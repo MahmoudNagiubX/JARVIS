@@ -163,7 +163,11 @@ class EngineeringService:
 
     @staticmethod
     def _in_scope(path: Path, scopes: tuple[str, ...] | list[str]) -> bool:
-        return any(path == Path(scope) or Path(scope) in path.parents for scope in scopes)
+        return any(
+            path == Path(scope).expanduser().resolve(strict=False)
+            or Path(scope).expanduser().resolve(strict=False) in path.parents
+            for scope in scopes
+        )
 
     async def _emit(self, event_type: str, identity: Identity, device: DeviceIdentity, payload: Mapping[str, object], state: EventState = EventState.EMITTED) -> None:
         event = Event.create(event_type, EventCategory.ENGINEERING, correlation_id=str(payload.get("action_id", payload.get("session_id", uuid4()))), actor_id=identity.identity_id, payload=dict(payload), state=state)
