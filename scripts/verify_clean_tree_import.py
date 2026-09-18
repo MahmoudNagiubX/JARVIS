@@ -38,10 +38,16 @@ def main() -> int:
         return archive.returncode
     with tempfile.TemporaryDirectory(prefix="jarvis-clean-tree-") as temporary:
         extracted = Path(temporary)
+        # Compare canonical paths on both sides. Some Windows runners expose
+        # the temp directory through a junction; resolving only the member
+        # path makes every otherwise-contained member appear to escape.
+        extraction_root = extracted.resolve()
         with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:") as handle:
             for member in handle.getmembers():
                 target = (extracted / member.name).resolve()
-                if member.issym() or member.islnk() or (target != extracted and extracted not in target.parents):
+                if member.issym() or member.islnk() or (
+                    target != extraction_root and extraction_root not in target.parents
+                ):
                     print("archive member escapes extraction root", file=sys.stderr)
                     return 1
                 handle.extract(member, extracted)

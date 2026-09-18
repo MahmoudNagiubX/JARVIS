@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..config import JarvisConfig, validate_loopback_http_origin
+from ..config import JarvisConfig, default_llama_cpp_threads, validate_loopback_http_origin
 from ..network.validation import NetworkValidationError, validate_bind_host, validate_trusted_lan_cidrs
 from ..voice.config import VoiceDeviceSelector, VoiceRuntimeConfig
 
@@ -87,7 +87,7 @@ class DesktopProductConfig:
     model_endpoint: str = "http://127.0.0.1:11434"
     model_alias: str = "jarvis-local-qwen"
     model_context_size: int = 4096
-    model_threads: int = 8
+    model_threads: int = field(default_factory=default_llama_cpp_threads)
     model_gpu_layers: int | None = None
     autostart: bool = True
     ui_preference: str = "hud"
@@ -223,7 +223,7 @@ class DesktopProductConfig:
             model_endpoint=str(values.get("model_endpoint", "http://127.0.0.1:11434")).strip(),
             model_alias=str(values.get("model_alias", "jarvis-local-qwen")).strip(),
             model_context_size=int(values.get("model_context_size", 4096)),
-            model_threads=int(values.get("model_threads", 8)),
+            model_threads=int(values.get("model_threads", default_llama_cpp_threads())),
             model_gpu_layers=(int(values["model_gpu_layers"]) if values.get("model_gpu_layers") is not None else None),
             autostart=_bool_value(values.get("autostart", True), "autostart"),
             ui_preference=str(values.get("ui_preference", "hud")).strip().lower(),

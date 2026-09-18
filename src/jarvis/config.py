@@ -8,9 +8,21 @@ import or bootstrap.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from ipaddress import ip_address
 from urllib.parse import urlsplit
+
+
+def default_llama_cpp_threads() -> int:
+    """Return a safe bounded default for the current host.
+
+    Hosted Windows runners may expose fewer logical CPUs than the historical
+    eight-thread workstation default. The configured value must remain within
+    the host bound, so choose the historical ceiling without making a small
+    machine invalid at import/bootstrap time.
+    """
+
+    return max(1, min(8, os.cpu_count() or 1))
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +40,7 @@ class JarvisConfig:
     llama_cpp_server_path: str | None = None
     llama_cpp_model_path: str | None = None
     llama_cpp_context_size: int = 4096
-    llama_cpp_threads: int = 8
+    llama_cpp_threads: int = field(default_factory=default_llama_cpp_threads)
     llama_cpp_gpu_layers: int | None = None
     local_model_autostart: bool = False
     max_agent_steps: int = 3
