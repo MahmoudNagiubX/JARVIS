@@ -216,9 +216,9 @@ authorities:
 Focused evidence: native/input and Windows interaction suites `107 passed`;
 worker integration suites `12 passed`; desktop productization/diagnostic
 suite `15 passed`; deterministic Computer Use evaluation suite `7 passed`;
-frontend Vitest `75 passed`. Full Python regression remains the recorded
-`947 passed, 3 skipped, 45 subtests passed` checkpoint above; a fresh full
-regression after this slice is still required before release handoff.
+frontend Vitest `75 passed`. Post-slice full Python regression completed with
+`951 passed, 3 skipped, 45 subtests passed` in `447.36s`; the only skips are
+the optional EasyOCR/torch/torchvision reproducibility checks.
 
 Truth remains `JARVIS_DESKTOP_RELEASE_CANDIDATE_PARTIAL`: live authenticated
 web control is blocked by the observed external `chatgpt.com` 403/empty shell,

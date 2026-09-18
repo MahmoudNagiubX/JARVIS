@@ -7,6 +7,11 @@
 
 > Always compare this file with current HEAD before trusting it in a later chat.
 
+**Final-completion feature-branch checkpoint:** `81b0947` — bounded desktop
+release slices are implemented and the post-slice full Python regression is
+`951 passed, 3 skipped, 45 subtests passed`; external/physical release gates
+remain explicitly partial where evidence is unavailable.
+
 ## 1. Current repository baseline
 
 Current reviewed `main` commit:
