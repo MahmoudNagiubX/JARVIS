@@ -79,7 +79,15 @@ class ComputerExecutionRouter:
             "list_applications", "find_application", "application_status", "focus_application",
         }:
             return ToolResult(ToolResultStatus.DENIED, error_code="native_application_control_local_only")
-        if adapter != "local" and action.action == "open_application":
+        # The new opaque installed-app identity is a same-host native
+        # capability. Preserve the existing typed Windows-satellite alias
+        # operation for backward compatibility; it does not accept the local
+        # registry's private target identity or raw executable paths.
+        if (
+            adapter != "local"
+            and action.action == "open_application"
+            and isinstance(action.parameters.get("app_ref"), str)
+        ):
             return ToolResult(ToolResultStatus.DENIED, error_code="native_application_control_local_only")
         if adapter == "local":
             return await self.local.execute(action, context)

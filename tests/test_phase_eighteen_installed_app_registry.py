@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import unittest
 from pathlib import Path
 
 from jarvis.computer.applications import (
@@ -10,7 +11,9 @@ from jarvis.computer.applications import (
     AutomationTier,
     InstalledApplicationRegistry,
 )
+from jarvis.computer.controller import ComputerExecutionRouter
 from jarvis.computer.service import WindowsNativeComputerController
+from jarvis.contracts import ComputerAction, ToolContext, ToolResult, ToolResultStatus
 
 
 def _exe(tmp_path: Path, name: str, content: bytes = b"MZ-JARVIS-TEST") -> Path:
@@ -197,3 +200,36 @@ def test_disable_and_surface_preference_persist_only_safe_refs(tmp_path: Path) -
     assert restored.application is not None
     assert restored.application.enabled is False
     assert restored.application.preferred_surface.value == "DESKTOP"
+
+
+class _RecordingComputerAdapter:
+    def __init__(self) -> None:
+        self.actions: list[ComputerAction] = []
+
+    async def execute(self, action: ComputerAction, context: ToolContext) -> ToolResult:
+        del context
+        self.actions.append(action)
+        return ToolResult(ToolResultStatus.SUCCEEDED, {"accepted": True}, verified=True)
+
+
+class NativeApplicationRouterBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_remote_alias_is_preserved_but_native_app_ref_stays_local(self) -> None:
+        local = _RecordingComputerAdapter()
+        satellite = _RecordingComputerAdapter()
+        router = ComputerExecutionRouter(local, satellite)  # type: ignore[arg-type]
+        context = ToolContext(None, None, "session", "correlation", metadata={"execution_adapter": "satellite"})
+
+        legacy = await router.execute(
+            ComputerAction("open_application", {"application": "notepad"}, dry_run=True),
+            context,
+        )
+        native = await router.execute(
+            ComputerAction("open_application", {"app_ref": "app-opaque"}, dry_run=True),
+            context,
+        )
+
+        assert legacy.status is ToolResultStatus.SUCCEEDED
+        assert [item.parameters for item in satellite.actions] == [{"application": "notepad"}]
+        assert native.status is ToolResultStatus.DENIED
+        assert native.error_code == "native_application_control_local_only"
+        assert local.actions == []
