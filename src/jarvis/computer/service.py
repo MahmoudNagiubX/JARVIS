@@ -57,6 +57,8 @@ class WindowsNativeComputerController:
     MAX_CLIPBOARD_TEXT = 16_000
     MAX_KEYBOARD_TEXT = 2_000
     MAX_KEYBOARD_CHUNK_UNITS = 64
+    MAX_FILE_WRITE_BYTES = 1_000_000
+    MAX_FILE_COPY_BYTES = 10_000_000
     MEDIA_KEYS = {"up": 0xAF, "down": 0xAE}
 
     MAX_SEMANTIC_DEPTH = 5
@@ -108,6 +110,8 @@ class WindowsNativeComputerController:
                 return await asyncio.to_thread(self._open_path, action.parameters, "file")
             if capability is ComputerCapability.OPEN_FOLDER:
                 return await asyncio.to_thread(self._open_path, action.parameters, "folder")
+            if capability is ComputerCapability.FILE_OPERATION:
+                return await asyncio.to_thread(self._file_operation, action.parameters)
             if capability is ComputerCapability.LIST_PROCESSES:
                 return await asyncio.to_thread(self._list_processes)
             if capability is ComputerCapability.INSPECT_FILE:
@@ -210,6 +214,186 @@ class WindowsNativeComputerController:
             return ComputerResult("failed", {"path": str(path)}, "path_not_found")
         os.startfile(str(path))
         return ComputerResult("succeeded", {"path": str(path), "kind": kind}, verified=True)
+
+    def _file_operation(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        operation = parameters.get("operation")
+        if operation == "create_text":
+            return self._write_text_file(parameters, replace=False)
+        if operation == "replace_text":
+            return self._write_text_file(parameters, replace=True)
+        if operation == "copy_file":
+            return self._copy_file(parameters)
+        if operation in {"move_file", "rename_file"}:
+            return self._move_file(parameters, str(operation))
+        if operation == "recycle_file":
+            return self._recycle_file(parameters)
+        return ComputerResult("denied", error_code="file_operation_invalid")
+
+    def _write_text_file(self, parameters: Mapping[str, Any], *, replace: bool) -> ComputerResult:
+        expected = {"operation", "path", "text"}
+        if set(parameters) != expected or not isinstance(parameters.get("path"), str) or not isinstance(parameters.get("text"), str):
+            return ComputerResult("denied", error_code="file_operation_parameters_invalid")
+        text = str(parameters["text"])
+        if not text or "\x00" in text:
+            return ComputerResult("denied", error_code="file_text_invalid")
+        encoded = text.encode("utf-8")
+        if len(encoded) > self.MAX_FILE_WRITE_BYTES:
+            return ComputerResult("denied", error_code="file_text_too_large")
+        decision = self.file_access_policy.evaluate_write_target(str(parameters["path"]))
+        if not decision.allowed:
+            return ComputerResult("denied", error_code=decision.reason_code)
+        path = decision.resolved_path
+        assert path is not None
+        if path.exists() and not replace:
+            return ComputerResult("failed", error_code="file_destination_exists")
+        if path.exists() and not path.is_file():
+            return ComputerResult("failed", error_code="file_destination_not_file")
+        temporary = path.with_name(f".jarvis-write-{uuid4().hex}.tmp")
+        try:
+            with temporary.open("xb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(str(temporary), str(path))
+            size, digest = self._file_digest(path)
+            if size != len(encoded) or digest != _text_digest(text):
+                return ComputerResult("failed", {"path": str(path)}, "file_write_verification_failed", verified=False)
+            return ComputerResult(
+                "succeeded",
+                {"operation": "replace_text" if replace else "create_text", "path": str(path), "length": len(text), "digest": digest},
+                verified=True,
+            )
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _copy_file(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        if set(parameters) != {"operation", "source", "destination"} or not all(isinstance(parameters.get(key), str) for key in ("source", "destination")):
+            return ComputerResult("denied", error_code="file_operation_parameters_invalid")
+        source_decision = self.file_access_policy.evaluate(str(parameters["source"]))
+        if not source_decision.allowed:
+            return ComputerResult("denied", error_code=source_decision.reason_code)
+        destination_decision = self.file_access_policy.evaluate_write_target(str(parameters["destination"]))
+        if not destination_decision.allowed:
+            return ComputerResult("denied", error_code=destination_decision.reason_code)
+        source = source_decision.resolved_path
+        destination = destination_decision.resolved_path
+        assert source is not None and destination is not None
+        if source == destination:
+            return ComputerResult("denied", error_code="file_source_destination_same")
+        if not source.is_file():
+            return ComputerResult("failed", error_code="file_source_not_found")
+        if destination.exists():
+            return ComputerResult("failed", error_code="file_destination_exists")
+        size, source_digest = self._file_digest(source)
+        if size > self.MAX_FILE_COPY_BYTES:
+            return ComputerResult("denied", error_code="file_too_large")
+        created_destination = False
+        try:
+            with source.open("rb") as source_handle, destination.open("xb") as destination_handle:
+                created_destination = True
+                shutil.copyfileobj(source_handle, destination_handle, length=1024 * 1024)
+                destination_handle.flush()
+                os.fsync(destination_handle.fileno())
+            copied_size, copied_digest = self._file_digest(destination)
+            verified = copied_size == size and copied_digest == source_digest
+            return ComputerResult(
+                "succeeded" if verified else "failed",
+                {"operation": "copy_file", "source": str(source), "destination": str(destination), "size": copied_size, "digest": copied_digest},
+                None if verified else "file_copy_verification_failed",
+                verified=verified,
+            )
+        except FileExistsError:
+            return ComputerResult("failed", error_code="file_destination_exists")
+        finally:
+            if created_destination and destination.exists() and destination.is_file():
+                try:
+                    copied_size, copied_digest = self._file_digest(destination)
+                except OSError:
+                    copied_size, copied_digest = -1, ""
+                if copied_size != size or copied_digest != source_digest:
+                    try:
+                        destination.unlink()
+                    except OSError:
+                        pass
+
+    def _move_file(self, parameters: Mapping[str, Any], operation: str) -> ComputerResult:
+        if set(parameters) != {"operation", "source", "destination"} or not all(isinstance(parameters.get(key), str) for key in ("source", "destination")):
+            return ComputerResult("denied", error_code="file_operation_parameters_invalid")
+        source_decision = self.file_access_policy.evaluate(str(parameters["source"]))
+        if not source_decision.allowed:
+            return ComputerResult("denied", error_code=source_decision.reason_code)
+        destination_decision = self.file_access_policy.evaluate_write_target(str(parameters["destination"]))
+        if not destination_decision.allowed:
+            return ComputerResult("denied", error_code=destination_decision.reason_code)
+        source = source_decision.resolved_path
+        destination = destination_decision.resolved_path
+        assert source is not None and destination is not None
+        if source == destination:
+            return ComputerResult("denied", error_code="file_source_destination_same")
+        if not source.is_file():
+            return ComputerResult("failed", error_code="file_source_not_found")
+        if destination.exists():
+            return ComputerResult("failed", error_code="file_destination_exists")
+        size, digest = self._file_digest(source)
+        if size > self.MAX_FILE_COPY_BYTES:
+            return ComputerResult("denied", error_code="file_too_large")
+        try:
+            source.rename(destination)
+        except FileExistsError:
+            return ComputerResult("failed", error_code="file_destination_exists")
+        if source.exists() or not destination.is_file():
+            return ComputerResult("failed", {"source": str(source), "destination": str(destination)}, "file_move_verification_failed", verified=False)
+        moved_size, moved_digest = self._file_digest(destination)
+        verified = moved_size == size and moved_digest == digest
+        return ComputerResult(
+            "succeeded" if verified else "failed",
+            {"operation": operation, "source": str(source), "destination": str(destination), "size": moved_size, "digest": moved_digest},
+            None if verified else "file_move_verification_failed",
+            verified=verified,
+        )
+
+    def _recycle_file(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        if set(parameters) != {"operation", "path"} or not isinstance(parameters.get("path"), str):
+            return ComputerResult("denied", error_code="file_operation_parameters_invalid")
+        decision = self.file_access_policy.evaluate(str(parameters["path"]))
+        if not decision.allowed:
+            return ComputerResult("denied", error_code=decision.reason_code)
+        path = decision.resolved_path
+        assert path is not None
+        if not path.is_file():
+            return ComputerResult("failed", error_code="file_not_found")
+        if platform.system().casefold() != "windows":
+            return ComputerResult("failed", error_code="recycle_bin_unavailable")
+        class _SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [
+                ("hwnd", wintypes.HWND),
+                ("wFunc", wintypes.UINT),
+                ("pFrom", wintypes.LPCWSTR),
+                ("pTo", wintypes.LPCWSTR),
+                ("fFlags", wintypes.WORD),
+                ("fAnyOperationsAborted", wintypes.BOOL),
+                ("hNameMappings", ctypes.c_void_p),
+                ("lpszProgressTitle", wintypes.LPCWSTR),
+            ]
+        flags = 0x0004 | 0x0010 | 0x0040 | 0x0400  # silent, no-confirm, undo, no-error-ui
+        operation_struct = _SHFILEOPSTRUCTW(None, 3, str(path) + "\0\0", None, flags, False, None, None)
+        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(operation_struct))
+        if result != 0 or operation_struct.fAnyOperationsAborted or path.exists():
+            return ComputerResult("failed", {"path": str(path), "recycle_bin_requested": True}, "file_recycle_verification_failed", verified=False)
+        return ComputerResult("succeeded", {"operation": "recycle_file", "path": str(path), "recycle_bin_requested": True}, verified=True)
+
+    @staticmethod
+    def _file_digest(path: Path) -> tuple[int, str]:
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                size += len(chunk)
+                digest.update(chunk)
+        return size, digest.hexdigest()
 
     @staticmethod
     def _list_processes() -> ComputerResult:
@@ -1093,6 +1277,17 @@ class ComputerActionService:
     @staticmethod
     def _approval_preview(action: ComputerAction) -> dict[str, object]:
         parameters = dict(action.parameters)
+        if action.action == ComputerCapability.FILE_OPERATION.value:
+            preview: dict[str, object] = {"action": action.action, "operation": parameters.get("operation")}
+            for key in ("path", "source", "destination"):
+                value = parameters.get(key)
+                if isinstance(value, str):
+                    preview[key] = value[:2_000]
+            text = parameters.get("text")
+            if isinstance(text, str):
+                preview["text_length"] = len(text)
+                preview["text_digest"] = _text_digest(text)
+            return preview
         sensitive = action.action == ComputerCapability.CLIPBOARD_WRITE.value
         if not sensitive:
             return {"action": action.action, "parameters": parameters}

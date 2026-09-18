@@ -31,6 +31,7 @@ class ComputerCapability(StrEnum):
     SEARCH_FILES = "search_files"
     OPEN_FILE = "open_file"
     OPEN_FOLDER = "open_folder"
+    FILE_OPERATION = "file_operation"
     KEYBOARD_ACTION = "keyboard_action"
     MOUSE_ACTION = "mouse_action"
     WINDOW_ACTION = "window_action"

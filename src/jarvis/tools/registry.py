@@ -375,6 +375,37 @@ def register_computer_tools(
             return ToolResult(ToolResultStatus.DENIED, error_code="clipboard_text_invalid")
         return await execute_action("clipboard_write", {"text": value}, arguments, context)
 
+    async def file_manage(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        operation = arguments.get("operation")
+        if operation not in {"create_text", "replace_text", "copy_file", "move_file", "rename_file", "recycle_file"}:
+            return ToolResult(ToolResultStatus.DENIED, error_code="file_operation_invalid")
+        if operation in {"create_text", "replace_text"}:
+            if set(arguments) - {"operation", "path", "text", "target_device_id"}:
+                return ToolResult(ToolResultStatus.DENIED, error_code="file_operation_parameters_invalid")
+            path, text = arguments.get("path"), arguments.get("text")
+            if not isinstance(path, str) or not path.strip() or not isinstance(text, str):
+                return ToolResult(ToolResultStatus.DENIED, error_code="file_operation_parameters_invalid")
+            if not text or len(text.encode("utf-8")) > 1_000_000 or "\x00" in text:
+                return ToolResult(ToolResultStatus.DENIED, error_code="file_text_invalid")
+            parameters = {"operation": operation, "path": path, "text": text}
+        elif operation in {"copy_file", "move_file", "rename_file"}:
+            if set(arguments) - {"operation", "source", "destination", "target_device_id"}:
+                return ToolResult(ToolResultStatus.DENIED, error_code="file_operation_parameters_invalid")
+            source, destination = arguments.get("source"), arguments.get("destination")
+            if not isinstance(source, str) or not source.strip() or not isinstance(destination, str) or not destination.strip():
+                return ToolResult(ToolResultStatus.DENIED, error_code="file_operation_parameters_invalid")
+            parameters = {"operation": operation, "source": source, "destination": destination}
+        else:
+            if set(arguments) - {"operation", "path", "target_device_id"}:
+                return ToolResult(ToolResultStatus.DENIED, error_code="file_operation_parameters_invalid")
+            path = arguments.get("path")
+            if not isinstance(path, str) or not path.strip():
+                return ToolResult(ToolResultStatus.DENIED, error_code="file_operation_parameters_invalid")
+            parameters = {"operation": operation, "path": path}
+        # Target selection is carried by the existing helper through the
+        # original arguments; never put it in the native action payload.
+        return await execute_action("file_operation", parameters, arguments, context)
+
     async def keyboard_type(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
         value = arguments.get("text")
         window_ref = arguments.get("window_ref")
@@ -534,6 +565,26 @@ def register_computer_tools(
         "tool-computer-clipboard-write-v1", "computer.clipboard.write", "1", "Write bounded transient Unicode clipboard text.",
         "safe", "tool.request", frozenset({"computer.input"}), 15.0, False, clipboard_write,
         parameters_schema={"type": "object", "properties": {"text": {"type": "string", "maxLength": 16000}, "target_device_id": {"type": "string", "maxLength": 200}}, "required": ["text"], "additionalProperties": False},
+        argument_retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-files-manage-v1", "computer.files.manage", "1",
+        "Create, replace, copy, move, rename, or recycle one bounded file under an approved JARVIS file root. "
+        "All mutations require owner approval, reject sensitive/outside paths, and independently verify the resulting state.",
+        "safe", "tool.request", frozenset({"computer.input"}), 30.0, False, file_manage,
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["create_text", "replace_text", "copy_file", "move_file", "rename_file", "recycle_file"]},
+                "path": {"type": "string", "maxLength": 2_000},
+                "text": {"type": "string", "maxLength": 1_000_000},
+                "source": {"type": "string", "maxLength": 2_000},
+                "destination": {"type": "string", "maxLength": 2_000},
+                "target_device_id": {"type": "string", "maxLength": 200},
+            },
+            "required": ["operation"],
+            "additionalProperties": False,
+        },
         argument_retention=ToolResultRetention.EPHEMERAL,
     ))
     registry.register(ToolSpec(

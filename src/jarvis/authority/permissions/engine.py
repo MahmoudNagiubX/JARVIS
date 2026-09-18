@@ -48,6 +48,10 @@ class PolicyPermissionEngine:
             PermissionRule("tool.computer.pointer.act", PermissionEffect.ALLOW, "computer_pointer_act_boundary"),
             PermissionRule("tool.computer.keyboard.key", PermissionEffect.ALLOW, "computer_keyboard_key_boundary"),
             PermissionRule("tool.computer.keyboard.chord", PermissionEffect.ALLOW, "computer_keyboard_chord_boundary"),
+            # File mutations remain consequential and create their canonical
+            # approval inside ComputerActionService; this outer rule only
+            # admits the typed tool boundary.
+            PermissionRule("tool.computer.files.manage", PermissionEffect.ALLOW, "computer_file_boundary"),
             # Same pattern as tool.computer.semantic.read/clipboard.read: the
             # outer wrapper only gates entry, ComputerActionService's inner
             # read_actions classification (VISUAL_OCR_WINDOW/ELEMENT) is what

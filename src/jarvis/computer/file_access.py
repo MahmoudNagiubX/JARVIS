@@ -207,6 +207,30 @@ class FileAccessPolicy:
             return FileAccessDecision(False, "file_path_outside_allowed_root")
         return decision
 
+    def evaluate_write_target(self, raw_path: str) -> FileAccessDecision:
+        """Validate a path that may be created or replaced.
+
+        ``evaluate`` already canonicalizes existing path components, rejects
+        sensitive names, and proves containment in an approved root. Writes
+        add one extra requirement: the destination's parent must already be
+        an ordinary directory. JARVIS never creates an owner-supplied
+        directory tree as an implicit side effect.
+        """
+        decision = self.evaluate(raw_path)
+        if not decision.allowed:
+            return decision
+        assert decision.resolved_path is not None
+        try:
+            raw_candidate = Path(raw_path).expanduser()
+            if (raw_candidate.exists() or raw_candidate.is_symlink()) and _is_reparse_point(raw_candidate):
+                return FileAccessDecision(False, "file_reparse_path_denied")
+        except OSError:
+            return FileAccessDecision(False, "file_path_escape_denied")
+        parent = decision.resolved_path.parent
+        if not parent.is_dir() or _is_reparse_point(parent):
+            return FileAccessDecision(False, "file_parent_not_found")
+        return decision
+
     def iter_search_candidates(self, root: Path, pattern: str) -> tuple[list[str], int]:
         """Pre-descent bounded walker (R18B03-001, streamed per R18B04-001).
 

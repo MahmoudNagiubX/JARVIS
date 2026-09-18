@@ -557,6 +557,124 @@ class FileAccessServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await runtime.shutdown()
 
+    async def test_file_create_requires_approval_and_verifies_content_without_retaining_raw_text(self) -> None:
+        from jarvis.contracts import ComputerAction
+
+        target = self.allowed / "project" / "notes.txt"
+        target.parent.mkdir()
+        secret = "JARVIS file workflow acceptance text"
+        requested = await self.runtime.computer_actions.execute(
+            ComputerAction(
+                "file_operation",
+                {"operation": "create_text", "path": str(target), "text": secret},
+                False,
+            ),
+            self.identity,
+            self.device,
+        )
+        self.assertEqual(requested.status, "approval_required")
+        self.assertIsNotNone(requested.approval_id)
+        approval = self.runtime.repository.approval(requested.approval_id)
+        self.assertIsNotNone(approval)
+        self.assertNotIn(secret, str(approval["preview_json"]))
+        self.assertFalse(target.exists())
+
+        completed = await self.runtime.computer_actions.decide(
+            requested.approval_id,
+            True,
+            self.identity.identity_id,
+            identity=self.identity,
+            device=self.device,
+        )
+        self.assertEqual(completed.status, "succeeded")
+        self.assertTrue(completed.verified)
+        self.assertEqual(target.read_text(encoding="utf-8"), secret)
+
+    async def test_file_project_operations_are_confined_and_verified(self) -> None:
+        from jarvis.contracts import ComputerAction
+
+        source = self.allowed / "source.txt"
+        copied = self.allowed / "copied.txt"
+        moved = self.allowed / "moved.txt"
+        renamed = self.allowed / "renamed.txt"
+
+        async def approve(parameters: dict[str, object]):
+            requested = await self.runtime.computer_actions.execute(
+                ComputerAction("file_operation", parameters, False), self.identity, self.device,
+            )
+            self.assertEqual(requested.status, "approval_required")
+            assert requested.approval_id is not None
+            return await self.runtime.computer_actions.decide(
+                requested.approval_id, True, self.identity.identity_id,
+                identity=self.identity, device=self.device,
+            )
+
+        created = await approve({"operation": "create_text", "path": str(source), "text": "workflow"})
+        self.assertTrue(created.verified)
+        replaced = await approve({"operation": "replace_text", "path": str(source), "text": "workflow-updated"})
+        self.assertTrue(replaced.verified)
+        copied_result = await approve({"operation": "copy_file", "source": str(source), "destination": str(copied)})
+        self.assertTrue(copied_result.verified)
+        moved_result = await approve({"operation": "move_file", "source": str(copied), "destination": str(moved)})
+        self.assertTrue(moved_result.verified)
+        renamed_result = await approve({"operation": "rename_file", "source": str(moved), "destination": str(renamed)})
+        self.assertTrue(renamed_result.verified)
+        self.assertTrue(source.exists())
+        self.assertEqual(source.read_text(encoding="utf-8"), "workflow-updated")
+        self.assertFalse(copied.exists())
+        self.assertFalse(moved.exists())
+        self.assertEqual(renamed.read_text(encoding="utf-8"), "workflow-updated")
+
+    async def test_file_operation_rejects_outside_and_sensitive_targets_after_approval(self) -> None:
+        from jarvis.contracts import ComputerAction
+
+        async def approve(parameters: dict[str, object]):
+            requested = await self.runtime.computer_actions.execute(
+                ComputerAction("file_operation", parameters, False), self.identity, self.device,
+            )
+            self.assertEqual(requested.status, "approval_required")
+            assert requested.approval_id is not None
+            return await self.runtime.computer_actions.decide(
+                requested.approval_id, True, self.identity.identity_id,
+                identity=self.identity, device=self.device,
+            )
+
+        outside = await approve({"operation": "create_text", "path": str(self.outside / "bad.txt"), "text": "no"})
+        self.assertEqual(outside.status, "denied")
+        self.assertEqual(outside.error_code, "file_path_outside_allowed_root")
+        sensitive = await approve({"operation": "create_text", "path": str(self.allowed / ".env.secret"), "text": "no"})
+        self.assertEqual(sensitive.status, "denied")
+        self.assertEqual(sensitive.error_code, "file_sensitive_path_denied")
+
+    async def test_file_manage_tool_uses_the_canonical_delegated_approval_path(self) -> None:
+        from jarvis.contracts import ToolContext
+        from jarvis.tools.service import ToolExecutionStatus
+
+        target = self.allowed / "tool-created.txt"
+        secret = "tool-path-ephemeral-text"
+        session = self.runtime.repository.create_session(self.identity.owner_id, self.device.device_id)
+        context = ToolContext(self.identity, self.device, session.id, "file-tool-correlation")
+        requested = await self.runtime.tool_service.execute(
+            "computer.files.manage",
+            {"operation": "create_text", "path": str(target), "text": secret},
+            context,
+        )
+        self.assertEqual(requested.status, ToolExecutionStatus.APPROVAL_REQUIRED)
+        assert requested.approval_id is not None
+        approval = self.runtime.repository.approval(requested.approval_id)
+        self.assertIsNotNone(approval)
+        self.assertNotIn(secret, str(approval["preview_json"]))
+        tool_call = self.runtime.repository.tool_call(requested.tool_call_id)
+        self.assertIsNotNone(tool_call)
+        self.assertNotIn(secret, str(tool_call["arguments_json"]))
+
+        completed = await self.runtime.tool_service.decide_and_resume(
+            requested.approval_id, True, self.identity.identity_id, context,
+        )
+        self.assertEqual(completed.status, ToolExecutionStatus.COMPLETED)
+        self.assertTrue(completed.verified)
+        self.assertEqual(target.read_text(encoding="utf-8"), secret)
+
 
 if __name__ == "__main__":
     unittest.main()
