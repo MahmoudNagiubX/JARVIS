@@ -280,3 +280,46 @@ normal Brave profile data, raw audio, or raw screenshots. Until those actions
 produce bounded receipts, C2/C3/C5/C6/C8 remain as listed above; no browser
 acceptance is inferred from the public Brave proof or from the installed Codex
 desktop package.
+
+## 12. Ultimate Completion Requirement Matrix
+
+This matrix is evaluated against the current feature-branch HEAD
+`0f315a3`. `PASS` means the code-controlled requirement has current evidence;
+`PARTIAL` means a bounded foundation or non-authenticated slice exists;
+`NOT_CONFIGURED` means the adapter/configuration seam is absent or empty;
+`OWNER_ACTION_REQUIRED` means the next step is owner-controlled; and
+`SERVICE_SURFACE_BLOCKED` means the external surface itself prevented safe
+acceptance. Physical requirements remain physical until an operator proves
+them.
+
+| Owner requirement | Status | Current evidence / remaining gate |
+|---|---|---|
+| Local models connected | `PARTIAL` | llama.cpp/Qwen foundation and historical physical local-model evidence exist; the current default desktop baseline does not claim a live model turn at this HEAD. |
+| OpenAI API provider | `NOT_CONFIGURED` | No optional OpenAI provider or owner key is configured. |
+| Codex worker | `NOT_CONFIGURED` | Codex discovery seam exists; no bounded live executor is configured or accepted. |
+| AntiGravity delegation | `NOT_CONFIGURED` | No approved installed adapter or manual authentication is present; no invocation was attempted. |
+| Agent orchestration | `PARTIAL` | AgentRuntime, missions, worker envelope, permissions, approvals, and verification state are implemented; full live daily-use acceptance remains open. |
+| Brave control | `PARTIAL` | Public dedicated-profile Browser V2 lifecycle passed; authenticated owner navigation/action acceptance is not proven. |
+| Web search | `PARTIAL` | Bounded browser/research seams exist; current live multi-source owner search was not accepted. |
+| Research | `PARTIAL` | Local evidence ledger, restart reconciliation, and deterministic research tests pass; owner web-research acceptance remains open. |
+| ChatGPT | `SERVICE_SURFACE_BLOCKED` | Bounded `chatgpt.com` probe returned 403/empty content; the installed OpenAI desktop package is Codex, not ChatGPT. |
+| Notion | `NOT_CONFIGURED` | No exact owner-approved page or authenticated workflow is configured. |
+| Gmail | `NOT_CONFIGURED` | No authenticated draft workflow is configured. |
+| Discord | `NOT_CONFIGURED` | No exact owner-approved destination or provider is configured. |
+| WhatsApp | `NOT_CONFIGURED` | No authenticated self-chat workflow is configured. |
+| Spotify song | `NOT_CONFIGURED` | No authenticated provider or exact owner test track is configured. |
+| Spotify playlist | `NOT_CONFIGURED` | No authenticated provider or exact owner study playlist is configured. |
+| OneNote | `NOT_CONFIGURED` | No exact owner notebook/page workflow is configured. |
+| Lecture files | `NOT_CONFIGURED` | Approved-root file controls exist, but no owner lecture root/index is configured. |
+| YouTube | `NOT_CONFIGURED` | No accepted search/open/play workflow is configured. |
+| Study preparation | `NOT_CONFIGURED` | No configured lecture/OneNote/Notion/YouTube/Spotify mission target set exists. |
+| Laptop control | `PARTIAL` | Calculator physical proof is 3/3 and bounded file/input suites pass; safe-paste foreground proof failed closed. |
+| Application control | `PARTIAL` | Exact JARVIS shortcut and local UI routes pass; broad owner-application acceptance is not claimed. |
+| Wake word | `PHYSICAL_PENDING` | Local wake pipeline exists; human reliability acceptance is not complete. |
+| Voice conversation | `PHYSICAL_PENDING` | VoiceCore and local adapters exist; English/Egyptian Arabic/mixed, follow-up, barge-in, and device recovery remain physical gates. |
+| Frontend | `PARTIAL` | React Command Center tests/build pass and routes render truthful state; final physical visual/accessibility review remains open. |
+| Setup | `PARTIAL` | Shortcut, one-instance lock, setup/repair seam, and diagnostics are present; owner setup completion is not inferred. |
+| Manual credentials | `OWNER_ACTION_REQUIRED` | Owner must configure only the documented local secret/login boundaries. |
+| Backup | `PASS` | Isolated current-schema backup/restore integrity proof passed without overwriting the live DB. |
+| Security | `PARTIAL` | Local boundary/security counters are green; full owner-service and physical red-team matrix is not run. |
+| Cross-app mission | `NOT_CONFIGURED` | Required owner destinations and authenticated services are absent; no fake mission acceptance was attempted. |
