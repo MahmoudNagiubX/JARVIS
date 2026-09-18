@@ -502,3 +502,32 @@ after the earlier Phase 18 snapshot:
   backup, notifications, and integration readiness without reading owner
   content. The full model/provider/DB/node/browser/voice/restart fault matrix
   still needs execution evidence.
+
+## 15. Final release closure addendum — 2026-09-18
+
+The closure run adds current evidence without reopening resolved historical
+gaps:
+
+- **GAP-0801 — `RESOLVED`:** hosted CI initially failed because the default
+  dev install omitted test-time numpy and Pillow, fixed-thread defaults were
+  invalid on a low-CPU runner, the clean-tree gate compared an unresolved
+  extraction root, and a Phase 6 test could scan the whole checkout before an
+  assertion left its SQLite runtime open. Commits `64fd312`, `354437d`, and
+  `71157dd` apply the narrow reproducibility/test-isolation repairs. Hosted
+  run `35355436554` at `71157dd` is green: Python `951 passed, 3 skipped`,
+  compile passed, and frontend tests/build/high-severity audit passed.
+- **GAP-0803 — `PARTIAL`:** local recovery/security slices are green, but the
+  owner/browser/voice/model/node/restart matrix is not fully physically run.
+- **GAP-0804 — `RESOLVED`:** a read-only backup of the live current-schema
+  database restored into an isolated temporary database with integrity and
+  representative schema/row checks; the live database was not overwritten.
+- **GAP-0805 — `OPEN/P2`:** no separate current performance/resource budget was
+  measured for the complete desktop release.
+- **GAP-0806 — `PARTIAL`:** local prompt-injection, SSRF/browser boundary,
+  path/junction, stale-reference, approval, credential-automation, and secret
+  retention checks are green; owner-service and physical red-team surfaces
+  remain unconfigured or pending.
+
+Owner-authenticated integrations, physical voice, and the final natural-
+language cross-app mission remain blocked by missing owner-controlled
+configuration/evidence, not silently treated as complete.

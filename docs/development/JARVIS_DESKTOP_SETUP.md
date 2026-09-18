@@ -51,3 +51,19 @@ Automated validation for this product is in
 gate is `scripts/verify_clean_tree_import.py`. Physical acceptance must be
 completed in the in-app wizard; raw audio, transcripts, TTS bytes, and window
 titles are not retained.
+
+## Release handoff
+
+For the current desktop candidate:
+
+1. Launch the current-user `JARVIS.lnk` shortcut.
+2. Complete only the Setup items shown by the product.
+3. Use the dedicated JARVIS browser profile for any manually authenticated
+   service; the normal Brave profile is outside the product boundary.
+4. Type or speak a request and wait for an independently verified result.
+
+Owner-specific identifiers, browser destinations, credentials, raw audio,
+transcripts, screenshots, and chat/inbox content are not release-documentation
+inputs. Authenticated integrations and physical voice acceptance remain
+owner-controlled gates and must be recorded as `NOT_CONFIGURED` or
+`PHYSICAL_PENDING` until directly proven.

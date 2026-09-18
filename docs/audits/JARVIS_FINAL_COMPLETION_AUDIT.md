@@ -224,3 +224,59 @@ Truth remains `JARVIS_DESKTOP_RELEASE_CANDIDATE_PARTIAL`: live authenticated
 web control is blocked by the observed external `chatgpt.com` 403/empty shell,
 and physical voice/VENOM/Home/integration/hosted-CI acceptance remains
 external or physical evidence rather than being inferred from code.
+
+## 11. Final release closure checkpoint — 2026-09-18
+
+This checkpoint continues from required starting HEAD
+`c14faf82f7c4faa9ca045bdbdcba85ab93a88ca2` on
+`feature/jarvis-final-completion`. Three narrow CI repairs keep the existing
+authorities unchanged: `64fd312` adds the test-time array/image dependencies,
+host-safe model-thread defaults, and canonical clean-tree extraction paths;
+`354437d` completes the same path/CPU portability fixes; `71157dd` makes the
+Phase 6 research restart test use a bounded fixture and close its first
+runtime on every assertion path.
+
+### Closure evidence
+
+| Gate | Current truth | Evidence |
+|---|---|---|
+| C0 baseline/CI | `PASS` | Local final: `951 passed, 3 skipped, 45 subtests` in `402.91s`; frontend `75 passed`; compile, clean-tree import, diff-check, build, packaged frontend build, and high-severity npm audit passed. Hosted run `35355436554` at `71157dd`: Python `951 passed, 3 skipped` in `486.30s`, compile passed, frontend `75 passed`, build and high-severity audit passed. |
+| C1 public Browser V2 | `PASS` | Three sequential dedicated-profile controller runs against `https://example.com/`, each with open, DOM read, accessibility read, opaque target metadata, and clean close; targeted Brave processes were absent after close. |
+| C2 owner integrations | `OWNER_ACTION_REQUIRED` | Owner-session opt-in and owner/device identity are not configured in the runner; no service destination or credential was inspected or guessed. |
+| C3 ChatGPT | `SERVICE_SURFACE_BLOCKED` / `CHATGPT_DESKTOP_IDENTITY_UNVERIFIED` | The exact ChatGPT web surface returned 403/empty content. The installed OpenAI package was independently identified as Codex, not ChatGPT; no UI/auth-store automation was attempted. |
+| C4 Computer Use | `PARTIAL` | Existing `RW-CALC-001` physical evidence is 3/3; file workflow tests are `43 passed`; the safe-paste physical probe failed closed because Windows did not grant verified foreground ownership to the disposable fixture. No focus bypass or clipboard inspection was used. |
+| C5 voice/device | `PHYSICAL_PENDING` | No owner microphone/speaker wizard was inferred from deterministic tests. |
+| C6 desktop/UI | `PARTIAL` | The exact Start Menu shortcut launched one locked product instance; local `/app`, `/hud`, and `/health` returned 200; rendered routes showed truthful core/model/memory/approval/automation/voice states. Three cold shutdown cycles and native tray proof were not claimed. |
+| C7 hardening | `PARTIAL` | Current live DB backup/isolated restore integrity passed; security/recovery suites passed locally. Performance remains unbenchmarked as a separate release gate. |
+| C8 cross-app mission | `NOT_RUN` | Required authenticated services and exact owner destinations were not configured, so no mission or fake acceptance was attempted. |
+| C9 documentation | `PASS` | Closure truth is recorded in this audit, the current-state/gap/roadmap owners, the desktop setup handoff, and the production checklist. |
+
+### Closure verdict
+
+| Release dimension | Verdict | Meaning |
+|---|---|---|
+| `CODE_ACCEPTANCE` | `PASS` | Current local and hosted deterministic gates are green. |
+| `INTEGRATION_ACCEPTANCE` | `OWNER_ACTION_REQUIRED` | Owner-session opt-in, exact destinations, and manual authentication are absent. |
+| `PHYSICAL_ACCEPTANCE` | `PHYSICAL_PENDING` | Voice, cold lifecycle, and the safe-paste foreground condition are not fully proven. |
+| `RELEASE_READY` | `OWNER_ACTION_REQUIRED` | The candidate is not a universal live-integration release until the named owner gates are completed. |
+
+Final closure verdict: `OWNER_ACTION_REQUIRED`.
+The underlying product state remains
+`JARVIS_DESKTOP_RELEASE_CANDIDATE_PARTIAL`.
+The public browser baseline is not evidence of an authenticated service, and
+the local app UI is not evidence of physical voice, owner-service, or
+cold-shutdown acceptance. All owner-runner security counters remained zero:
+wrong targets, duplicate/unapproved actions, credential interactions,
+normal-profile touches, private-network allows, prompt-injection escalations,
+raw screenshots, and raw secrets. No owner-specific values were committed.
+
+### Remaining owner gates
+
+Configure the explicit local owner session and exact service destinations,
+manually authenticate only in the dedicated JARVIS browser profile, run the
+physical voice wizard and three cold launch/shutdown cycles, then run the two
+bounded cross-app missions. JARVIS must not inspect passwords, tokens, cookies,
+normal Brave profile data, raw audio, or raw screenshots. Until those actions
+produce bounded receipts, C2/C3/C5/C6/C8 remain as listed above; no browser
+acceptance is inferred from the public Brave proof or from the installed Codex
+desktop package.

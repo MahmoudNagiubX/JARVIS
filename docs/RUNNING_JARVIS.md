@@ -22,3 +22,14 @@ for the direct application service and does not expose its credential.
 Use `JARVIS_DATABASE_PATH` to select another local database path. Secrets are
 not placed in configuration files; issued credentials are returned only to
 the enrollment caller.
+
+## Desktop product quick start
+
+1. Launch JARVIS from the current-user Start Menu shortcut (`JARVIS.lnk`),
+   or use `pythonw.exe -m jarvis.desktop` from the checkout.
+2. Finish the Setup items shown by the app.
+3. Log into selected services only in the dedicated JARVIS browser profile.
+4. Talk or type; JARVIS must independently verify consequential actions.
+
+Setup keeps owner-specific identity and credentials in the local product
+stores. Do not copy them into settings, prompts, logs, or this document.

@@ -340,3 +340,25 @@ From the current reviewed state:
 - **Capability workstreams inside Phase 18:** A through H, with hardening running continuously rather than as eight unrelated rewrites.
 
 The workstreams are execution organization, not new independent architectures.
+
+## 6. Final release closure checkpoint — 2026-09-18
+
+The closure from `c14faf8` completed the code-backed and local evidence slices
+that were safe to run without owner secrets or hardware: public Browser V2
+feasibility, dedicated-profile cleanup, current-schema backup/restore,
+security/recovery regressions, the existing calculator proof, local Command
+Center route inspection, and the hosted-CI reproducibility repairs in
+`64fd312`, `354437d`, and `71157dd`. Hosted run `35355436554` at `71157dd`
+is green: Python `951 passed, 3 skipped`, compile passed, and frontend tests,
+build, and high-severity audit passed.
+
+The remaining order is owner-controlled rather than architectural: configure
+the explicit owner session and exact service destinations, perform manual
+authentication in the dedicated browser profile, run the physical voice and
+cold-launch/shutdown wizard, then execute the two bounded cross-app missions.
+Until those observations exist, the release state stays
+`JARVIS_DESKTOP_RELEASE_CANDIDATE_PARTIAL`; no green deterministic suite or
+public browser page substitutes for authenticated or physical acceptance. The
+closure verdict is `OWNER_ACTION_REQUIRED`: code acceptance is green, while
+owner integrations, physical voice, cold lifecycle acceptance, and the final
+cross-app missions still require direct owner-controlled evidence.

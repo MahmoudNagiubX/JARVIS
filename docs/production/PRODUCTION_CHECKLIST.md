@@ -41,3 +41,20 @@ the foreground window for every chunk; mouse coordinates, arbitrary keys,
 accessibility automation, and truthful mute-state control remain deferred.
 Sanitized same-host physical evidence is in
 `docs/phase11/evidence/PHYSICAL_DESKTOP_INTERACTION.json`.
+
+## Final release closure checkpoint — 2026-09-18
+
+The current feature branch remains `JARVIS_DESKTOP_RELEASE_CANDIDATE_PARTIAL`.
+The closure run independently confirmed the public Browser V2 baseline with
+the signed Brave executable and a dedicated JARVIS profile, current-schema
+backup/restore integrity in an isolated temporary database, local security and
+recovery regressions, the rendered local Command Center routes, and the
+existing `RW-CALC-001` physical 3/3 evidence. It did not convert owner-session,
+authenticated-service, physical-voice, or cold-shutdown gates into code PASS.
+
+The hosted workflow is the authority for the final CI result; a local green
+suite must not be substituted for hosted execution. Current service states are
+truthfully `NOT_CONFIGURED` until the owner supplies exact destinations and
+performs any required manual sign-in in the dedicated profile. ChatGPT web is
+recorded separately as a service-surface block when it returns 403; an installed
+OpenAI Codex package is not treated as ChatGPT.

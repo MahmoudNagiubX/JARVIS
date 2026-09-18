@@ -240,7 +240,7 @@ was added; see `docs/audits/PHASE_18_WORKSTREAM_A_BATCH_08.md`.
 | Backend-truth projection | `IMPLEMENTED` principle | UI is non-authoritative |
 | Setup/repair/diagnostic native desktop shell | `IMPLEMENTED` foundation | retained for operational functions |
 | Tony-Stark-style future capability/UX mapping from new screenshots | `PLANNED` | awaiting owner screenshots; must not fake capabilities |
-| CI/required status checks | `PARTIAL` | `.github/workflows/ci.yml` is committed for Python tests/compile and frontend tests/build/high-severity audit; hosted run and required-check branch protection remain pending |
+| CI/required status checks | `PARTIAL` | `.github/workflows/ci.yml` is committed and hosted run `35355436554` at `71157dd` is green for Python tests/compile and frontend tests/build/high-severity audit; required-check branch protection remains pending |
 | Branch protection/signing governance | `PLANNED` | governance hardening belongs to Phase 18 |
 | Watchdog/recovery/performance regression/security hardening | `PLANNED/PARTIAL` | production foundations exist; Phase 18 finalization pending |
 | Final physical E2E release acceptance | `PLANNED` | Phase 19 |
@@ -298,3 +298,20 @@ Primary current repository evidence:
 - `docs/architecture/AUTOMATION.md`
 - `docs/audits/MEGA_PHASE_16_REVIEW.md`
 - `docs/deferred/PHASE13_PHYSICAL_ACCEPTANCE_BACKLOG.md`
+
+## 7. Final release closure truth — 2026-09-18
+
+The feature branch remains a desktop release candidate, not a universal live
+integration PASS. Code acceptance and hosted CI are green at `71157dd`; the
+current local product launches through the existing
+Start Menu shortcut, owns one instance, serves the Command Center locally,
+and exposes truthful degraded/not-configured states for voice, browser
+authentication, automations, approvals, and external integrations.
+
+The public Browser V2 proof is independent of ChatGPT and uses the exact
+installed signed Brave executable with a dedicated JARVIS profile. ChatGPT web
+remains service-surface blocked by the observed 403/empty shell, and the
+installed OpenAI desktop package was verified as Codex rather than ChatGPT.
+Owner-session opt-in, exact service destinations, manual authentication,
+physical voice, safe-paste foreground proof, and clean cold shutdown remain
+open gates. See the current completion audit for the evidence matrix.

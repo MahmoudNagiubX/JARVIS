@@ -35,3 +35,18 @@ python -m unittest discover -s tests -v
 See [docs/RUNNING_JARVIS.md](docs/RUNNING_JARVIS.md),
 [docs/TESTING.md](docs/TESTING.md), and the architecture documents for
 operational boundaries and current runtime limits.
+
+## Desktop product quick start
+
+1. Launch JARVIS from the current-user Start Menu shortcut (`JARVIS.lnk`),
+   or run `pythonw.exe -m jarvis.desktop` from the checkout.
+2. Finish the Setup items shown by the app.
+3. Log into selected services only in the dedicated JARVIS browser profile;
+   never attach the normal Brave profile.
+4. Talk or type, and treat every consequential result as complete only after
+   JARVIS reports independent verification.
+
+The desktop release remains a truthful partial candidate until owner-authenticated
+service workflows and physical voice/lifecycle acceptance are completed. See
+[`docs/audits/JARVIS_FINAL_COMPLETION_AUDIT.md`](docs/audits/JARVIS_FINAL_COMPLETION_AUDIT.md)
+for the current gate matrix.
