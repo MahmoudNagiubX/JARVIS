@@ -40,6 +40,7 @@ class WindowsComputerController:
             "unmute",
             "clipboard_read",
             "clipboard_write",
+            "paste_text",
             "keyboard_action",
         }:
             transport_action = "observe" if action.action in {"list_processes", "inspect_file", "search_files", "clipboard_read"} else "input"

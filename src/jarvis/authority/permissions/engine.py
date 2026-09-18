@@ -31,6 +31,7 @@ class PolicyPermissionEngine:
             PermissionRule("tool.computer.clipboard.read", PermissionEffect.ALLOW, "computer_clipboard_boundary"),
             PermissionRule("tool.computer.clipboard.write", PermissionEffect.ALLOW, "computer_clipboard_boundary"),
             PermissionRule("tool.computer.keyboard.type", PermissionEffect.ALLOW, "computer_keyboard_boundary"),
+            PermissionRule("tool.computer.keyboard.paste", PermissionEffect.ALLOW, "computer_keyboard_paste_boundary"),
             # ComputerActionService owns the inner read/deny decision for semantic
             # UIA observation (privacy/staleness); the outer tool wrapper only gates
             # entry to that boundary, matching the browser rule above.

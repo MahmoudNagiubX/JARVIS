@@ -415,6 +415,17 @@ def register_computer_tools(
             return ToolResult(ToolResultStatus.DENIED, error_code="keyboard_text_invalid")
         return await execute_action("keyboard_action", {"operation": "type_text", "window_ref": window_ref, "text": value}, arguments, context)
 
+    async def keyboard_paste(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
+        value = arguments.get("text")
+        window_ref = arguments.get("window_ref")
+        if set(arguments) - {"window_ref", "text", "target_device_id"}:
+            return ToolResult(ToolResultStatus.DENIED, error_code="paste_text_parameters_invalid")
+        if not isinstance(window_ref, str) or not window_ref.startswith("window-"):
+            return ToolResult(ToolResultStatus.DENIED, error_code="window_ref_required")
+        if not isinstance(value, str) or not value or len(value) > 2_000 or "\x00" in value:
+            return ToolResult(ToolResultStatus.DENIED, error_code="paste_text_invalid")
+        return await execute_action("paste_text", {"window_ref": window_ref, "text": value}, arguments, context)
+
     async def semantic_read(arguments: Mapping[str, Any], context: ToolContext) -> ToolResult:
         action = arguments.get("action")
         window_ref = arguments.get("window_ref")
@@ -590,6 +601,14 @@ def register_computer_tools(
     registry.register(ToolSpec(
         "tool-computer-keyboard-type-v1", "computer.keyboard.type", "1", "Type literal text into one grounded Windows window.",
         "safe", "tool.request", frozenset({"computer.input"}), 15.0, False, keyboard_type,
+        parameters_schema={"type": "object", "properties": {"window_ref": {"type": "string", "maxLength": 100}, "text": {"type": "string", "maxLength": 2000}, "target_device_id": {"type": "string", "maxLength": 200}}, "required": ["window_ref", "text"], "additionalProperties": False},
+        argument_retention=ToolResultRetention.EPHEMERAL,
+    ))
+    registry.register(ToolSpec(
+        "tool-computer-keyboard-paste-v1", "computer.keyboard.paste", "1",
+        "Insert bounded literal text into one grounded Windows window using transient Unicode typing; "
+        "does not read or overwrite the owner clipboard and requires owner approval.",
+        "safe", "tool.request", frozenset({"computer.input"}), 15.0, False, keyboard_paste,
         parameters_schema={"type": "object", "properties": {"window_ref": {"type": "string", "maxLength": 100}, "text": {"type": "string", "maxLength": 2000}, "target_device_id": {"type": "string", "maxLength": 200}}, "required": ["window_ref", "text"], "additionalProperties": False},
         argument_retention=ToolResultRetention.EPHEMERAL,
     ))

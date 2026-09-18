@@ -1208,6 +1208,28 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decided.status.value, "completed")
         self.assertEqual(self.fake_native.key_calls, [("window-1", "tab", ())])
 
+    async def test_safe_paste_has_a_dedicated_approval_boundary(self) -> None:
+        context = self._context()
+        requested = await self.runtime.tool_service.execute(
+            "computer.keyboard.paste", {"window_ref": "window-1", "text": "owner-safe insertion"}, context
+        )
+        self.assertEqual(requested.status.value, "approval_required")
+        assert requested.approval_id is not None
+        approval = self.runtime.repository.approval(requested.approval_id)
+        assert approval is not None
+        preview = json.loads(str(approval["preview_json"]))
+        self.assertEqual(preview["action"], "paste_text")
+        self.assertEqual(preview["window_ref"], "window-1")
+        self.assertEqual(preview["text_length"], len("owner-safe insertion"))
+        self.assertNotIn("owner-safe insertion", str(approval["preview_json"]))
+
+    def test_safe_paste_schema_is_explicit_and_clipboard_free(self) -> None:
+        spec = self.runtime.tools.get("computer.keyboard.paste")
+        assert spec is not None
+        self.assertEqual(set(spec.parameters_schema["required"]), {"window_ref", "text"})
+        self.assertNotIn("chord", str(spec.parameters_schema).casefold())
+        self.assertIn("clipboard", spec.description.casefold())
+
     async def test_right_click_requires_approval_and_executes_once_approved(self) -> None:
         context = self._context()
         requested = await self.runtime.tool_service.execute(
@@ -1268,13 +1290,13 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
         for forbidden in ("ctrl+v", "ctrl+s", "alt+f4", "win+d", "ctrl+alt+delete"):
             self.assertNotIn(forbidden, chord_enum)
 
-    def test_no_paste_or_file_drop_action_exists_anywhere_in_computer_tools(self) -> None:
+    def test_general_keyboard_surfaces_stay_bounded_and_file_drop_is_absent(self) -> None:
         # Batch 04 Milestone 1 deliberately adds a reviewed, bounded
         # element-to-element `drag_element_to_element` action to
         # `computer.pointer.act` (source_element_ref/target_element_ref
-        # only, same-window-only, left-button-only) - "drag" itself is no
-        # longer forbidden everywhere, but paste and file drag/drop remain
-        # absent from every computer tool schema.
+        # only, same-window-only, left-button-only). Safe insertion is a
+        # separate Unicode-typing tool; the general keyboard surfaces still
+        # never expose Ctrl+V or an arbitrary hotkey parser.
         for tool_name in ("computer.pointer.act", "computer.keyboard.key", "computer.keyboard.chord", "computer.keyboard.type"):
             spec = self.runtime.tools.get(tool_name)
             assert spec is not None
@@ -1285,6 +1307,9 @@ class ArchitectureTests(unittest.IsolatedAsyncioTestCase):
             spec = self.runtime.tools.get(tool_name)
             assert spec is not None
             self.assertNotIn("drag", str(spec.parameters_schema).casefold())
+        paste = self.runtime.tools.get("computer.keyboard.paste")
+        assert paste is not None
+        self.assertEqual(set(paste.parameters_schema["properties"]), {"window_ref", "text", "target_device_id"})
 
     def test_pointer_drag_action_is_element_grounded_only(self) -> None:
         spec = self.runtime.tools.get("computer.pointer.act")

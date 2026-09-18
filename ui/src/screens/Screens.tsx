@@ -1271,6 +1271,7 @@ export function EngineeringScreen() {
                   Session: stringValue(item.session_id, 'Not reported'),
                   'Last action': stringValue(item.last_action || item.action, 'Not reported'),
                   Artifacts: item.artifact_count ?? 'Not reported',
+                  Verification: stringValue(item.verification_status || record(item.result).verification_status, 'unverified'),
                 }}
               />
             </ListCard>

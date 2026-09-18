@@ -26,6 +26,39 @@ class WorkerStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class VerificationStatus(StrEnum):
+    """Truth state for a specialist result, separate from execution status."""
+
+    EXECUTED = "executed"
+    DELIVERED = "delivered"
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class SpecialistTaskEnvelope:
+    """Typed, bounded task contract passed to a specialist worker.
+
+    The envelope grants no authority. It describes the scope and evidence the
+    worker may reason over; all consequential actions remain on canonical
+    AgentRuntime/tool-service paths.
+    """
+
+    task_id: str
+    owner_id: str
+    mission_id: str | None
+    goal: str
+    scope: str | None
+    allowed_capabilities: tuple[str, ...]
+    budget: int
+    deadline: datetime
+    cancellation: str
+    input_evidence: tuple[str, ...] = ()
+    expected_output: tuple[str, ...] = ()
+    verifier_requirements: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True, slots=True)
 class WorkerRequest:
     task: str
@@ -35,6 +68,7 @@ class WorkerRequest:
     timeout_seconds: float = 60.0
     budget: int = 1
     context: dict[str, object] = field(default_factory=dict)
+    envelope: SpecialistTaskEnvelope | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,9 +81,20 @@ class WorkerResult:
     started_at: datetime | None = None
     completed_at: datetime | None = None
     error_code: str | None = None
+    verification_status: VerificationStatus = VerificationStatus.UNVERIFIED
+    verification_reason: str = "independent verifier not configured"
+    verification_evidence: tuple[str, ...] = ()
 
 
 WorkerHandler = Callable[[WorkerRequest], Awaitable[WorkerResult]]
+WorkerVerifier = Callable[[SpecialistTaskEnvelope, WorkerResult], Awaitable["WorkerVerification"]]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerVerification:
+    status: VerificationStatus
+    reason: str
+    evidence: tuple[str, ...] = ()
 
 
 class LocalWorkerRuntime:

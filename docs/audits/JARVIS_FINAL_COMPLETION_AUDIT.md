@@ -191,3 +191,36 @@ After both checkpoints, the full Python regression completed with `947
 passed, 3 skipped, 45 subtests passed` in `399.57s`. The three skips are the
 existing optional EasyOCR/torch/torchvision reproducibility checks; no
 unexplained test failure remains.
+
+## 10. W3/W4/W7 release-candidate slices
+
+The next local completion slice is code-backed and remains within the existing
+authorities:
+
+- `computer.keyboard.paste` is a dedicated approval-gated insertion action.
+  It uses foreground-verified Unicode typing, keeps text arguments ephemeral,
+  records only bounded length/digest metadata, and never reads or overwrites
+  the owner clipboard. The older chord surface still rejects `ctrl+v` and
+  arbitrary hotkeys.
+- `SpecialistTaskEnvelope` now carries owner/mission/goal/scope,
+  allowed-capability grants, budget/deadline/cancellation, input evidence,
+  expected output, and verifier requirements into the existing
+  `WorkerCoordinator`. Results carry explicit verification states; successful
+  provider output is `unverified` unless an independent verifier callback
+  returns bounded evidence.
+- Desktop diagnostics now report UI server, browser/profile policy,
+  approved-root configuration, Computer Use, scheduler, EventBus, backup,
+  notifications, and integration readiness without inspecting owner content.
+  The Command Center engineering screen displays worker verification state.
+
+Focused evidence: native/input and Windows interaction suites `107 passed`;
+worker integration suites `12 passed`; desktop productization/diagnostic
+suite `15 passed`; deterministic Computer Use evaluation suite `7 passed`;
+frontend Vitest `75 passed`. Full Python regression remains the recorded
+`947 passed, 3 skipped, 45 subtests passed` checkpoint above; a fresh full
+regression after this slice is still required before release handoff.
+
+Truth remains `JARVIS_DESKTOP_RELEASE_CANDIDATE_PARTIAL`: live authenticated
+web control is blocked by the observed external `chatgpt.com` 403/empty shell,
+and physical voice/VENOM/Home/integration/hosted-CI acceptance remains
+external or physical evidence rather than being inferred from code.

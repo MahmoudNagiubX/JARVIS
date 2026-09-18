@@ -37,6 +37,7 @@ class ComputerCapability(StrEnum):
     WINDOW_ACTION = "window_action"
     CLIPBOARD_READ = "clipboard_read"
     CLIPBOARD_WRITE = "clipboard_write"
+    PASTE_TEXT = "paste_text"
     SCREEN_SNAPSHOT_ON_DEMAND = "screen_snapshot_on_demand"
     SEMANTIC_LIST_WINDOWS = "semantic_list_windows"
     SEMANTIC_INSPECT_WINDOW = "semantic_inspect_window"

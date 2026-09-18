@@ -260,7 +260,7 @@ close/reopen gate passed in `docs/audits/PHASE_18_WORKSTREAM_B_BATCH_10.md`.
 
 ### GAP-0301 — Specialist roster is product direction, not yet a fully formalized runtime contract
 **Status:** `OPEN`  
-Worker seams already exist, but formalize typed task envelopes, least-privilege capability grants, budgets, deadlines, cancellation, checkpointing, and verifier handoff without creating new authorities.
+The existing `WorkerCoordinator` now passes a bounded `SpecialistTaskEnvelope` with owner/mission/goal/scope, capability grants, budget, deadline, cancellation, evidence, expected output, and verifier requirements. Workers remain proposal/analysis adapters and do not gain a second side-effect authority. Mission checkpointing and a live specialist roster remain open.
 
 ### GAP-0302 — Verifier role must be independent from “action returned success”
 **Status:** `OPEN` (Home Assistant instance `RESOLVED` — see below; general cross-domain verifier contract remains open)  
@@ -478,3 +478,27 @@ When Phase 18A finds a new issue:
 5. state whether a locked decision is affected;
 6. define an objective exit gate;
 7. do not solve it by creating a duplicate authority.
+
+## 14. Final-completion addendum (2026-09-18)
+
+This addendum is the current feature-branch truth for the slices completed
+after the earlier Phase 18 snapshot:
+
+- **GAP-0301 — `PARTIAL`:** `WorkerCoordinator` now carries a bounded
+  `SpecialistTaskEnvelope` with owner/mission/goal/scope, capability grants,
+  budget/deadline/cancellation, input evidence, expected output, and verifier
+  requirements. Mission checkpointing and a live specialist roster remain open.
+- **GAP-0302 — `PARTIAL`:** worker results carry explicit
+  `executed`/`delivered`/`verified`/`unverified`/`failed` states. Successful
+  provider output is `unverified` until an independent verifier callback
+  supplies bounded evidence; cross-domain post-condition verifiers remain open.
+- **GAP-0503 — `PARTIAL`:** approved-root file mutations are implemented and
+  tested through the canonical file authority; safe bounded insertion is now
+  available as `computer.keyboard.paste` using Unicode typing without owner
+  clipboard access. File dialogs, file drag/drop, owner-file acceptance, and
+  unrestricted system operations remain out of scope.
+- **GAP-0803 — `PARTIAL`:** desktop diagnostics report UI server,
+  browser/profile policy, Computer Use, approved roots, scheduler, EventBus,
+  backup, notifications, and integration readiness without reading owner
+  content. The full model/provider/DB/node/browser/voice/restart fault matrix
+  still needs execution evidence.

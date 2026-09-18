@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ import pytest
 from jarvis.desktop.acceptance import AcceptanceStep, PhysicalAcceptanceController
 from jarvis.desktop.diagnostics import DesktopDiagnostics
 from jarvis.desktop.installation import sanitized_environment
-from jarvis.desktop.lifecycle import PRODUCT_SECRET_KEY
+from jarvis.desktop.lifecycle import PRODUCT_SECRET_KEY, JarvisDesktopLifecycle
 from jarvis.desktop.secret_store import MemorySecretStore
 from jarvis.desktop.startup import UserStartupManager
 from jarvis.desktop.ui import DesktopWindow
@@ -146,6 +147,37 @@ def test_offline_diagnostics_handles_configured_product_without_runtime(tmp_path
     results = _run(DesktopDiagnostics(lifecycle).run())
     assert any(item.name == "configuration" and item.status == "PASS" for item in results)
     assert all(item.status != "FAIL" or item.name != "core_db" for item in results)
+
+
+def test_runtime_diagnostics_reports_release_surfaces_without_owner_content() -> None:
+    class Tools:
+        def get(self, name: str):
+            return object() if name in {"computer.keyboard.paste", "computer.files.manage"} else None
+
+    runtime = SimpleNamespace(
+        config=JarvisConfig(browser_backend="local"),
+        computer_actions=SimpleNamespace(
+            controller=SimpleNamespace(
+                local=SimpleNamespace(
+                    file_access_policy=SimpleNamespace(status=lambda: {"root_count": 0}),
+                ),
+            ),
+        ),
+        tools=Tools(),
+        scheduler=SimpleNamespace(running=True, jobs={"job-1": object()}),
+        event_bus=SimpleNamespace(closed=False, handler_errors=()),
+        backup=object(),
+        notifications=SimpleNamespace(delivery=None),
+        communications=SimpleNamespace(list_channels=lambda: ("local",)),
+    )
+    lifecycle = JarvisDesktopLifecycle()
+    results = {item.name: item for item in DesktopDiagnostics(lifecycle)._runtime_checks(runtime)}
+    assert results["computer_use"].status == "PASS"
+    assert results["approved_file_roots"].status == "PARTIAL"
+    assert results["scheduler"].status == "PASS"
+    assert results["event_bus"].status == "PASS"
+    assert results["backup"].status == "PASS"
+    assert results["integrations"].status == "PARTIAL"
 
 
 def test_fixed_speaker_test_uses_voicecore_without_agent_or_audio_retention() -> None:

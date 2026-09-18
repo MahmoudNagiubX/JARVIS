@@ -753,7 +753,7 @@ def _register_capabilities(capabilities: CapabilityRegistry) -> None:
         "computer.open_application", "computer.open_file", "computer.open_folder",
         "computer.list_processes", "computer.inspect_file", "computer.search_files",
         "computer.stop_safe_process", "computer.change_volume", "computer.mute", "computer.unmute",
-        "computer.window_action", "computer.clipboard_read", "computer.clipboard_write", "computer.keyboard_action",
+        "computer.window_action", "computer.clipboard_read", "computer.clipboard_write", "computer.paste_text", "computer.keyboard_action",
         "computer.file_operation",
     )
     for capability in computer:

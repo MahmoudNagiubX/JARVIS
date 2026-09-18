@@ -134,6 +134,8 @@ class WindowsNativeComputerController:
                 return await asyncio.to_thread(self._clipboard_read)
             if capability is ComputerCapability.CLIPBOARD_WRITE:
                 return await asyncio.to_thread(self._clipboard_write, action.parameters)
+            if capability is ComputerCapability.PASTE_TEXT:
+                return await asyncio.to_thread(self._paste_text, action.parameters)
             if capability is ComputerCapability.KEYBOARD_ACTION:
                 return await asyncio.to_thread(self._keyboard_action, action.parameters)
             if capability is ComputerCapability.SEMANTIC_LIST_WINDOWS:
@@ -572,6 +574,36 @@ class WindowsNativeComputerController:
                 time.sleep(0.01 * (attempt + 1))
         return ComputerResult("failed", error_code=last_error)
 
+    def _paste_text(self, parameters: Mapping[str, Any]) -> ComputerResult:
+        """Insert bounded text without reading or mutating the owner clipboard.
+
+        The release-safe fallback is literal Unicode typing into the grounded
+        foreground window. The action is still named paste at the product
+        boundary so callers can request insertion semantics without being
+        given a clipboard side channel or an arbitrary Ctrl+V primitive.
+        """
+        if set(parameters) != {"window_ref", "text"}:
+            return ComputerResult("denied", error_code="paste_text_parameters_invalid")
+        window_ref = parameters.get("window_ref")
+        text = parameters.get("text")
+        if not isinstance(window_ref, str) or not window_ref.startswith("window-"):
+            return ComputerResult("denied", error_code="window_ref_required")
+        if not isinstance(text, str) or not text or len(text) > self.MAX_KEYBOARD_TEXT or "\x00" in text:
+            return ComputerResult("denied", error_code="paste_text_invalid")
+        result = self._keyboard_action({"operation": "type_text", "window_ref": window_ref, "text": text})
+        if result.status != "succeeded":
+            return result
+        return ComputerResult(
+            "succeeded",
+            {
+                **dict(result.output),
+                "strategy": "unicode_typing",
+                "text_length": len(text),
+                "text_digest": _text_digest(text),
+            },
+            verified=False,
+        )
+
     def _keyboard_action(self, parameters: Mapping[str, Any]) -> ComputerResult:
         if set(parameters) != {"operation", "window_ref", "text"} or parameters.get("operation") != "type_text":
             return ComputerResult("denied", error_code="keyboard_action_parameters_invalid")
@@ -986,6 +1018,7 @@ class ComputerActionService:
         ComputerCapability.KEYBOARD_ACTION.value,
         ComputerCapability.KEYBOARD_KEY.value,
         ComputerCapability.KEYBOARD_CHORD.value,
+        ComputerCapability.PASTE_TEXT.value,
     })
     # Visual actuation is its own target kind: unlike semantic element
     # actions it binds an existing opaque visual ref to the trusted source
@@ -1526,7 +1559,7 @@ class ComputerActionService:
             "process_name": descriptor.get("process_name"),
             "window_ref": window_ref,
         }
-        if action.action == ComputerCapability.KEYBOARD_ACTION.value:
+        if action.action in {ComputerCapability.KEYBOARD_ACTION.value, ComputerCapability.PASTE_TEXT.value}:
             preview["operation"] = parameters.get("operation")
             text = parameters.get("text")
             # Never the raw typed text in durable approval data - only its

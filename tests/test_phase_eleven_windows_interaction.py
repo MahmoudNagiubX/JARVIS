@@ -217,6 +217,21 @@ class PhaseElevenWindowsInteractionTests(unittest.TestCase):
         self.assertEqual(not_verified.error_code, "window_focus_not_verified")
         self.assertEqual(unfocused._user32.sent, [])
 
+    def test_safe_paste_uses_unicode_typing_without_touching_clipboard(self) -> None:
+        provider = _FakeProvider()
+        user = _BusyOnceInput(clipboard_text="owner-clipboard-must-not-be-read")
+        controller = _controller(provider, user)
+        result = controller._paste_text({"window_ref": "window-good", "text": "bounded insertion ✓"})
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.verified)
+        self.assertEqual(result.output["strategy"], "unicode_typing")
+        self.assertEqual(result.output["text_length"], len("bounded insertion ✓"))
+        self.assertNotIn("text", result.output)
+        self.assertEqual(user.open_attempts, 0)
+
+        invalid = controller._paste_text({"window_ref": "window-good", "text": "bad\x00text"})
+        self.assertEqual(invalid.error_code, "paste_text_invalid")
+
     def test_keyboard_rejects_sensitive_windows_and_invalid_shapes(self) -> None:
         controller = _controller(_FakeProvider())
         sensitive = controller._keyboard_action({"operation": "type_text", "window_ref": "window-sensitive", "text": "literal"})

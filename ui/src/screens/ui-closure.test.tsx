@@ -338,6 +338,7 @@ describe('Phase 14 final closure screens', () => {
           status: 'running',
           last_action: 'Running tests',
           artifact_count: 3,
+          verification_status: 'unverified',
           output: 'PASS src/screens/ui-closure.test.tsx\nAll tests completed.',
         },
       ],
@@ -348,6 +349,7 @@ describe('Phase 14 final closure screens', () => {
     expect(await screen.findByTestId('engineering-screen')).toBeInTheDocument()
     expect(screen.getByText('Codex CLI')).toBeInTheDocument()
     expect(screen.getAllByText('3').length).toBeGreaterThan(0)
+    expect(screen.getByText('unverified')).toBeInTheDocument()
     expect(screen.getByText(/PASS src\/screens\/ui-closure.test.tsx/)).toBeInTheDocument()
     expect(screen.getByText('canonical-worker-output.txt')).toBeInTheDocument()
   })

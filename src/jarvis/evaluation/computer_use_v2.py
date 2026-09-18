@@ -748,16 +748,15 @@ async def _case_chord_allowlist_rejects_unlisted(_context: Any) -> bool:
         await ctx.runtime.shutdown()
 
 
-# -- 24/25. no paste anywhere; drag stays bounded/element-grounded only --
+# -- 24/25. safe paste is explicit; drag stays bounded/element-grounded only --
 
 async def _case_no_paste_or_unrestricted_drag_in_any_schema(_context: Any) -> bool:
-    """Paste (Ctrl+V) remains absent everywhere (Batch 04 task's own
-    explicit deferral). Batch 04 Milestone 1 deliberately adds a reviewed,
-    bounded `drag_element_to_element` action to `computer.pointer.act` -
-    this case now asserts the drag surface stays element-grounded-only
-    (exactly `source_element_ref`/`target_element_ref`, no raw coordinates,
-    no path/trajectory, no duration, no file drag/drop) rather than
-    asserting drag's total absence."""
+    """Safe insertion is a dedicated Unicode-typing action, never Ctrl+V.
+
+    The reviewed `computer.keyboard.paste` surface has only a grounded window
+    and bounded text. The older key/chord surfaces remain free of paste and
+    arbitrary hotkeys, while drag stays element-grounded-only.
+    """
     ctx = await _new_runtime_context()
     try:
         for tool_name in ("computer.keyboard.key", "computer.keyboard.chord", "computer.keyboard.type"):
@@ -767,6 +766,14 @@ async def _case_no_paste_or_unrestricted_drag_in_any_schema(_context: Any) -> bo
             blob = str(spec.parameters_schema).casefold()
             if "paste" in blob or "drag" in blob or "drop" in blob or "ctrl+v" in blob:
                 return False
+        paste_spec = ctx.runtime.tools.get("computer.keyboard.paste")
+        if paste_spec is None:
+            return False
+        paste_properties = set(paste_spec.parameters_schema.get("properties", {}))
+        if paste_properties != {"window_ref", "text", "target_device_id"}:
+            return False
+        if "clipboard" not in paste_spec.description.casefold() or "approval" not in paste_spec.description.casefold():
+            return False
         pointer_spec = ctx.runtime.tools.get("computer.pointer.act")
         if pointer_spec is None:
             return False
@@ -1708,7 +1715,7 @@ def build_suite() -> RegressionSuite:
         EvaluationCase("cuv2-21", "path-resolution escape refusal (real junction proof lives in test_phase_eighteen_file_access.py)", "computer_use_v2", _case_symlink_escape_refused),
         EvaluationCase("cuv2-22", "right-click/double-click/scroll stay element-grounded", "computer_use_v2", _case_expanded_pointer_actions_stay_element_grounded),
         EvaluationCase("cuv2-23", "chord allowlist rejects unlisted combinations", "computer_use_v2", _case_chord_allowlist_rejects_unlisted),
-        EvaluationCase("cuv2-24", "paste absent; drag stays bounded/element-grounded only", "computer_use_v2", _case_no_paste_or_unrestricted_drag_in_any_schema),
+        EvaluationCase("cuv2-24", "safe paste is explicit; drag stays bounded/element-grounded only", "computer_use_v2", _case_no_paste_or_unrestricted_drag_in_any_schema),
         EvaluationCase("cuv2-25", "drag requires two-target approval binding", "computer_use_v2", _case_drag_requires_dual_target_approval),
         EvaluationCase("cuv2-26", "drag target changing after approval is refused", "computer_use_v2", _case_drag_target_change_after_approval_refused),
         EvaluationCase("cuv2-27", "drag source/target cross-window is refused", "computer_use_v2", _case_drag_cross_window_refused),

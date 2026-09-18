@@ -1,7 +1,17 @@
-from .runtime import LocalWorkerRuntime, WorkerCategory, WorkerRequest, WorkerResult, WorkerStatus
+from .runtime import (
+    LocalWorkerRuntime,
+    SpecialistTaskEnvelope,
+    VerificationStatus,
+    WorkerCategory,
+    WorkerRequest,
+    WorkerResult,
+    WorkerStatus,
+    WorkerVerification,
+)
 from .coordination import WorkerCoordinator, WorkerDelegation, WorkerSelection
 
 __all__ = [
-    "LocalWorkerRuntime", "WorkerCategory", "WorkerRequest", "WorkerResult", "WorkerStatus",
+    "LocalWorkerRuntime", "SpecialistTaskEnvelope", "VerificationStatus", "WorkerCategory",
+    "WorkerRequest", "WorkerResult", "WorkerStatus", "WorkerVerification",
     "WorkerCoordinator", "WorkerDelegation", "WorkerSelection",
 ]

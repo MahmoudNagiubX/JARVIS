@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..models.routing import ModelRoute
+from ..browser.profile import BrowserProfilePolicy, BrowserProfilePolicyError, validate_brave_executable_path
 from .assets import VoiceAssetManager
 from .config import DesktopProductConfig, ProductConfigError
 from .lifecycle import PRODUCT_SECRET_KEY, JarvisDesktopLifecycle
@@ -51,6 +52,7 @@ class DesktopDiagnostics:
             results.extend(DiagnosticResult(item.name, "PASS" if item.ready else "FAIL", item.reason) for item in assets.statuses())
         results.append(DiagnosticResult("microphone", "PASS" if settings and settings.input_device else "FAIL", "selector_missing" if not settings or not settings.input_device else ""))
         results.append(DiagnosticResult("speaker", "PASS" if settings and settings.output_device else "FAIL", "selector_missing" if not settings or not settings.output_device else ""))
+        results.extend(self._runtime_checks(runtime))
         results.extend(self._node_checks(settings))
         return tuple(results)
 
@@ -78,3 +80,94 @@ class DesktopDiagnostics:
             DiagnosticResult("trusted_network_mode", "PASS", status.trusted_network_mode),
             DiagnosticResult("connected_node_count", "PASS", str(status.connected_node_count)),
         ]
+
+    def _runtime_checks(self, runtime: Any) -> list[DiagnosticResult]:
+        """Report backend readiness without probing owner content or mutating state."""
+        results: list[DiagnosticResult] = []
+        status = self.lifecycle.status
+        results.append(DiagnosticResult(
+            "ui_server",
+            "PASS" if status.hud_url else "PARTIAL",
+            "loopback_hud_ready" if status.hud_url else "ui_server_not_started",
+        ))
+
+        config = getattr(runtime, "config", None)
+        backend = str(getattr(config, "browser_backend", "local"))
+        if backend == "playwright":
+            try:
+                validate_brave_executable_path(getattr(config, "browser_executable_path", None))
+                browser_status = "PASS"
+                browser_reason = "exact_brave_path_valid"
+            except BrowserProfilePolicyError as exc:
+                browser_status = "PARTIAL"
+                browser_reason = exc.code
+            results.append(DiagnosticResult("browser_backend", browser_status, browser_reason))
+            policy = BrowserProfilePolicy(
+                getattr(config, "browser_profile_root", None),
+                owner_persistent_opt_in=bool(getattr(config, "browser_owner_persistent_opt_in", False)),
+            )
+            if policy.owner_persistent_opt_in:
+                try:
+                    policy.persistent_user_data_dir(required=True)
+                    profile_status, profile_reason = "PASS", "dedicated_profile_policy_ready"
+                except BrowserProfilePolicyError as exc:
+                    profile_status, profile_reason = "PARTIAL", exc.code
+            else:
+                profile_status, profile_reason = "PARTIAL", "owner_persistent_opt_in_required"
+            results.append(DiagnosticResult("browser_profile", profile_status, profile_reason))
+        else:
+            results.extend((
+                DiagnosticResult("browser_backend", "PASS", "local_controller"),
+                DiagnosticResult("browser_profile", "PASS", "ephemeral_local_mode"),
+            ))
+
+        local_computer = getattr(getattr(runtime, "computer_actions", None), "controller", None)
+        local_computer = getattr(local_computer, "local", local_computer)
+        file_policy = getattr(local_computer, "file_access_policy", None)
+        root_count = int(file_policy.status().get("root_count", 0)) if file_policy is not None else 0
+        results.append(DiagnosticResult(
+            "approved_file_roots",
+            "PASS" if root_count else "PARTIAL",
+            f"root_count={root_count}" if root_count else "file_root_not_configured",
+        ))
+        tools = getattr(runtime, "tools", None)
+        computer_ready = bool(
+            getattr(runtime, "computer_actions", None) is not None
+            and tools is not None
+            and tools.get("computer.keyboard.paste") is not None
+            and tools.get("computer.files.manage") is not None
+        )
+        results.append(DiagnosticResult("computer_use", "PASS" if computer_ready else "FAIL", "typed_action_service_ready" if computer_ready else "computer_action_surface_incomplete"))
+
+        scheduler = getattr(runtime, "scheduler", None)
+        results.append(DiagnosticResult(
+            "scheduler",
+            "PASS" if scheduler is not None and scheduler.running else "PARTIAL",
+            f"jobs={len(scheduler.jobs)}" if scheduler is not None and scheduler.running else "scheduler_not_running",
+        ))
+        event_bus = getattr(runtime, "event_bus", None)
+        handler_errors = len(getattr(event_bus, "handler_errors", ())) if event_bus is not None else 0
+        results.append(DiagnosticResult(
+            "event_bus",
+            "PASS" if event_bus is not None and not event_bus.closed and handler_errors == 0 else "PARTIAL",
+            "ready" if event_bus is not None and not event_bus.closed and handler_errors == 0 else f"handler_errors={handler_errors}",
+        ))
+        results.append(DiagnosticResult(
+            "backup",
+            "PASS" if getattr(runtime, "backup", None) is not None else "FAIL",
+            "service_ready" if getattr(runtime, "backup", None) is not None else "backup_service_missing",
+        ))
+        notifications = getattr(runtime, "notifications", None)
+        results.append(DiagnosticResult(
+            "notifications",
+            "PASS" if notifications is not None and getattr(notifications, "delivery", None) is not None else "PARTIAL",
+            "delivery_configured" if notifications is not None and getattr(notifications, "delivery", None) is not None else "local_store_ready_delivery_unconfigured",
+        ))
+        communications = getattr(runtime, "communications", None)
+        channels = communications.list_channels() if communications is not None else ()
+        results.append(DiagnosticResult(
+            "integrations",
+            "PASS" if len(channels) > 1 else "PARTIAL",
+            f"channels={len(channels)}" if channels else "no_channels_configured",
+        ))
+        return results

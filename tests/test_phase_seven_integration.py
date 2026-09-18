@@ -16,7 +16,7 @@ from jarvis.events import Event, EventCategory, EventState
 from jarvis.evaluation import EvaluationCase, EvaluationService, RegressionSuite
 from jarvis.skills import SkillLoader, SkillLearningService
 from jarvis.agents.workers.coordination import WorkerCoordinator
-from jarvis.agents.workers.runtime import LocalWorkerRuntime, WorkerCategory, WorkerResult, WorkerStatus
+from jarvis.agents.workers.runtime import LocalWorkerRuntime, VerificationStatus, WorkerCategory, WorkerResult, WorkerStatus, WorkerVerification
 from jarvis.communications.intelligence import CommunicationIntelligenceService
 from jarvis.contracts.communication import CommunicationMessage
 from jarvis.api.core import CoreApplication
@@ -112,7 +112,39 @@ class PhaseSevenIntegrationTests(unittest.IsolatedAsyncioTestCase):
         coordinator = WorkerCoordinator(self.runtime.repository, self.runtime.event_bus, local=LocalWorkerRuntime({WorkerCategory.CODING: handler}), permission=self.runtime.permission)
         delegation = await coordinator.run(self.identity.owner_id, "inspect the code", workspace_scope=tempfile.gettempdir())
         self.assertEqual(delegation.result["status"], "succeeded")
+        self.assertEqual(delegation.result["verification_status"], VerificationStatus.UNVERIFIED.value)
+        self.assertEqual(delegation.result["verification_reason"], "independent_verifier_not_configured")
         self.assertEqual(coordinator.select("browser research", required_capability="browser.read", internet_available=False).available, False)
+
+        seen: dict[str, object] = {}
+
+        async def verifier(envelope, result):
+            seen["task_id"] = envelope.task_id
+            seen["scope"] = envelope.scope
+            seen["goal"] = envelope.goal
+            return WorkerVerification(VerificationStatus.VERIFIED, "fixture_independent_check", ("fixture-evidence",))
+
+        verified_coordinator = WorkerCoordinator(
+            self.runtime.repository,
+            self.runtime.event_bus,
+            local=LocalWorkerRuntime({WorkerCategory.CODING: handler}),
+            permission=self.runtime.permission,
+            verifier=verifier,
+        )
+        verified = await verified_coordinator.run(
+            self.identity.owner_id,
+            "inspect the code",
+            workspace_scope=tempfile.gettempdir(),
+            mission_id="mission-worker-fixture",
+            goal="Inspect bounded code",
+            allowed_capabilities=("workspace.read",),
+            expected_output=("summary",),
+            verifier_requirements=("fixture-evidence",),
+        )
+        self.assertEqual(verified.result["verification_status"], VerificationStatus.VERIFIED.value)
+        self.assertEqual(verified.result["verification_evidence"], ["fixture-evidence"])
+        self.assertEqual(seen["goal"], "Inspect bounded code")
+        self.assertEqual(verified.result["mission_id"], "mission-worker-fixture")
 
         evaluations = EvaluationService(self.runtime.repository, self.runtime.event_bus)
         evaluations.register(RegressionSuite("phase-seven-fixture", (EvaluationCase("pass", "known pass", "determinism", lambda _: True), EvaluationCase("fail", "known fail", "determinism", lambda _: False, expected=True))))
