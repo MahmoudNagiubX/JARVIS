@@ -1,7 +1,8 @@
 # Local models
 
-The gateway defaults to mock mode. To probe an already-running local Ollama
-service, set aliases and run the optional smoke test:
+Direct test construction defaults to mock mode. Production environment
+bootstrap defaults to the hybrid route. To probe an already-running local
+Ollama service explicitly, set aliases and run the optional smoke test:
 
 ```powershell
 $env:JARVIS_MODEL_PROVIDER = "ollama"
