@@ -43,6 +43,11 @@ class JarvisConfig:
     desktop_awareness_enabled: bool = False
     file_access_roots: tuple[str, ...] = ()
     ocr_model_dir: str | None = None
+    browser_backend: str = "local"
+    browser_executable_path: str | None = None
+    browser_headless: bool = True
+    browser_owner_persistent_opt_in: bool = False
+    browser_profile_root: str | None = None
 
     @classmethod
     def from_env(cls) -> "JarvisConfig":
@@ -87,6 +92,17 @@ class JarvisConfig:
         # unset/empty value means "OCR models unavailable", never "use
         # EasyOCR's own ~/.EasyOCR default".
         ocr_model_dir = os.getenv("JARVIS_OCR_MODEL_DIR", "").strip() or None
+        browser_backend = os.getenv("JARVIS_BROWSER_BACKEND", defaults.browser_backend).strip().lower()
+        browser_executable_path = os.getenv("JARVIS_BROWSER_EXECUTABLE_PATH", "").strip() or None
+        browser_headless_text = os.getenv(
+            "JARVIS_BROWSER_HEADLESS",
+            "true" if defaults.browser_headless else "false",
+        ).strip().lower()
+        browser_owner_opt_in_text = os.getenv(
+            "JARVIS_BROWSER_OWNER_PERSISTENT",
+            "true" if defaults.browser_owner_persistent_opt_in else "false",
+        ).strip().lower()
+        browser_profile_root = os.getenv("JARVIS_BROWSER_PROFILE_ROOT", "").strip() or None
         try:
             timeout = float(timeout_text)
         except ValueError as exc:
@@ -108,6 +124,11 @@ class JarvisConfig:
             raise ValueError("satellite and heartbeat intervals must be numeric") from exc
         if awareness_text not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
             raise ValueError("JARVIS_DESKTOP_AWARENESS_ENABLED must be boolean")
+        boolean_values = {"true", "false", "1", "0", "yes", "no", "on", "off"}
+        if browser_headless_text not in boolean_values:
+            raise ValueError("JARVIS_BROWSER_HEADLESS must be boolean")
+        if browser_owner_opt_in_text not in boolean_values:
+            raise ValueError("JARVIS_BROWSER_OWNER_PERSISTENT must be boolean")
         if not service_name:
             raise ValueError("service_name cannot be empty")
         if not environment:
@@ -118,6 +139,8 @@ class JarvisConfig:
             raise ValueError("database_path cannot be empty")
         if model_provider not in {"mock", "ollama", "gguf", "llama_cpp"}:
             raise ValueError("JARVIS_MODEL_PROVIDER must be mock, ollama, gguf, or llama_cpp")
+        if browser_backend not in {"local", "playwright"}:
+            raise ValueError("JARVIS_BROWSER_BACKEND must be local or playwright")
         if not primary_model or not fallback_model:
             raise ValueError("model aliases cannot be empty")
         if not 1024 <= llama_cpp_context_size <= 32768:
@@ -160,6 +183,11 @@ class JarvisConfig:
             desktop_awareness_enabled=awareness_text in {"true", "1", "yes", "on"},
             file_access_roots=file_access_roots,
             ocr_model_dir=ocr_model_dir,
+            browser_backend=browser_backend,
+            browser_executable_path=browser_executable_path,
+            browser_headless=browser_headless_text in {"true", "1", "yes", "on"},
+            browser_owner_persistent_opt_in=browser_owner_opt_in_text in {"true", "1", "yes", "on"},
+            browser_profile_root=browser_profile_root,
         )
 
     @property

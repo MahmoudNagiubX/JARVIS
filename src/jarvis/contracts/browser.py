@@ -35,6 +35,13 @@ class BrowserCapability(StrEnum):
     SCREENSHOT = "screenshot"
 
 
+class BrowserSessionMode(StrEnum):
+    """Product-owned browser lifetime modes; never model-controlled."""
+
+    EPHEMERAL = "ephemeral"
+    OWNER_PERSISTENT = "owner_persistent"
+
+
 @dataclass(frozen=True, slots=True)
 class BrowserSession:
     session_id: str
@@ -43,6 +50,7 @@ class BrowserSession:
     current_url: str | None = None
     history: tuple[str, ...] = ()
     active: bool = True
+    mode: BrowserSessionMode = BrowserSessionMode.EPHEMERAL
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,4 +63,12 @@ class BrowserResult:
 
 
 class BrowserController(Protocol):
-    def execute(self, action: BrowserAction, context: ToolContext) -> Awaitable[ToolResult]: ...
+    def execute(
+        self,
+        action: BrowserAction,
+        context: ToolContext,
+        *,
+        session_mode: BrowserSessionMode = BrowserSessionMode.EPHEMERAL,
+    ) -> Awaitable[ToolResult]: ...
+
+    def close(self) -> Awaitable[None]: ...

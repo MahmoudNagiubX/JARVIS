@@ -67,7 +67,8 @@ from .voice.core import VoiceCore
 from .voice.fabric import RoomVoiceFabric
 from .voice.routing.service import VoiceRoutingService
 from .devices.room.service import RoomService
-from .browser.service import BrowserActionService, LocalBrowserController
+from .browser.service import BrowserActionService, LocalBrowserController, PlaywrightBrowserController
+from .browser.profile import BrowserProfilePolicy
 from .world_state.service import DurableWorldStateService
 from .world_state.workspace import WorkspaceContextService
 from .goals.engine import DurableGoalEngine
@@ -245,6 +246,7 @@ class JarvisRuntime:
         await self.perception.shutdown()
         await self.mcp.close()
         self.computer_actions.close()
+        await self.browser_actions.close()
         self.tool_service.close()
         if getattr(self.voice.state, "value", None) != "stopped":
             try:
@@ -312,10 +314,10 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     capabilities = CapabilityRegistry()
     device_fabric = DeviceFabricService(repository, event_bus, audit)
     windows_perception_provider = WindowsDesktopProvider()
-    file_access_policy = FileAccessPolicy.from_config_roots(config.file_access_roots)
+    file_access_policy = FileAccessPolicy.from_config_roots(effective_config.file_access_roots)
     local_computer_controller = WindowsNativeComputerController(
         perception_provider=windows_perception_provider, file_access_policy=file_access_policy,
-        ocr_model_dir=config.ocr_model_dir,
+        ocr_model_dir=effective_config.ocr_model_dir,
     )
     satellite_computer_controller = WindowsComputerController(satellite)
     computer_router = ComputerExecutionRouter(local_computer_controller, satellite_computer_controller)
@@ -335,7 +337,17 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         )
         adapter = "satellite" if record.transport == "http-long-poll" or satellite.status(device_id) != "unknown" else "local"
         return target, adapter
-    browser_controller = LocalBrowserController()
+    if effective_config.browser_backend == "playwright":
+        browser_controller = PlaywrightBrowserController(
+            executable_path=effective_config.browser_executable_path,
+            headless=effective_config.browser_headless,
+            profile_policy=BrowserProfilePolicy(
+                effective_config.browser_profile_root,
+                owner_persistent_opt_in=effective_config.browser_owner_persistent_opt_in,
+            ),
+        )
+    else:
+        browser_controller = LocalBrowserController()
     browser_actions = BrowserActionService(browser_controller, repository, event_bus, permission, audit, approval)
     register_browser_tools(registry, browser_actions)
 

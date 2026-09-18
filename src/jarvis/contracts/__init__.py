@@ -3,7 +3,7 @@
 from .approval import ApprovalDecision, ApprovalEngine, ApprovalRequest, ApprovalStatus
 from .audit import AuditRecord, AuditService
 from .authorization import PermissionDecision, PermissionEffect, PermissionEngine
-from .browser import BrowserAction, BrowserCapability, BrowserController, BrowserResult, BrowserSession
+from .browser import BrowserAction, BrowserCapability, BrowserController, BrowserResult, BrowserSession, BrowserSessionMode
 from .communication import (
     CommunicationAction,
     CommunicationChannel,
@@ -172,6 +172,7 @@ __all__ = [
     "BrowserController",
     "BrowserResult",
     "BrowserSession",
+    "BrowserSessionMode",
     "CommunicationAction",
     "CommunicationChannel",
     "CommunicationDraft",

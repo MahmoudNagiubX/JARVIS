@@ -100,7 +100,7 @@ class PhaseFourIntegrationTests(unittest.IsolatedAsyncioTestCase):
         playwright = await PlaywrightBrowserController().execute(
             BrowserAction("read_page", {"session_id": session_id}), ToolContext(self.identity, self.device, "browser", "browser-test")
         )
-        self.assertEqual(playwright.error_code, "playwright_adapter_not_configured")
+        self.assertEqual(playwright.error_code, "playwright_adapter_not_available")
 
     async def test_device_fabric_registers_heartbeats_stale_state_and_revocation(self) -> None:
         device = DeviceRecord(

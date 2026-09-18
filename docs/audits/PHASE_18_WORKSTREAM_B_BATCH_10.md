@@ -1,6 +1,6 @@
 # Phase 18 Workstream B - Batch 10 Audit
 
-**Status:** T0 PASS; T1-T6 not started
+**Status:** T0 PASS; T1 PASS; T2 PARTIAL; T3-T6 not started
 **Verdict:** `PHASE18_BROWSER_V2_BATCH10_PARTIAL` pending implementation and
 live owner-session evidence.
 
@@ -133,8 +133,8 @@ or Brave process/window mutation was performed by T0.
 | Gate | Scope | T0 disposition |
 |---|---|---|
 | T0 | Workstream-B bootstrap, current browser review, baseline | PASS |
-| T1 | optional Playwright dependency evaluation and real controller foundation | NOT STARTED |
-| T2 | ephemeral/dedicated persistent profile policy | NOT STARTED |
+| T1 | optional Playwright dependency evaluation and real controller foundation | PASS |
+| T2 | ephemeral/dedicated persistent profile policy | PARTIAL - policy seam and tests pass; physical persistent restart pending |
 | T3 | DOM/accessibility grounding and approval-bound actions | NOT STARTED |
 | T4 | layered extraction and provenance | NOT STARTED |
 | T5 | bounded upload/download/screenshot workflows | NOT STARTED |
@@ -148,14 +148,49 @@ or Brave process/window mutation was performed by T0.
   are incomplete.
 - GAP-0204: live browser hostile-page and prompt-injection matrix is incomplete.
 - GAP-0205: ephemeral versus dedicated owner-persistent browser session policy
-  is unimplemented.
+  has an implementation seam and tests, but its physical restart evidence is
+  still pending.
 
-## 7. T0 commit
+## 7. T1/T2 implementation evidence
+
+### T1 - optional real Playwright controller
+
+T1 is PASS for the implementation and dependency foundation:
+
+- `pyproject.toml` declares only the optional `browser-playwright` extra with
+  `playwright==1.62.0`; base dependencies remain empty.
+- `PlaywrightBrowserController` lazily imports `playwright.async_api`, launches
+  only through the existing `BrowserActionService` seam, and normalizes missing
+  adapters/provider failures to bounded error codes.
+- Launch uses the exact configured Brave executable and no model-controlled
+  flags, CDP attachment, or browser download/install step.
+- `close()` owns and closes only contexts/browsers created by the controller,
+  then stops the Playwright runtime; no broad process termination is used.
+- Focused foundation evidence: `12 passed, 2 subtests passed` in
+  `tests/test_phase_eighteen_browser_v2.py`; existing browser integration and
+  security suites: `30 passed, 11 subtests passed`.
+- Disposable dependency evaluation recorded Playwright `1.62.0`, Apache-2.0,
+  PyPI install, no `playwright install`, and a clean headless launch of the
+  verified Brave executable (`launch=PASS`, `contexts=1`, `pages=1`,
+  `url=about:blank`), with no remaining Brave process.
+
+### T2 - session/profile policy foundation
+
+T2 currently has a PARTIAL implementation status pending the physical profile
+restart gate. `BrowserSessionMode` contains only product-owned `EPHEMERAL` and
+`OWNER_PERSISTENT` modes. The default is ephemeral; owner-persistent mode
+requires explicit local opt-in and resolves a dedicated JARVIS profile path.
+Known Brave, Chrome, and Edge `User Data` profile paths are rejected, and no
+profile path or mode is present in model-facing browser schemas. The remaining
+evidence is an actual dedicated-profile launch, clean close, and controlled
+reopen without touching the normal Brave profile.
+
+## 8. T0/T1 checkpoint
 
 T0 audit-only checkpoint is intended to be committed as:
 
 `docs: start phase 18 browser v2 workstream`
 
-T1-T6 evidence, commit chain, dependency audit, security counters, physical
+T2-T6 evidence, commit chain, dependency audit, security counters, physical
 receipts, source-of-truth updates, limitations, and final remote verification
 will be appended here as each gate completes. No Batch 11 work is in scope.

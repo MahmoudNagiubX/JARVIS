@@ -8,6 +8,7 @@ import re
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from urllib.parse import urljoin
@@ -17,10 +18,11 @@ from ..authority.approvals.service import DurableApprovalEngine
 from ..authority.audit.service import DurableAuditService
 from ..authority.permissions.engine import PolicyPermissionEngine
 from ..bus import InMemoryEventBus
-from ..contracts import ApprovalRequest, AuditRecord, BrowserAction, BrowserCapability, BrowserResult, BrowserSession, DeviceIdentity, Identity, ToolContext
+from ..contracts import ApprovalRequest, AuditRecord, BrowserAction, BrowserCapability, BrowserResult, BrowserSession, BrowserSessionMode, DeviceIdentity, Identity, ToolContext
 from ..events import Event, EventCategory, EventState
 from ..persistence.repositories import RuntimeRepository
 from .policy import BrowserURLPolicy, BrowserURLPolicyError
+from .playwright_adapter import PlaywrightBrowserController
 
 
 class _PageParser(HTMLParser):
@@ -77,7 +79,7 @@ class LocalBrowserController:
         self._form_values: dict[tuple[str, str], str] = {}
         self._interaction_timeout_seconds = max(0.05, min(interaction_timeout_seconds, 30.0))
 
-    async def execute(self, action: BrowserAction, context: ToolContext) -> BrowserResult:
+    async def execute(self, action: BrowserAction, context: ToolContext, *, session_mode: BrowserSessionMode = BrowserSessionMode.EPHEMERAL) -> BrowserResult:
         if context.device is None:
             return BrowserResult("denied", error_code="device_missing")
         try:
@@ -85,7 +87,7 @@ class LocalBrowserController:
         except ValueError:
             return BrowserResult("denied", error_code="unsupported_browser_action")
         if capability is BrowserCapability.OPEN_URL:
-            return self._open_url(action.parameters, context)
+            return self._open_url(action.parameters, context, session_mode)
         session = self._session(action.parameters, context)
         if session is None:
             return BrowserResult("failed", error_code="browser_session_missing")
@@ -107,7 +109,7 @@ class LocalBrowserController:
             return BrowserResult("failed", error_code="browser_action_requires_configured_adapter")
         return BrowserResult("failed", error_code="browser_action_not_configured")
 
-    def _open_url(self, parameters: Mapping[str, object], context: ToolContext) -> BrowserResult:
+    def _open_url(self, parameters: Mapping[str, object], context: ToolContext, session_mode: BrowserSessionMode) -> BrowserResult:
         url = parameters.get("url")
         if not isinstance(url, str):
             return BrowserResult("denied", error_code="url_invalid")
@@ -115,7 +117,15 @@ class LocalBrowserController:
             self._validate_url(url)
         except BrowserURLPolicyError as exc:
             return BrowserResult("denied", error_code=exc.code)
-        session = BrowserSession(f"browser-{uuid4()}", context.identity.owner_id if context.identity else context.device.owner_id, context.device.device_id, url, (url,))
+        session = BrowserSession(
+            f"browser-{uuid4()}",
+            context.identity.owner_id if context.identity else context.device.owner_id,
+            context.device.device_id,
+            url,
+            (url,),
+            True,
+            session_mode,
+        )
         self._sessions[session.session_id] = session
         return BrowserResult("succeeded", {"session_id": session.session_id, "url": url}, verified=True)
 
@@ -137,14 +147,14 @@ class LocalBrowserController:
         except BrowserURLPolicyError as exc:
             return BrowserResult("denied", error_code=exc.code)
         history = session.history + (url,)
-        updated = BrowserSession(session.session_id, session.owner_id, session.device_id, url, history)
+        updated = replace(session, current_url=url, history=history)
         self._sessions[session.session_id] = updated
         return BrowserResult("succeeded", {"session_id": session.session_id, "url": url}, verified=True)
 
     def _back(self, session: BrowserSession) -> BrowserResult:
         if len(session.history) < 2:
             return BrowserResult("failed", error_code="browser_history_empty")
-        updated = BrowserSession(session.session_id, session.owner_id, session.device_id, session.history[-2], session.history[:-1])
+        updated = replace(session, current_url=session.history[-2], history=session.history[:-1])
         self._sessions[session.session_id] = updated
         return BrowserResult("succeeded", {"url": updated.current_url}, verified=True)
 
@@ -169,7 +179,7 @@ class LocalBrowserController:
             output["accessibility_tree"] = {"headings": parser.headings, "links": parser.links}
         if capability is BrowserCapability.READ_PAGE:
             output["links"] = parser.links
-        self._sessions[session.session_id] = BrowserSession(session.session_id, session.owner_id, session.device_id, final_url, session.history + ((final_url,) if final_url != session.current_url else ()))
+        self._sessions[session.session_id] = replace(session, current_url=final_url, history=session.history + ((final_url,) if final_url != session.current_url else ()))
         return BrowserResult("succeeded", output, verified=True)
 
     async def _find(self, session: BrowserSession, parameters: Mapping[str, object]) -> BrowserResult:
@@ -216,7 +226,7 @@ class LocalBrowserController:
                     self._validate_url(url)
                 except BrowserURLPolicyError as exc:
                     return BrowserResult("denied", error_code=exc.code)
-                updated = BrowserSession(session.session_id, session.owner_id, session.device_id, url, session.history + (url,))
+                updated = replace(session, current_url=url, history=session.history + (url,))
                 self._sessions[session.session_id] = updated
                 return BrowserResult("succeeded", {"session_id": session.session_id, "selector": selector, "url": url, "action": "click"}, verified=True)
             return BrowserResult("succeeded", {"session_id": session.session_id, "selector": selector, "action": "click"}, verified=True)
@@ -261,22 +271,11 @@ class LocalBrowserController:
 
     @staticmethod
     def _session_data(session: BrowserSession) -> dict[str, object]:
-        return {"session_id": session.session_id, "url": session.current_url, "device_id": session.device_id, "active": session.active}
+        return {"session_id": session.session_id, "url": session.current_url, "device_id": session.device_id, "active": session.active, "mode": session.mode.value}
 
-
-class PlaywrightBrowserController:
-    """JARVIS-owned boundary for an injected Playwright MCP/client adapter."""
-
-    def __init__(self, executor: Callable[[BrowserAction, ToolContext], BrowserResult | Awaitable[BrowserResult]] | None = None) -> None:
-        self._executor = executor
-
-    async def execute(self, action: BrowserAction, context: ToolContext) -> BrowserResult:
-        if self._executor is None:
-            return BrowserResult("failed", error_code="playwright_adapter_not_configured")
-        result = self._executor(action, context)
-        if inspect.isawaitable(result):
-            result = await result
-        return result
+    async def close(self) -> None:
+        self._sessions.clear()
+        self._form_values.clear()
 
 
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -298,16 +297,27 @@ class BrowserActionService:
 
     _read_actions = frozenset({item.value for item in (BrowserCapability.OPEN_URL, BrowserCapability.NAVIGATE, BrowserCapability.BACK, BrowserCapability.FORWARD, BrowserCapability.READ_PAGE, BrowserCapability.INSPECT_ACCESSIBILITY_TREE, BrowserCapability.FIND_ELEMENT, BrowserCapability.EXTRACT_TEXT, BrowserCapability.TABS)})
 
-    def __init__(self, controller: LocalBrowserController | PlaywrightBrowserController, repository: RuntimeRepository, event_bus: InMemoryEventBus, permission: PolicyPermissionEngine, audit: DurableAuditService, approvals: DurableApprovalEngine | None = None) -> None:
+    def __init__(self, controller: object, repository: RuntimeRepository, event_bus: InMemoryEventBus, permission: PolicyPermissionEngine, audit: DurableAuditService, approvals: DurableApprovalEngine | None = None) -> None:
         self.controller = controller
         self.repository = repository
         self.event_bus = event_bus
         self.permission = permission
         self.audit = audit
         self.approvals = approvals
-        self._pending: dict[str, tuple[BrowserAction, Identity, DeviceIdentity]] = {}
+        self._pending: dict[str, tuple[BrowserAction, Identity, DeviceIdentity, str, str, BrowserSessionMode]] = {}
 
-    async def execute(self, action: BrowserAction, identity: Identity, device: DeviceIdentity, *, session_id: str = "browser", correlation_id: str | None = None) -> BrowserResult:
+    async def execute(
+        self,
+        action: BrowserAction,
+        identity: Identity,
+        device: DeviceIdentity,
+        *,
+        session_id: str = "browser",
+        correlation_id: str | None = None,
+        session_mode: BrowserSessionMode = BrowserSessionMode.EPHEMERAL,
+    ) -> BrowserResult:
+        if not isinstance(session_mode, BrowserSessionMode):
+            return BrowserResult("denied", error_code="browser_session_mode_invalid")
         correlation = correlation_id or f"browser-{uuid4()}"
         required_capability = f"browser.{action.action}"
         risk = "read" if action.action in self._read_actions else "consequential"
@@ -317,27 +327,27 @@ class BrowserActionService:
             if decision.effect.value == "require_approval" and self.approvals is not None:
                 approval_id = f"approval-{uuid4()}"
                 await self.approvals.request(ApprovalRequest(approval_id, required_capability, identity.owner_id, device.device_id, "browser action requires approval", datetime.now(UTC), datetime.now(UTC) + timedelta(minutes=10), self._approval_preview(action)))
-                self._pending[approval_id] = (action, identity, device)
+                self._pending[approval_id] = (action, identity, device, session_id, correlation, session_mode)
                 await self._emit("browser.action_requested", identity.owner_id, correlation, {"action": action.action, "approval_id": approval_id}, EventState.ACCEPTED)
                 return BrowserResult("approval_required", error_code=decision.reason_code, approval_id=approval_id)
             await self._emit("browser.action_failed", identity.owner_id, correlation, {"action": action.action, "reason": decision.reason_code}, EventState.FAILED)
             return BrowserResult("approval_required" if decision.effect.value == "require_approval" else "denied", error_code=decision.reason_code)
-        return await self._execute_controller(action, identity, device, session_id, correlation)
+        return await self._execute_controller(action, identity, device, session_id, correlation, session_mode)
 
     async def decide(self, approval_id: str, approved: bool, decided_by: str) -> BrowserResult:
         pending = self._pending.get(approval_id)
         if pending is None or self.approvals is None:
             return BrowserResult("failed", error_code="browser_approval_unavailable", approval_id=approval_id)
-        action, identity, device = pending
+        action, identity, device, session_id, correlation, session_mode = pending
         decision = await self.approvals.decide(approval_id, approved, decided_by)
         self._pending.pop(approval_id, None)
         if decision.status.value != "approved":
             return BrowserResult("denied", error_code=decision.status.value, approval_id=approval_id)
-        return await self._execute_controller(action, identity, device, "browser", f"browser-{approval_id}", approval_id)
+        return await self._execute_controller(action, identity, device, session_id, correlation, session_mode, approval_id)
 
-    async def _execute_controller(self, action: BrowserAction, identity: Identity, device: DeviceIdentity, session_id: str, correlation: str, approval_id: str | None = None) -> BrowserResult:
+    async def _execute_controller(self, action: BrowserAction, identity: Identity, device: DeviceIdentity, session_id: str, correlation: str, session_mode: BrowserSessionMode, approval_id: str | None = None) -> BrowserResult:
         await self._emit("browser.action_started", identity.owner_id, correlation, {"action": action.action}, EventState.ACCEPTED)
-        result = await self.controller.execute(action, ToolContext(identity, device, session_id, correlation))
+        result = await self.controller.execute(action, ToolContext(identity, device, session_id, correlation), session_mode=session_mode)
         if action.action == BrowserCapability.OPEN_URL.value and result.status == "succeeded":
             await self._emit(
                 "browser.session_started", identity.owner_id, correlation,
@@ -348,6 +358,14 @@ class BrowserActionService:
         await self._emit(event_type, identity.owner_id, correlation, {"action": action.action, "error_code": result.error_code}, EventState.COMPLETED if result.status == "succeeded" else EventState.FAILED)
         await self.audit.record(AuditRecord(f"audit-{uuid4()}", event_type, datetime.now(UTC), identity.identity_id, device.device_id, correlation, result.status, result.error_code, {"action": action.action}))
         return BrowserResult(result.status, result.output, result.error_code, result.verified, approval_id)
+
+    async def close(self) -> None:
+        close = getattr(self.controller, "close", None)
+        if close is None:
+            return
+        result = close()
+        if inspect.isawaitable(result):
+            await result
 
     @staticmethod
     def _approval_preview(action: BrowserAction) -> dict[str, object]:

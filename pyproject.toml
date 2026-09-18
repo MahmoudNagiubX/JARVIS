@@ -9,6 +9,9 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "tzdata>=2024.1"]
+browser-playwright = [
+    "playwright==1.62.0",
+]
 computer-uia = [
     "uiautomation==2.0.29",
 ]
