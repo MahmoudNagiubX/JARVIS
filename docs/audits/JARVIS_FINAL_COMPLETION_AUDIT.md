@@ -88,12 +88,12 @@ release when their states remain truthfully `NOT_CONFIGURED`,
 | Spotify | NOT_CONFIGURED | No authenticated provider workflow configured. |
 | WhatsApp | NOT_CONFIGURED | No authenticated self-chat workflow configured. |
 | Discord | NOT_CONFIGURED | No exact owner-approved test destination configured. |
-| Files | PARTIAL | Approved-root bounded read/search/open is implemented; broader write/project workflow remains gated. |
+| Files | PARTIAL | Approved-root bounded read/search/open plus approval-gated create/replace/copy/move/rename/recycle operations are implemented and regression-tested; owner-file/dialog and broader real-app acceptance remain pending. |
 | Backup/restore | PARTIAL | Online-backup CLI foundation exists; current-schema isolated restore proof is pending W8. |
 | Security | PARTIAL | Canonical boundaries and Browser V2 deterministic red-team coverage exist; cumulative final red-team/secret scan remains pending. |
 | Diagnostics | PARTIAL | Native diagnostics foundation exists; one complete release diagnostics matrix remains pending. |
 | Startup | PARTIAL | Explicit startup/recovery path exists; clean-tree launcher and cold-start proof remain pending. |
-| CI | NOT_CONFIGURED | No repository CI workflow was present at this baseline. |
+| CI | PARTIAL | `.github/workflows/ci.yml` now runs the Python suite/compile gate and frontend test/build/high-severity audit on pull requests and main/feature pushes; hosted execution and required-check branch protection are not yet observed/configured. |
 
 ## 5. Security and privacy invariants carried forward
 
@@ -169,3 +169,20 @@ ChatGPT web-response boundary; W2 must not begin until the Brave web gate is
 observable and the nonce/persistence acceptance is proven, or the gate is
 closed with truthful evidence. The desktop-app surface remains a separate
 manual-only check.
+
+## 9. W3/W8 code-backed checkpoint
+
+Commit `935ae9f` adds one bounded `computer.files.manage` tool behind the
+existing `ComputerActionService` and `FileAccessPolicy` authorities. It
+supports `create_text`, `replace_text`, `copy_file`, `move_file`,
+`rename_file`, and Windows recycle-bin requests only inside configured roots;
+mutations require the canonical owner approval, redact raw text from approval
+and durable tool-call data, reject sensitive/outside/reparse paths, use
+exclusive/atomic writes where applicable, and verify the resulting file state
+with size/SHA-256 or source-absence evidence. The focused Computer Use/file
+and tool regression set is `145 passed`; no owner files were touched.
+
+Commit `eadaa70` also prevents a Playwright runtime from being started merely
+to report a missing session, preserving clean provider ownership and removing
+the optional-dependency resource leak exposed after Playwright became
+available locally. Browser-focused regression is `46 passed, 4 subtests`.

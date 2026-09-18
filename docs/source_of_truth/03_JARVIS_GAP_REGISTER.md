@@ -311,6 +311,17 @@ Current file/process operations are bounded and useful, but full safe project/fi
 
 **Batch 05 Milestone 0 (R18B04-001, streaming closure):** an independent review of Batch 04 found `iter_search_candidates()` still called `list(os.scandir(current))` per directory before enforcing the scan budget - safe (the boundary/pruning logic was already correct) but capable of materializing an arbitrarily large single directory before the budget stopped it. The per-directory loop now consumes `os.scandir()` directly as a live iterator (checking the scan budget *before* each `next()` call, inside a `with` block for guaranteed handle cleanup on early return), so the budget is enforced without ever building an intermediate list, proven by an instrumented fake iterator that records exactly how many entries were pulled (`tests/test_phase_eighteen_file_access.py::FileAccessPolicyStreamingScandirTests`, 39 tests total in the file). Scope remains unchanged - read/open/search path confinement only.
 
+**Final-completion W3 slice (2026-09-18):** `computer.files.manage` now adds
+approval-gated, bounded `create_text`, `replace_text`, `copy_file`,
+`move_file`, `rename_file`, and Windows `recycle_file` operations behind the
+same `ComputerActionService`/`FileAccessPolicy` path. Text arguments remain
+ephemeral and approval previews retain only length/digest; destination parents
+must already exist, final reparse targets are denied, writes are atomic or
+exclusive, and every mutation independently verifies the resulting state.
+The focused integration/tool suite is green (`145 passed`). This advances
+the broader file experience but does not close file dialogs, cross-window
+drag/drop, owner-file acceptance, or general unrestricted system operations.
+
 ### GAP-0504 — Personal recurring workflows need real owner recipes
 **Status:** `OPEN/P2`  
 Automation foundations exist. Build real daily/weekly reminders, briefings, recurring research, file/communication workflows only after provider capabilities are live.
@@ -366,8 +377,12 @@ Cross-device architecture permits future clients; no physical phone client is cu
 ## 10. P1/P2 — Production hardening and governance
 
 ### GAP-0801 — GitHub CI/required checks not configured
-**Status:** `OPEN`  
-Add a minimal deterministic CI gate for supported tests/build/static/security checks.
+**Status:** `PARTIAL`
+`.github/workflows/ci.yml` now defines deterministic Python tests/compile checks
+on Windows and frontend tests/build/high-severity audit on Ubuntu for pull
+requests and main/feature pushes. A hosted run and repository-required-check
+branch protection have not yet been observed/configured, so this gap remains
+partial rather than resolved.
 
 ### GAP-0802 — Branch protection / commit signing governance debt
 **Status:** `OPEN/P2`  
