@@ -5,20 +5,31 @@ from __future__ import annotations
 import importlib
 import inspect
 import hashlib
+import os
+import tempfile
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
+from ..computer.file_access import FileAccessPolicy
 from ..contracts import BrowserAction, BrowserCapability, BrowserResult, BrowserSessionMode, ToolContext
 from .policy import BrowserURLPolicy, BrowserURLPolicyError
 from .profile import BrowserProfilePolicy, BrowserProfilePolicyError, validate_brave_executable_path
 
 
 PlaywrightModuleLoader = Callable[[str], object]
+
+
+class _BrowserTransferError(RuntimeError):
+    def __init__(self, code: str, *, status: str = "failed") -> None:
+        super().__init__(code)
+        self.code = code
+        self.status = status
 
 
 @dataclass(slots=True)
@@ -49,6 +60,20 @@ class _ElementBinding:
     fingerprint: str
     expires_at: float
     bound_action: str | None = None
+    transfer_size: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _DownloadBinding:
+    session_id: str
+    page_ref: str
+    epoch: int
+    page_origin: str
+    origin: str
+    url: str
+    filename: str
+    destination: Path
+    overwrite: bool
 
 
 @dataclass(slots=True)
@@ -80,6 +105,8 @@ class PlaywrightBrowserController:
     _ELEMENT_REF_TTL_SECONDS = 120.0
     _NAVIGATION_TIMEOUT_MS = 30_000
     _ACTION_TIMEOUT_MS = 10_000
+    _MAX_TRANSFER_BYTES = 20_000_000
+    _SCREENSHOT_TTL_SECONDS = 60.0
 
     def __init__(
         self,
@@ -90,6 +117,8 @@ class PlaywrightBrowserController:
         profile_policy: BrowserProfilePolicy | None = None,
         playwright_module_loader: PlaywrightModuleLoader | None = None,
         url_policy: BrowserURLPolicy | None = None,
+        file_access_policy: FileAccessPolicy | None = None,
+        download_root: str | Path | None = None,
     ) -> None:
         self._executor = executor
         self._executable_path = executable_path
@@ -97,9 +126,15 @@ class PlaywrightBrowserController:
         self._profile_policy = profile_policy or BrowserProfilePolicy(None, owner_persistent_opt_in=False)
         self._module_loader = playwright_module_loader or importlib.import_module
         self._url_policy = url_policy or BrowserURLPolicy()
+        self._file_access_policy = file_access_policy or FileAccessPolicy()
+        try:
+            self._download_root = Path(download_root).expanduser().resolve() if download_root is not None else None
+        except OSError:
+            self._download_root = None
         self._playwright: Any = None
         self._browser_type: Any = None
         self._sessions: dict[str, _PlaywrightSession] = {}
+        self._transient_screenshots: dict[str, tuple[float, bytes]] = {}
         self._closed = False
 
     @property
@@ -161,12 +196,12 @@ class PlaywrightBrowserController:
                 return await self._type(session, action.parameters, context)
             if action.action == BrowserCapability.SELECT.value:
                 return await self._select(session, action.parameters, context)
-            if action.action in {
-                BrowserCapability.DOWNLOAD_FILE.value,
-                BrowserCapability.UPLOAD_FILE.value,
-                BrowserCapability.SCREENSHOT.value,
-            }:
-                return BrowserResult("failed", error_code="browser_action_requires_t5_adapter")
+            if action.action == BrowserCapability.DOWNLOAD_FILE.value:
+                return await self._download(session, action.parameters, context)
+            if action.action == BrowserCapability.UPLOAD_FILE.value:
+                return await self._upload(session, action.parameters, context)
+            if action.action == BrowserCapability.SCREENSHOT.value:
+                return await self._screenshot(session)
             return BrowserResult("denied", error_code="unsupported_browser_action")
         except BrowserURLPolicyError as exc:
             return BrowserResult("denied", error_code=exc.code)
@@ -182,6 +217,7 @@ class PlaywrightBrowserController:
         if self._closed and self._playwright is None and not self._sessions:
             return
         self._closed = True
+        self._transient_screenshots.clear()
         sessions = tuple(self._sessions.values())
         self._sessions.clear()
         closed_context_ids: set[int] = set()
@@ -218,7 +254,10 @@ class PlaywrightBrowserController:
         url = parameters.get("url")
         if not isinstance(url, str):
             return BrowserResult("denied", error_code="url_invalid")
-        self._url_policy.validate(url)
+        try:
+            self._url_policy.validate(url)
+        except BrowserURLPolicyError as exc:
+            return BrowserResult("denied", error_code=exc.code)
         await self._ensure_runtime()
         executable = validate_brave_executable_path(self._executable_path)
         browser = None
@@ -477,6 +516,16 @@ class PlaywrightBrowserController:
             count = await locator.count()
         except Exception as exc:
             return BrowserResult("failed", error_code=self._normalize_error(action.action, exc)), None, None
+        if count == 0 and action.action == BrowserCapability.UPLOAD_FILE.value:
+            candidates = [
+                candidate for candidate in await self._collect_elements(session.page)
+                if candidate.fingerprint == binding.fingerprint
+                and candidate.accessible_name == binding.accessible_name
+                and candidate.tag == binding.tag
+            ]
+            if len(candidates) == 1:
+                locator = candidates[0].locator
+                count = 1
         if count == 0:
             return BrowserResult("failed", error_code="browser_approval_target_changed" if expected else "browser_element_stale"), None, None
         if count != 1:
@@ -493,14 +542,23 @@ class PlaywrightBrowserController:
                 return BrowserResult("denied", error_code="browser_actionability_failed"), None, None
         if action.action == BrowserCapability.SELECT.value and target.tag != "select":
             return BrowserResult("denied", error_code="browser_select_target_invalid"), None, None
-        if action.action in {BrowserCapability.CLICK.value, BrowserCapability.TYPE.value, BrowserCapability.SELECT.value} and not target.visible:
+        if action.action == BrowserCapability.UPLOAD_FILE.value and (target.tag != "input" or target.input_type != "file"):
+            return BrowserResult("denied", error_code="browser_upload_target_invalid"), None, None
+        if action.action in {BrowserCapability.CLICK.value, BrowserCapability.TYPE.value, BrowserCapability.SELECT.value, BrowserCapability.UPLOAD_FILE.value} and not target.visible:
             return BrowserResult("failed", error_code="browser_actionability_failed"), None, None
-        if action.action in {BrowserCapability.CLICK.value, BrowserCapability.TYPE.value, BrowserCapability.SELECT.value} and not target.enabled:
+        if action.action in {BrowserCapability.CLICK.value, BrowserCapability.TYPE.value, BrowserCapability.SELECT.value, BrowserCapability.UPLOAD_FILE.value} and not target.enabled:
             return BrowserResult("failed", error_code="browser_actionability_failed"), None, None
         return None, session, locator
 
     async def prepare_approval(self, action: BrowserAction, context: ToolContext, session_mode: BrowserSessionMode) -> tuple[BrowserResult | None, object | None]:
-        if action.action not in {BrowserCapability.CLICK.value, BrowserCapability.TYPE.value, BrowserCapability.SELECT.value}:
+        if action.action == BrowserCapability.DOWNLOAD_FILE.value:
+            session = self._session(action.parameters, context)
+            if session is None:
+                return BrowserResult("failed", error_code="browser_session_missing"), None
+            if session.mode is not session_mode:
+                return BrowserResult("failed", error_code="browser_session_mode_changed"), None
+            return self._download_details(session, action.parameters)
+        if action.action not in {BrowserCapability.CLICK.value, BrowserCapability.TYPE.value, BrowserCapability.SELECT.value, BrowserCapability.UPLOAD_FILE.value}:
             return None, None
         error, _, _ = await self._resolve_binding(action, context, session_mode)
         if error is not None:
@@ -509,14 +567,39 @@ class PlaywrightBrowserController:
         assert session is not None
         element_ref = str(action.parameters["element_ref"])
         binding = session.bindings.get(element_ref)
-        return None, replace(binding, bound_action=action.action) if binding is not None else None
+        if binding is None:
+            return BrowserResult("failed", error_code="browser_element_stale"), None
+        if action.action == BrowserCapability.UPLOAD_FILE.value:
+            upload_error, size = self._upload_details(action.parameters)
+            if upload_error is not None:
+                return upload_error, None
+            return None, replace(binding, bound_action=action.action, transfer_size=size)
+        return None, replace(binding, bound_action=action.action)
 
     async def revalidate_approval(self, action: BrowserAction, context: ToolContext, session_mode: BrowserSessionMode, binding: object | None) -> BrowserResult | None:
-        if action.action not in {BrowserCapability.CLICK.value, BrowserCapability.TYPE.value, BrowserCapability.SELECT.value}:
+        if action.action == BrowserCapability.DOWNLOAD_FILE.value:
+            if not isinstance(binding, _DownloadBinding):
+                return BrowserResult("failed", error_code="browser_approval_target_changed")
+            session = self._session(action.parameters, context)
+            if session is None or session.mode is not session_mode:
+                return BrowserResult("failed", error_code="browser_approval_target_changed")
+            error, current = self._download_details(session, action.parameters)
+            if error is not None or current is None:
+                return error or BrowserResult("failed", error_code="browser_approval_target_changed")
+            if current != binding or self._origin(self._safe_page_url(session.page)) != binding.page_origin:
+                return BrowserResult("failed", error_code="browser_approval_target_changed")
+            return None
+        if action.action not in {BrowserCapability.CLICK.value, BrowserCapability.TYPE.value, BrowserCapability.SELECT.value, BrowserCapability.UPLOAD_FILE.value}:
             return None
         if not isinstance(binding, _ElementBinding):
             return BrowserResult("failed", error_code="browser_approval_target_changed")
         error, _, _ = await self._resolve_binding(action, context, session_mode, expected=binding)
+        if error is None and action.action == BrowserCapability.UPLOAD_FILE.value:
+            upload_error, size = self._upload_details(action.parameters)
+            if upload_error is not None:
+                return upload_error
+            if binding.transfer_size != size:
+                return BrowserResult("failed", error_code="browser_approval_target_changed")
         return error
 
     async def _click(self, session: _PlaywrightSession, parameters: Mapping[str, object], context: ToolContext) -> BrowserResult:
@@ -575,6 +658,309 @@ class PlaywrightBrowserController:
             {"session_id": session.session_id, "element_ref": parameters.get("element_ref"), "value_length": len(value), "content_redacted": True, "action": "select"},
             verified=readback == value,
         )
+
+    async def _upload(self, session: _PlaywrightSession, parameters: Mapping[str, object], context: ToolContext) -> BrowserResult:
+        if context.metadata.get("browser_approval_id") is None:
+            return BrowserResult("denied", error_code="browser_action_requires_approval")
+        action = BrowserAction(BrowserCapability.UPLOAD_FILE.value, parameters)
+        error, _, locator = await self._resolve_binding(action, context, session.mode)
+        if error is not None:
+            return error
+        upload_error, size = self._upload_details(parameters)
+        if upload_error is not None:
+            return upload_error
+        path_value = parameters.get("path")
+        assert isinstance(path_value, str)
+        decision = self._file_access_policy.evaluate(path_value)
+        assert decision.allowed and decision.resolved_path is not None
+        try:
+            await locator.set_input_files(str(decision.resolved_path), timeout=self._ACTION_TIMEOUT_MS)
+            readback = await locator.input_value(timeout=self._ACTION_TIMEOUT_MS)
+        except Exception:
+            return BrowserResult("failed", error_code="browser_upload_failed")
+        filename = decision.resolved_path.name[:255]
+        verified = bool(readback) and Path(str(readback)).name == filename
+        return BrowserResult(
+            "succeeded",
+            {
+                "session_id": session.session_id,
+                "element_ref": parameters.get("element_ref"),
+                "filename": filename,
+                "size_bytes": size,
+                "target_origin": self._origin(self._safe_page_url(session.page)),
+                "content_redacted": True,
+                "action": "upload_file",
+            },
+            verified=verified,
+        )
+
+    async def _download(self, session: _PlaywrightSession, parameters: Mapping[str, object], context: ToolContext) -> BrowserResult:
+        if context.metadata.get("browser_approval_id") is None:
+            return BrowserResult("denied", error_code="browser_action_requires_approval")
+        error, binding = self._download_details(session, parameters)
+        if error is not None or binding is None:
+            return error or BrowserResult("failed", error_code="browser_download_blocked")
+        try:
+            body, final_url, expected_size = await self._fetch_download(session.context, binding.url)
+        except BrowserURLPolicyError:
+            raise
+        except _BrowserTransferError as exc:
+            return BrowserResult(exc.status, error_code=exc.code)
+        except Exception:
+            return BrowserResult("failed", error_code="browser_download_failed")
+        if expected_size is not None and expected_size != len(body):
+            return BrowserResult("failed", error_code="browser_download_size_mismatch")
+        if len(body) > self._MAX_TRANSFER_BYTES:
+            return BrowserResult("denied", error_code="browser_download_too_large")
+        try:
+            self._write_download(binding.destination, body, overwrite=binding.overwrite)
+            size, digest = self._verify_download(binding.destination, len(body))
+        except _BrowserTransferError as exc:
+            return BrowserResult(exc.status, error_code=exc.code)
+        return BrowserResult(
+            "succeeded",
+            {
+                "session_id": session.session_id,
+                "filename": binding.filename,
+                "destination": str(binding.destination),
+                "size_bytes": size,
+                "expected_size": expected_size,
+                "sha256": digest,
+                "origin": self._origin(final_url),
+                "overwrite": binding.overwrite,
+                "untrusted_file": True,
+            },
+            verified=True,
+        )
+
+    async def _screenshot(self, session: _PlaywrightSession) -> BrowserResult:
+        self._prune_screenshots()
+        try:
+            raw = await session.page.screenshot(type="png", full_page=False, animations="disabled", timeout=self._ACTION_TIMEOUT_MS)
+        except Exception:
+            return BrowserResult("failed", error_code="browser_screenshot_failed")
+        if not isinstance(raw, bytes) or not raw:
+            return BrowserResult("failed", error_code="browser_screenshot_empty")
+        screenshot_ref = f"browser-screenshot-{uuid4()}"
+        self._transient_screenshots[screenshot_ref] = (time.monotonic() + self._SCREENSHOT_TTL_SECONDS, raw)
+        return BrowserResult(
+            "succeeded",
+            {
+                "session_id": session.session_id,
+                "screenshot_ref": screenshot_ref,
+                "byte_count": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "expires_in_seconds": self._SCREENSHOT_TTL_SECONDS,
+                "persisted": False,
+                "raw_bytes_omitted": True,
+            },
+            verified=True,
+        )
+
+    def approval_preview(self, action: BrowserAction, binding: object | None) -> Mapping[str, object]:
+        if action.action == BrowserCapability.DOWNLOAD_FILE.value and isinstance(binding, _DownloadBinding):
+            return {
+                "origin": binding.origin,
+                "filename": binding.filename,
+                "expected_size": None,
+                "approved_destination": str(binding.destination),
+                "overwrite": binding.overwrite,
+            }
+        if action.action == BrowserCapability.UPLOAD_FILE.value and isinstance(binding, _ElementBinding):
+            path_value = action.parameters.get("path")
+            if isinstance(path_value, str):
+                decision = self._file_access_policy.evaluate(path_value)
+                if decision.allowed and decision.resolved_path is not None:
+                    try:
+                        size = decision.resolved_path.stat().st_size
+                    except OSError:
+                        size = None
+                    return {
+                        "filename": decision.resolved_path.name[:255],
+                        "size_bytes": size,
+                        "target_origin": binding.origin,
+                        "target_element_ref": binding.element_ref,
+                        "content_redacted": True,
+                    }
+        return {}
+
+    def _download_details(self, session: _PlaywrightSession, parameters: Mapping[str, object]) -> tuple[BrowserResult | None, _DownloadBinding | None]:
+        url = parameters.get("url")
+        filename = parameters.get("filename")
+        overwrite = parameters.get("overwrite", False)
+        if not isinstance(url, str):
+            return BrowserResult("denied", error_code="url_invalid"), None
+        if not isinstance(filename, str):
+            return BrowserResult("denied", error_code="browser_download_filename_required"), None
+        if not isinstance(overwrite, bool):
+            return BrowserResult("denied", error_code="browser_download_overwrite_invalid"), None
+        try:
+            self._url_policy.validate(url)
+        except BrowserURLPolicyError as exc:
+            return BrowserResult("denied", error_code=exc.code), None
+        safe_name = self._sanitize_filename(filename)
+        if safe_name is None:
+            return BrowserResult("denied", error_code="browser_download_filename_invalid"), None
+        root = self._approved_download_root()
+        if root is None:
+            return BrowserResult("denied", error_code="file_root_not_configured"), None
+        destination = root / safe_name
+        decision = self._file_access_policy.evaluate(str(destination))
+        if not decision.allowed or decision.resolved_path is None:
+            return BrowserResult("denied", error_code=decision.reason_code or "browser_download_destination_denied"), None
+        destination = decision.resolved_path
+        if destination.exists() and destination.is_dir():
+            return BrowserResult("denied", error_code="browser_download_destination_invalid"), None
+        if destination.exists() and not overwrite:
+            return BrowserResult("denied", error_code="browser_download_exists"), None
+        return None, _DownloadBinding(
+            session.session_id,
+            session.page_ref,
+            session.epoch,
+            self._origin(self._safe_page_url(session.page)),
+            self._origin(url),
+            url,
+            safe_name,
+            destination,
+            overwrite,
+        )
+
+    def _upload_details(self, parameters: Mapping[str, object]) -> tuple[BrowserResult | None, int | None]:
+        path_value = parameters.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            return BrowserResult("denied", error_code="browser_upload_path_required"), None
+        decision = self._file_access_policy.evaluate(path_value)
+        if not decision.allowed or decision.resolved_path is None:
+            return BrowserResult("denied", error_code=decision.reason_code or "browser_upload_denied"), None
+        try:
+            if not decision.resolved_path.is_file():
+                return BrowserResult("denied", error_code="browser_upload_file_required"), None
+            size = decision.resolved_path.stat().st_size
+        except OSError:
+            return BrowserResult("failed", error_code="browser_upload_file_unavailable"), None
+        if size > self._MAX_TRANSFER_BYTES:
+            return BrowserResult("denied", error_code="browser_upload_too_large"), None
+        return None, size
+
+    def _approved_download_root(self) -> Path | None:
+        if not self._file_access_policy.configured():
+            return None
+        candidate = self._download_root or self._file_access_policy.roots[0]
+        decision = self._file_access_policy.evaluate(str(candidate))
+        if not decision.allowed or decision.resolved_path is None or not decision.resolved_path.is_dir():
+            return None
+        return decision.resolved_path
+
+    async def _fetch_download(self, context: Any, url: str) -> tuple[bytes, str, int | None]:
+        request = getattr(context, "request", None)
+        if request is None or not hasattr(request, "get"):
+            raise _BrowserTransferError("browser_download_blocked")
+        current = url
+        for redirect_index in range(BrowserURLPolicy.MAX_REDIRECTS + 1):
+            self._url_policy.validate(current)
+            response = await request.get(current, timeout=self._NAVIGATION_TIMEOUT_MS, max_redirects=0)
+            try:
+                status = int(getattr(response, "status", 0))
+                headers = getattr(response, "headers", {}) or {}
+                if 300 <= status < 400:
+                    location = headers.get("location") or headers.get("Location")
+                    if not isinstance(location, str) or not location:
+                        raise _BrowserTransferError("browser_download_blocked")
+                    if redirect_index >= BrowserURLPolicy.MAX_REDIRECTS:
+                        raise _BrowserTransferError("browser_redirect_limit")
+                    current = urljoin(current, location)
+                    self._url_policy.validate(current)
+                    continue
+                final_url = str(getattr(response, "url", "") or current)
+                self._url_policy.validate(final_url)
+                if status < 200 or status >= 400:
+                    raise _BrowserTransferError("browser_download_failed")
+                expected_size = self._content_length(headers)
+                if expected_size is not None and expected_size > self._MAX_TRANSFER_BYTES:
+                    raise _BrowserTransferError("browser_download_too_large", status="denied")
+                body = await response.body()
+                if not isinstance(body, bytes):
+                    raise _BrowserTransferError("browser_download_failed")
+                if len(body) > self._MAX_TRANSFER_BYTES:
+                    raise _BrowserTransferError("browser_download_too_large", status="denied")
+                return body, final_url, expected_size
+            finally:
+                dispose = getattr(response, "dispose", None)
+                if dispose is not None:
+                    result = dispose()
+                    if inspect.isawaitable(result):
+                        await result
+        raise _BrowserTransferError("browser_redirect_limit")
+
+    @staticmethod
+    def _content_length(headers: Mapping[str, object]) -> int | None:
+        value = headers.get("content-length") or headers.get("Content-Length")
+        try:
+            parsed = int(str(value))
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
+    def _write_download(self, destination: Path, body: bytes, *, overwrite: bool) -> None:
+        fd, raw_temp = tempfile.mkstemp(prefix=".jarvis-browser-", suffix=".part", dir=str(destination.parent))
+        temp = Path(raw_temp)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(body)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if overwrite:
+                os.replace(temp, destination)
+            else:
+                os.link(temp, destination)
+                temp.unlink()
+        except FileExistsError as exc:
+            raise _BrowserTransferError("browser_download_exists", status="denied") from exc
+        except OSError as exc:
+            raise _BrowserTransferError("browser_download_write_failed") from exc
+        finally:
+            if temp.exists():
+                try:
+                    temp.unlink()
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _verify_download(destination: Path, expected_size: int) -> tuple[int, str]:
+        try:
+            if not destination.is_file():
+                raise _BrowserTransferError("browser_download_missing")
+            size = destination.stat().st_size
+            if size != expected_size:
+                raise _BrowserTransferError("browser_download_size_mismatch")
+            digest = hashlib.sha256()
+            with destination.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except _BrowserTransferError:
+            raise
+        except OSError as exc:
+            raise _BrowserTransferError("browser_download_verify_failed") from exc
+        return size, digest.hexdigest()
+
+    @staticmethod
+    def _sanitize_filename(value: str) -> str | None:
+        if not value or len(value) > 255 or "\x00" in value or value in {".", ".."}:
+            return None
+        if value[-1] in {".", " "} or any(ord(char) < 32 for char in value) or "/" in value or "\\" in value or ":" in value:
+            return None
+        if Path(value).name != value or Path(value).is_absolute():
+            return None
+        stem = value.split(".", 1)[0].casefold()
+        if stem in {"con", "prn", "aux", "nul"} or (len(stem) == 4 and stem[:3] in {"com", "lpt"} and stem[3] in "123456789"):
+            return None
+        return value
+
+    def _prune_screenshots(self) -> None:
+        now = time.monotonic()
+        for ref, (expires_at, _) in tuple(self._transient_screenshots.items()):
+            if expires_at <= now:
+                self._transient_screenshots.pop(ref, None)
 
     async def _observe_locator(self, locator: Any, role: str, tag: str) -> _ObservedElement | None:
         try:

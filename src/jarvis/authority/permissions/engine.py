@@ -109,6 +109,7 @@ class PolicyPermissionEngine:
             PermissionRule("browser.find_element", PermissionEffect.ALLOW, "safe_browser_read"),
             PermissionRule("browser.extract_text", PermissionEffect.ALLOW, "safe_browser_read"),
             PermissionRule("browser.tabs", PermissionEffect.ALLOW, "safe_browser_read"),
+            PermissionRule("browser.screenshot", PermissionEffect.ALLOW, "on_demand_browser_screenshot"),
             PermissionRule("home.read", PermissionEffect.ALLOW, "safe_home_read"),
             PermissionRule("home.read_state", PermissionEffect.ALLOW, "safe_home_read"),
             PermissionRule("home.read_sensor", PermissionEffect.ALLOW, "safe_home_read"),

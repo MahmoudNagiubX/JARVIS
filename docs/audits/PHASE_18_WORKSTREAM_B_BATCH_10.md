@@ -1,6 +1,6 @@
 # Phase 18 Workstream B - Batch 10 Audit
 
-**Status:** T0 PASS; T1 PASS; T2 PASS; T3 PASS; T4 PASS; T5-T6 not started
+**Status:** T0 PASS; T1 PASS; T2 PASS; T3 PASS; T4 PASS; T5 PASS; T6 not started
 **Verdict:** `PHASE18_BROWSER_V2_BATCH10_PARTIAL` pending implementation and
 live owner-session evidence.
 
@@ -137,7 +137,7 @@ or Brave process/window mutation was performed by T0.
 | T2 | ephemeral/dedicated persistent profile policy | PASS |
 | T3 | DOM/accessibility grounding and approval-bound actions | PASS |
 | T4 | layered extraction and provenance | PASS |
-| T5 | bounded upload/download/screenshot workflows | NOT STARTED |
+| T5 | bounded upload/download/screenshot workflows | PASS |
 | T6 | security red team and owner-authenticated foundation | NOT STARTED |
 
 ## 6. Open gaps at T0
@@ -281,10 +281,59 @@ Evidence:
 | post-T3 full regression baseline | `927 passed, 4 skipped, 45 subtests passed` |
 | `python -m compileall src tests scripts -q` | PASS |
 
-No T5 upload/download/screenshot work or T6 owner-authenticated acceptance has
-started.
+## 10. T5 bounded file transfer and screenshot workflows
 
-## 10. T0/T1/T2/T3/T4 checkpoint
+T5 is PASS for the deterministic implementation gate. The Local controller
+remains fail-closed for these live-only operations; the optional Playwright
+controller implements them behind the existing `BrowserActionService` and the
+existing `FileAccessPolicy`/`BrowserURLPolicy` boundaries.
+
+- Downloads require a configured approved file root; there is no implicit user
+  Downloads fallback or model-selected destination root. Filenames reject
+  traversal, separators, control characters, absolute paths, and unsafe drive
+  syntax. Redirects are requested with zero automatic redirects and each
+  destination is revalidated before the next request, including private/loopback
+  destinations. A bounded 20 MB transfer cap is enforced before persistence
+  when the response declares a size and again after reading the body.
+- Downloads write to a same-root temporary `.part` file, atomically publish only
+  after the response passes policy, honor overwrite only when explicitly true,
+  and independently verify final existence, size, and SHA-256. Downloaded files
+  are returned as untrusted artifacts and are never auto-opened or executed.
+- Uploads require an existing regular file already allowed by `FileAccessPolicy`,
+  reject sensitive paths and files outside the configured root, enforce the same
+  bounded transfer size, and use the T3 opaque, unique, visible, enabled file
+  input binding. Owner approval previews contain only filename, size, target
+  origin, and opaque target identity; no file contents or raw path is included.
+- Screenshots are on-demand only. PNG bytes remain in a controller-owned,
+  60-second in-memory transient map and the model receives only an opaque ref,
+  byte count, digest, expiry, and explicit non-persistence flags. Raw bytes are
+  absent from output, audit/event payloads, filesystem artifacts, and Memory;
+  controller close releases the transient map.
+- New model-facing tools are limited to `browser.download_file`,
+  `browser.upload_file`, and `browser.screenshot`. No profile, session mode,
+  selector, JavaScript, CDP, cookie, or header surface was added.
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| focused T5/Browser V2 suite | `34 passed, 4 subtests passed` |
+| Browser/file-access/network regression | `136 passed, 4 subtests passed` |
+| full repository regression after T5 | `937 passed, 3 skipped, 45 subtests passed` in `448.96s` |
+| approved download, final size, SHA-256, partial cleanup | PASS |
+| no-root, traversal, oversized, private redirect | PASS |
+| outside-root and sensitive upload denial | PASS |
+| upload approval target binding/drift refusal | PASS |
+| screenshot transient/non-persistence and raw-byte exclusion | PASS |
+| `python -m compileall src tests scripts -q` | PASS |
+| `git diff --check` | PASS |
+
+This gate uses generated non-sensitive fixtures and deterministic provider
+fakes. No authenticated owner account, credential, cookie/token export, normal
+Brave profile, or T6 red-team/owner-authenticated acceptance was used or
+claimed.
+
+## 11. T0/T1/T2/T3/T4/T5 checkpoint
 
 T0 audit-only checkpoint is intended to be committed as:
 
@@ -292,4 +341,5 @@ T0 audit-only checkpoint is intended to be committed as:
 
 T3-T6 evidence, commit chain, dependency audit, security counters, physical
 receipts, source-of-truth updates, limitations, and final remote verification
-will be appended here as each gate completes. No Batch 11 work is in scope.
+will be appended here as each gate completes. T6 remains ordered and no Batch
+11 work is in scope.

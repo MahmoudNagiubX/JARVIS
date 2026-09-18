@@ -345,6 +345,8 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
                 effective_config.browser_profile_root,
                 owner_persistent_opt_in=effective_config.browser_owner_persistent_opt_in,
             ),
+            file_access_policy=file_access_policy,
+            download_root=file_access_policy.roots[0] if file_access_policy.roots else None,
         )
     else:
         browser_controller = LocalBrowserController()

@@ -418,7 +418,7 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 class BrowserActionService:
     """Apply common authority, audit, and event behavior to browser actions."""
 
-    _read_actions = frozenset({item.value for item in (BrowserCapability.OPEN_URL, BrowserCapability.NAVIGATE, BrowserCapability.BACK, BrowserCapability.FORWARD, BrowserCapability.READ_PAGE, BrowserCapability.INSPECT_ACCESSIBILITY_TREE, BrowserCapability.FIND_ELEMENT, BrowserCapability.EXTRACT_TEXT, BrowserCapability.TABS)})
+    _read_actions = frozenset({item.value for item in (BrowserCapability.OPEN_URL, BrowserCapability.NAVIGATE, BrowserCapability.BACK, BrowserCapability.FORWARD, BrowserCapability.READ_PAGE, BrowserCapability.INSPECT_ACCESSIBILITY_TREE, BrowserCapability.FIND_ELEMENT, BrowserCapability.EXTRACT_TEXT, BrowserCapability.TABS, BrowserCapability.SCREENSHOT)})
 
     def __init__(self, controller: object, repository: RuntimeRepository, event_bus: InMemoryEventBus, permission: PolicyPermissionEngine, audit: DurableAuditService, approvals: DurableApprovalEngine | None = None) -> None:
         self.controller = controller
@@ -454,7 +454,13 @@ class BrowserActionService:
                     await self.audit.record(AuditRecord(f"audit-{uuid4()}", "browser.action_failed", datetime.now(UTC), identity.identity_id, device.device_id, correlation, target_error.status, target_error.error_code, {"action": action.action}))
                     return target_error
                 approval_id = f"approval-{uuid4()}"
-                await self.approvals.request(ApprovalRequest(approval_id, required_capability, identity.owner_id, device.device_id, "browser action requires approval", datetime.now(UTC), datetime.now(UTC) + timedelta(minutes=10), self._approval_preview(action)))
+                preview = self._approval_preview(action)
+                preview_builder = getattr(self.controller, "approval_preview", None)
+                if callable(preview_builder):
+                    extra = preview_builder(action, target_binding)
+                    if isinstance(extra, Mapping):
+                        preview.update(dict(extra))
+                await self.approvals.request(ApprovalRequest(approval_id, required_capability, identity.owner_id, device.device_id, "browser action requires approval", datetime.now(UTC), datetime.now(UTC) + timedelta(minutes=10), preview))
                 self._pending[approval_id] = (action, identity, device, session_id, correlation, session_mode, target_binding)
                 await self._emit("browser.action_requested", identity.owner_id, correlation, {"action": action.action, "approval_id": approval_id}, EventState.ACCEPTED)
                 return BrowserResult("approval_required", error_code=decision.reason_code, approval_id=approval_id)

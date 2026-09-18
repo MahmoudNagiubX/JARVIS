@@ -211,6 +211,9 @@ def register_browser_tools(registry: ToolRegistry, browser_actions: object) -> N
         ("click", "Click one opaque browser element reference after the browser approval gate.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "element_ref": {"type": "string", "maxLength": 100}}, "required": ["session_id", "element_ref"], "additionalProperties": False}, ("session_id", "element_ref")),
         ("type", "Type bounded text into one opaque browser element reference after the browser approval gate; content is never durable.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "element_ref": {"type": "string", "maxLength": 100}, "text": {"type": "string", "maxLength": 2000}}, "required": ["session_id", "element_ref", "text"], "additionalProperties": False}, ("session_id", "element_ref", "text")),
         ("select", "Select a bounded option from one opaque browser element reference after the browser approval gate; value is never durable.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "element_ref": {"type": "string", "maxLength": 100}, "value": {"type": "string", "maxLength": 200}}, "required": ["session_id", "element_ref", "value"], "additionalProperties": False}, ("session_id", "element_ref", "value")),
+        ("download_file", "Download one bounded untrusted file into the product-configured approved root after owner approval; never auto-opens or executes it.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "url": {"type": "string", "maxLength": 4096}, "filename": {"type": "string", "maxLength": 255}, "overwrite": {"type": "boolean"}}, "required": ["session_id", "url", "filename"], "additionalProperties": False}, ("session_id", "url", "filename")),
+        ("upload_file", "Upload one owner-approved non-sensitive file through an opaque browser file-input reference after owner approval; file contents are never returned.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}, "element_ref": {"type": "string", "maxLength": 100}, "path": {"type": "string", "maxLength": 4096}}, "required": ["session_id", "element_ref", "path"], "additionalProperties": False}, ("session_id", "element_ref", "path")),
+        ("screenshot", "Capture an on-demand transient browser screenshot; raw bytes are never returned, audited, persisted, or stored in Memory.", {"type": "object", "properties": {"session_id": {"type": "string", "maxLength": 100}}, "required": ["session_id"], "additionalProperties": False}, ("session_id",)),
     )
     for action, description, schema, required in schemas:
         registry.register(ToolSpec(
@@ -218,11 +221,11 @@ def register_browser_tools(registry: ToolRegistry, browser_actions: object) -> N
             f"browser.{action}",
             "1",
             description,
-            "read" if action in {"open_url", "navigate", "read_page", "extract_text", "find_element", "inspect_accessibility_tree", "tabs"} else "safe",
+            "read" if action in {"open_url", "navigate", "read_page", "extract_text", "find_element", "inspect_accessibility_tree", "tabs", "screenshot"} else "safe",
             "tool.request",
             frozenset({f"browser.{action}"}),
             30.0,
-            action in {"open_url", "read_page", "extract_text", "find_element", "inspect_accessibility_tree", "tabs"},
+            action in {"open_url", "read_page", "extract_text", "find_element", "inspect_accessibility_tree", "tabs", "screenshot"},
             lambda arguments, context, _action=action: execute(_action, arguments, context),
             parameters_schema=schema,
             retention=ToolResultRetention.EPHEMERAL,

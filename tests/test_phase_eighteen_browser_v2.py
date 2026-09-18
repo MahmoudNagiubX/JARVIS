@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +13,7 @@ from jarvis.authority.identity.service import EnrollmentGrant
 from jarvis.browser.profile import BrowserProfilePolicy, BrowserProfilePolicyError
 from jarvis.browser.service import BrowserActionService, LocalBrowserController, PlaywrightBrowserController
 from jarvis.browser.policy import BrowserURLPolicy
+from jarvis.computer.file_access import FileAccessPolicy
 from jarvis.config import JarvisConfig
 from jarvis.contracts import BrowserAction, BrowserSessionMode, DeviceIdentity, ToolContext
 
@@ -519,6 +522,243 @@ class PhaseEighteenBrowserV2FoundationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("token_value", str(output).casefold())
         self.assertEqual(len(str(output["content_digest"])), 64)
 
+    async def test_t5_approved_download_is_bounded_verified_and_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            payload = b"generated non-sensitive browser fixture\n"
+            controller, _, _, session_id, device = await self._transfer_controller(
+                root,
+                [_FakeResponse(200, "https://example.test/file.bin", {"content-length": str(len(payload))}, payload)],
+            )
+            service = BrowserActionService(
+                controller, self.runtime.repository, self.runtime.event_bus,
+                self.runtime.permission, self.runtime.audit, self.runtime.approval,
+            )
+            action = BrowserAction("download_file", {"session_id": session_id, "url": "https://example.test/file.bin", "filename": "fixture.bin"})
+            pending = await service.execute(action, self.identity, device, session_id="browser-t5", correlation_id="browser-t5-download")
+            self.assertEqual(pending.status, "approval_required")
+            row = self.runtime.repository.approval(pending.approval_id or "")
+            assert row is not None
+            preview = json.loads(str(row["preview_json"]))
+            self.assertEqual(preview["origin"], "https://example.test:443")
+            self.assertEqual(preview["filename"], "fixture.bin")
+            self.assertTrue(preview["approved_destination"].endswith("fixture.bin"))
+            completed = await service.decide(pending.approval_id or "", True, self.identity.identity_id)
+            self.assertEqual(completed.status, "succeeded", completed)
+            self.assertTrue(completed.verified)
+            self.assertEqual((root / "fixture.bin").read_bytes(), payload)
+            self.assertEqual(completed.output["sha256"], hashlib.sha256(payload).hexdigest())
+            self.assertEqual(completed.output["size_bytes"], len(payload))
+            self.assertEqual(list(root.glob("*.part")), [])
+            self.assertEqual(list(root.glob(".jarvis-browser-*.part")), [])
+
+    async def test_t5_download_requires_configured_root_and_rejects_traversal(self) -> None:
+        controller, _, _, session_id, device = await self._transfer_controller(None, [])
+        service = BrowserActionService(
+            controller, self.runtime.repository, self.runtime.event_bus,
+            self.runtime.permission, self.runtime.audit, self.runtime.approval,
+        )
+        no_root = await service.execute(
+            BrowserAction("download_file", {"session_id": session_id, "url": "https://example.test/file.bin", "filename": "file.bin"}),
+            self.identity, device, session_id="browser-t5", correlation_id="browser-t5-no-root",
+        )
+        self.assertEqual(no_root.status, "denied")
+        self.assertEqual(no_root.error_code, "file_root_not_configured")
+        self.assertIsNone(no_root.approval_id)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            controller, _, _, session_id, device = await self._transfer_controller(root, [])
+            service = BrowserActionService(
+                controller, self.runtime.repository, self.runtime.event_bus,
+                self.runtime.permission, self.runtime.audit, self.runtime.approval,
+            )
+            traversal = await service.execute(
+                BrowserAction("download_file", {"session_id": session_id, "url": "https://example.test/file.bin", "filename": "..\\escape.bin"}),
+                self.identity, device, session_id="browser-t5", correlation_id="browser-t5-traversal",
+            )
+            self.assertEqual(traversal.status, "denied")
+            self.assertEqual(traversal.error_code, "browser_download_filename_invalid")
+            self.assertEqual(list(root.iterdir()), [])
+
+    async def test_t5_download_oversize_and_private_redirect_leave_no_partial_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            controller, _, _, session_id, device = await self._transfer_controller(
+                root,
+                [_FakeResponse(200, "https://example.test/large.bin", {"content-length": str(20_000_001)}, b"x")],
+            )
+            service = BrowserActionService(
+                controller, self.runtime.repository, self.runtime.event_bus,
+                self.runtime.permission, self.runtime.audit, self.runtime.approval,
+            )
+            pending = await service.execute(
+                BrowserAction("download_file", {"session_id": session_id, "url": "https://example.test/large.bin", "filename": "large.bin"}),
+                self.identity, device, session_id="browser-t5", correlation_id="browser-t5-large",
+            )
+            self.assertEqual(pending.status, "approval_required")
+            oversized = await service.decide(pending.approval_id or "", True, self.identity.identity_id)
+            self.assertEqual(oversized.status, "denied")
+            self.assertEqual(oversized.error_code, "browser_download_too_large")
+            self.assertFalse((root / "large.bin").exists())
+            self.assertEqual(list(root.glob(".jarvis-browser-*.part")), [])
+
+            controller, _, _, session_id, device = await self._transfer_controller(
+                root,
+                [_FakeResponse(302, "https://example.test/redirect", {"location": "http://127.0.0.1/private"}, b"")],
+            )
+            service = BrowserActionService(
+                controller, self.runtime.repository, self.runtime.event_bus,
+                self.runtime.permission, self.runtime.audit, self.runtime.approval,
+            )
+            pending = await service.execute(
+                BrowserAction("download_file", {"session_id": session_id, "url": "https://example.test/redirect", "filename": "private.bin"}),
+                self.identity, device, session_id="browser-t5", correlation_id="browser-t5-private-redirect",
+            )
+            blocked = await service.decide(pending.approval_id or "", True, self.identity.identity_id)
+            self.assertEqual(blocked.status, "denied")
+            self.assertEqual(blocked.error_code, "url_destination_not_allowed")
+            self.assertFalse((root / "private.bin").exists())
+
+    async def test_t5_upload_uses_file_policy_and_approval_target_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "generated.txt"
+            source.write_text("generated fixture", encoding="utf-8")
+            controller, _, page, session_id, device = await self._transfer_controller(
+                root,
+                [],
+                targets=[{"tag": "input", "name": "Choose file", "type": "file"}],
+            )
+            observed = await controller.execute(
+                BrowserAction("inspect_accessibility_tree", {"session_id": session_id}),
+                ToolContext(self.identity, device, "browser", "browser-t5"),
+            )
+            ref = observed.output["accessibility_tree"]["elements"][0]["element_ref"]
+            service = BrowserActionService(
+                controller, self.runtime.repository, self.runtime.event_bus,
+                self.runtime.permission, self.runtime.audit, self.runtime.approval,
+            )
+            pending = await service.execute(
+                BrowserAction("upload_file", {"session_id": session_id, "element_ref": ref, "path": str(source)}),
+                self.identity, device, session_id="browser-t5", correlation_id="browser-t5-upload",
+            )
+            self.assertEqual(pending.status, "approval_required")
+            row = self.runtime.repository.approval(pending.approval_id or "")
+            assert row is not None
+            preview = json.loads(str(row["preview_json"]))
+            self.assertEqual(preview["filename"], source.name)
+            self.assertEqual(preview["size_bytes"], source.stat().st_size)
+            self.assertNotIn("generated fixture", str(preview))
+            completed = await service.decide(pending.approval_id or "", True, self.identity.identity_id)
+            self.assertEqual(completed.status, "succeeded", completed)
+            self.assertTrue(completed.verified)
+            self.assertEqual(page.targets[0]["uploaded_name"], source.name)
+
+            outside = Path(temp).parent / "outside-upload.txt"
+            outside.write_text("outside", encoding="utf-8")
+            try:
+                denied = await service.execute(
+                    BrowserAction("upload_file", {"session_id": session_id, "element_ref": ref, "path": str(outside)}),
+                    self.identity, device, session_id="browser-t5", correlation_id="browser-t5-upload-outside",
+                )
+                self.assertEqual(denied.status, "denied")
+                self.assertEqual(denied.error_code, "file_path_outside_allowed_root")
+            finally:
+                outside.unlink(missing_ok=True)
+
+            sensitive = root / ".env"
+            sensitive.write_text("SECRET=never-upload", encoding="utf-8")
+            sensitive_result = await service.execute(
+                BrowserAction("upload_file", {"session_id": session_id, "element_ref": ref, "path": str(sensitive)}),
+                self.identity, device, session_id="browser-t5", correlation_id="browser-t5-upload-sensitive",
+            )
+            self.assertEqual(sensitive_result.status, "denied")
+            self.assertEqual(sensitive_result.error_code, "file_sensitive_path_denied")
+
+    async def test_t5_upload_approval_fails_when_bound_target_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "generated.txt"
+            source.write_text("generated fixture", encoding="utf-8")
+            controller, _, page, session_id, device = await self._transfer_controller(
+                root,
+                [],
+                targets=[{"tag": "input", "name": "Choose file", "type": "file"}],
+            )
+            observed = await controller.execute(
+                BrowserAction("inspect_accessibility_tree", {"session_id": session_id}),
+                ToolContext(self.identity, device, "browser", "browser-t5"),
+            )
+            ref = observed.output["accessibility_tree"]["elements"][0]["element_ref"]
+            service = BrowserActionService(
+                controller, self.runtime.repository, self.runtime.event_bus,
+                self.runtime.permission, self.runtime.audit, self.runtime.approval,
+            )
+            pending = await service.execute(
+                BrowserAction("upload_file", {"session_id": session_id, "element_ref": ref, "path": str(source)}),
+                self.identity, device, session_id="browser-t5", correlation_id="browser-t5-upload-drift",
+            )
+            self.assertEqual(pending.status, "approval_required")
+            page.targets[0]["name"] = "Different input"
+            changed = await service.decide(pending.approval_id or "", True, self.identity.identity_id)
+            self.assertEqual(changed.status, "failed")
+            self.assertEqual(changed.error_code, "browser_approval_target_changed")
+            self.assertNotIn("uploaded_name", page.targets[0])
+
+    async def test_t5_screenshot_is_transient_and_raw_bytes_are_not_returned_or_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            controller, _, _, session_id, device = await self._transfer_controller(Path(temp), [])
+            service = BrowserActionService(
+                controller, self.runtime.repository, self.runtime.event_bus,
+                self.runtime.permission, self.runtime.audit, self.runtime.approval,
+            )
+            result = await service.execute(
+                BrowserAction("screenshot", {"session_id": session_id}),
+                self.identity, device, session_id="browser-t5", correlation_id="browser-t5-screenshot",
+            )
+            self.assertEqual(result.status, "succeeded", result)
+            self.assertTrue(result.verified)
+            self.assertTrue(result.output["persisted"] is False)
+            self.assertTrue(result.output["raw_bytes_omitted"] is True)
+            self.assertNotIn(b"PNG", result.output.values())
+            self.assertEqual(len(controller._transient_screenshots), 1)
+            self.assertEqual(list(Path(temp).iterdir()), [])
+            self.assertNotIn("PNG-generated-browser-fixture", str(self.runtime.repository.audit("browser-t5-screenshot")))
+            await controller.close()
+            self.assertEqual(controller._transient_screenshots, {})
+
+    async def _transfer_controller(
+        self,
+        root: Path | None,
+        responses: list["_FakeResponse"],
+        *,
+        targets: list[dict[str, object]] | None = None,
+    ) -> tuple[PlaywrightBrowserController, _InteractiveFakePlaywrightModule, _InteractiveFakePage, str, DeviceIdentity]:
+        fake = _InteractiveFakePlaywrightModule(targets or [{"tag": "button", "name": "Continue", "text": "Continue"}])
+        fake.chromium.browser.context.request = _FakeRequest(responses)
+        file_policy = FileAccessPolicy.from_config_roots((str(root),)) if root is not None else FileAccessPolicy()
+        device = DeviceIdentity(
+            self.device.device_id,
+            self.device.owner_id,
+            self.device.device_kind,
+            self.device.platform,
+            self.device.capabilities | frozenset({"browser.download_file", "browser.upload_file", "browser.screenshot"}),
+            self.device.scopes,
+        )
+        with patch("jarvis.browser.playwright_adapter.validate_brave_executable_path", return_value=Path("C:/Brave/brave.exe")):
+            controller = PlaywrightBrowserController(
+                executable_path="C:/Brave/brave.exe",
+                playwright_module_loader=lambda _: fake,
+                url_policy=BrowserURLPolicy(resolver=lambda _host, _port: ("93.184.216.34",)),
+                file_access_policy=file_policy,
+            )
+            opened = await controller.execute(
+                BrowserAction("open_url", {"url": "https://example.test"}),
+                ToolContext(self.identity, device, "browser", "browser-v2-t5"),
+            )
+        return controller, fake, fake.chromium.browser.context.page, str(opened.output["session_id"]), device
+
     async def _interactive_controller(self, targets: list[dict[str, object]]) -> tuple[PlaywrightBrowserController, _InteractiveFakePlaywrightModule, _InteractiveFakePage, str, DeviceIdentity]:
         fake = _InteractiveFakePlaywrightModule(targets)
         device = DeviceIdentity(
@@ -727,6 +967,7 @@ class _InteractiveFakeBrowser:
 class _InteractiveFakeContext:
     def __init__(self, targets: list[dict[str, object]]) -> None:
         self.page = _InteractiveFakePage(targets)
+        self.request = _FakeRequest([])
 
     async def new_page(self) -> "_InteractiveFakePage":
         return self.page
@@ -747,6 +988,9 @@ class _InteractiveFakePage:
 
     async def title(self) -> str:
         return "Test page"
+
+    async def screenshot(self, **_: object) -> bytes:
+        return b"PNG-generated-browser-fixture"
 
     def locator(self, selector: str) -> "_InteractiveFakeLocator":
         return _InteractiveFakeLocator(self, self._select(selector))
@@ -825,11 +1069,46 @@ class _InteractiveFakeLocator:
         self._target()["value"] = value
         return [value]
 
+    async def set_input_files(self, path: str, **_: object) -> None:
+        target = self._target()
+        target["uploaded_name"] = Path(path).name
+        target["value"] = f"C:\\fakepath\\{Path(path).name}"
+
     async def click(self, **_: object) -> None:
         self.page.click_count += 1
         href = self._target().get("href")
         if href:
             self.page.url = str(href)
+
+
+class _FakeRequest:
+    def __init__(self, responses: list["_FakeResponse"]) -> None:
+        self.responses = list(responses)
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def get(self, url: str, **kwargs: object) -> "_FakeResponse":
+        self.calls.append((url, kwargs))
+        if not self.responses:
+            raise LookupError("no fake response")
+        response = self.responses.pop(0)
+        if not response.url:
+            response.url = url
+        return response
+
+
+class _FakeResponse:
+    def __init__(self, status: int, url: str, headers: dict[str, str], body: bytes) -> None:
+        self.status = status
+        self.url = url
+        self.headers = headers
+        self._body = body
+        self.disposed = False
+
+    async def body(self) -> bytes:
+        return self._body
+
+    async def dispose(self) -> None:
+        self.disposed = True
 
 
 class _DynamicFakePage:

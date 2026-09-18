@@ -193,8 +193,15 @@ DOM/accessibility grounding, opaque element references, actionability checks,
 approval-bound click/type/select, target-drift refusal, and independent
 verification behind the same service. The implementation gate is PASS with
 deterministic evidence; the default runtime remains Local and physical owner /
-authenticated acceptance, extraction, screenshots, and file transfer remain
-open under later Batch 10 gates.
+authenticated acceptance remains open under later Batch 10 gates. **Batch 10
+T5 (2026-09-18)** adds bounded Playwright-context file transfer and transient
+screenshot workflows behind the same service: downloads require an existing
+`FileAccessPolicy` root and policy-checked redirects with atomic temp-file
+publication and final size/SHA-256 verification; uploads require a permitted
+non-sensitive file and opaque file-input approval binding; screenshots return
+only an opaque transient reference and never persist raw bytes. T5 is PASS on
+deterministic generated-fixture evidence; physical owner/authenticated
+acceptance and the T6 red-team matrix remain open.
 **Batch 09 boundary (2026-09-15):** the existing `LocalBrowserController` is
 not a live authenticated Brave/session adapter. `RW-BRAVE-001` therefore stops
 after the bounded host-only phase and classifies navigation/authenticated web
@@ -202,8 +209,15 @@ control as `CROSS_WORKSTREAM_BLOCKER`; no Playwright dependency or second
 browser authority was added in Workstream A.
 
 ### GAP-0202 — Browser upload/download workflows are missing
-**Status:** `OPEN`  
-Add bounded file selection/download destinations, explicit capability/risk rules, progress/result verification, and sensitive-path protection.
+**Status:** `PARTIAL`
+**Batch 10 T5 (2026-09-18):** bounded optional-Playwright workflows now use
+the existing `FileAccessPolicy` for explicit approved-root downloads and
+sensitive/outside-root upload denial, the existing `BrowserURLPolicy` for
+zero-automatic-redirect URL checks, atomic partial-file cleanup, final size and
+SHA-256 verification, and T3 opaque target bindings for uploads. Screenshots
+are on-demand and transient in memory only. Deterministic T5 tests pass;
+physical/live owner-authenticated acceptance and the broader T6 abuse matrix
+remain open.
 
 ### GAP-0203 — Production web extraction stack needs implementation
 **Status:** `PARTIAL`
