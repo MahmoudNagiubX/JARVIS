@@ -129,3 +129,37 @@ deterministic/frontend/clean-tree evidence and every required live or physical
 gate is either proven or explicitly allowed by the final contract. Until the
 owner-authenticated web and remaining physical gates are proven, the truthful
 state is `JARVIS_DESKTOP_RELEASE_CANDIDATE_PARTIAL`.
+
+## 8. W1 Browser V2 continuation checkpoint
+
+The inherited implementation review found one real product-registration defect:
+the desktop product capability profile predated Browser V2 action capabilities.
+The canonical lifecycle profile now includes `browser.click`, `browser.type`,
+`browser.select`, `browser.download_file`, `browser.upload_file`, and
+`browser.screenshot`. Existing product-device reconciliation was performed
+locally through `IdentityService.reconcile_product_device`; owner-specific
+identifiers and the credential were not printed or committed.
+
+`FINAL-001` is committed as `4f7b67974533fa1dcbe68ac3706bd2154e9e2c13` and
+is pushed to `origin/feature/jarvis-final-completion`.
+
+| W1 check | Result |
+|---|---|
+| Browser V2 focused/regression baseline before fix | `439 passed, 3 skipped, 17 subtests` |
+| `FINAL-001` regression | red before fix; green after fix |
+| Productization/security regression after fix | `46 passed, 11 subtests` |
+| Browser V2 file suite after fix | `40 passed, 4 subtests` |
+| Brave path | `C:\Users\mahmo\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe` |
+| Brave version | `153.1.95.102` |
+| Brave publisher/signature | `Brave Software, Inc.` / Authenticode `Valid` |
+| Brave SHA-256 | `A2DE73C6657B98E12A2811BA43D12F35ABBCEC46C253D7A7D9F12E9AAA6438E5` |
+| Owner-session preflight after reconciliation | `BROWSER_V2_PARTIAL`; Playwright runtime unavailable in active interpreter |
+| Playwright package install attempts | bounded network retries stalled on the 38 MB wheel and were cancelled; no browser binary download was attempted |
+| Manual ChatGPT login / nonce / persistence | not reached; no live browser process or normal Brave profile touch was claimed |
+
+The deterministic owner runner continued to report zero wrong targets,
+duplicate actions, unapproved actions, credential interactions, secret/raw
+screenshot persistence, prompt-injection escalations, private-network allows,
+and normal-profile touches. W1 therefore remains `PARTIAL` at the optional
+Playwright runtime gate; W2 must not begin until the live owner-session gate is
+green or the owner resumes after this environment dependency is available.
