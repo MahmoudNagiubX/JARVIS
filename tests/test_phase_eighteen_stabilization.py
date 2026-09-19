@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 import unittest.mock
@@ -89,6 +90,43 @@ class PhaseEighteenStabilizationTests(unittest.IsolatedAsyncioTestCase):
         parsed = json.loads(message)
         self.assertFalse(parsed["verified"])
         self.assertEqual(parsed["echo"], "hello")
+
+    async def test_durable_approval_claim_prevents_concurrent_handler_replay(self) -> None:
+        calls: list[str] = []
+
+        async def _durable_handler(arguments: dict, _context: ToolContext) -> ToolResult:
+            calls.append(str(arguments["payload"]))
+            await asyncio.sleep(0)
+            return ToolResult(ToolResultStatus.SUCCEEDED, {"payload": arguments["payload"]}, verified=True)
+
+        self.runtime.tools.register(
+            ToolSpec(
+                "tool-test-durable-once-v1", "test.durable.once", "1", "Test-only durable approval fixture.",
+                "safe", "tool.request", frozenset(), 5.0, False, _durable_handler,
+                parameters_schema={
+                    "type": "object",
+                    "properties": {"payload": {"type": "string", "maxLength": 200}},
+                    "required": ["payload"],
+                    "additionalProperties": False,
+                },
+            )
+        )
+        session = self.runtime.repository.create_session(self.identity.owner_id, self.device.device_id)
+        context = ToolContext(self.identity, self.device, session.id, "correlation-durable-once")
+        requested = await self.runtime.tool_service.execute("test.durable.once", {"payload": "one-shot"}, context)
+        self.assertEqual(requested.status.value, "approval_required")
+        assert requested.approval_id is not None
+
+        first, second = await asyncio.gather(
+            self.runtime.tool_service.decide_and_resume(requested.approval_id, True, self.identity.identity_id, context),
+            self.runtime.tool_service.decide_and_resume(requested.approval_id, True, self.identity.identity_id, context),
+        )
+
+        self.assertEqual(sum(result.status.value == "completed" for result in (first, second)), 1)
+        replay = second if first.status.value == "completed" else first
+        self.assertEqual(replay.status.value, "failed")
+        self.assertEqual(replay.error_code, "approval_already_decided")
+        self.assertEqual(calls, ["one-shot"])
 
     def test_bounded_tool_message_error_handling_and_backward_compatibility_are_preserved(self) -> None:
         # No verified argument (existing call shape): behavior must be byte-identical to before this fix.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import threading
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -150,8 +151,23 @@ class PhaseFourIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending.status, "approval_required")
         sent = await self.runtime.communications.decide_send(self.identity.owner_id, pending.approval_id or "", True, self.identity.identity_id)
         self.assertEqual(sent.status, "sent")
+
+        concurrent = await self.runtime.communications.send(self.identity.owner_id, "local", "owner", "Send once", self.identity, self.device)
+        first, second = await asyncio.gather(
+            self.runtime.communications.decide_send(
+                self.identity.owner_id, concurrent.approval_id or "", True, self.identity.identity_id,
+                identity=self.identity, device=self.device,
+            ),
+            self.runtime.communications.decide_send(
+                self.identity.owner_id, concurrent.approval_id or "", True, self.identity.identity_id,
+                identity=self.identity, device=self.device,
+            ),
+        )
+        self.assertEqual(sum(item.status == "sent" for item in (first, second)), 1)
+        replay = second if first.status == "sent" else first
+        self.assertEqual(replay.error_code, "approval_already_decided")
         messages = await self.runtime.communications.list_messages(self.identity.owner_id)
-        self.assertEqual(len(messages), 1)
+        self.assertEqual(len(messages), 2)
 
         first = await self.runtime.notifications.create(self.identity.owner_id, "Build", "Build finished", dedup_key="build-1")
         duplicate = await self.runtime.notifications.create(self.identity.owner_id, "Build", "Build finished", dedup_key="build-1")

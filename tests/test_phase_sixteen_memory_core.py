@@ -60,6 +60,38 @@ class PhaseSixteenMemoryCoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual(decision.normalized_content, "Project Phoenix uses PostgreSQL.")
 
+    def test_memory_policy_scans_structured_metadata_tags_and_source_reference(self) -> None:
+        policy = MemoryPolicy()
+
+        structured_secret = policy.evaluate(
+            MemoryCandidate(
+                "owner-1", "The project uses a provider.", "project",
+                structured_data={"provider": "groq", "api_key": "not-for-storage"},
+            )
+        )
+        source_secret = policy.evaluate(
+            MemoryCandidate(
+                "owner-1", "The project uses a provider.", "project",
+                source_reference="research://run-1?password=not-for-storage",
+            )
+        )
+        tag_secret = policy.evaluate(
+            MemoryCandidate(
+                "owner-1", "The project uses a provider.", "project",
+                tags=("api_key",),
+            )
+        )
+
+        self.assertFalse(structured_secret.allowed)
+        self.assertFalse(source_secret.allowed)
+        self.assertFalse(tag_secret.allowed)
+        self.assertTrue(policy.evaluate(MemoryCandidate(
+            "owner-1", "The project uses a provider.", "project",
+            structured_data={"provider": "groq", "model": "reasoning"},
+            source_reference="research-run-1",
+            tags=("project",),
+        )).allowed)
+
     def test_deterministic_memory_extractor(self) -> None:
         extractor = DeterministicMemoryExtractor()
 

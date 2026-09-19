@@ -34,6 +34,7 @@ from .applications import (
     ApplicationLookup,
     InstalledApplication,
     InstalledApplicationRegistry,
+    resolve_standard_application_target,
 )
 from .file_access import FileAccessPolicy
 from .native_input import NativeInputResult, WindowsNativeInputAdapter
@@ -285,12 +286,12 @@ class WindowsNativeComputerController:
         executable = cls.SAFE_APPLICATIONS.get(name)
         if executable is None:
             return ComputerResult("denied", error_code="application_not_allowlisted")
-        target = shutil.which(executable)
+        target = resolve_standard_application_target(name)
         if target is None:
             return ComputerResult("failed", error_code="application_not_found")
         try:
             subprocess.Popen(
-                [target, *cls.SAFE_APPLICATION_ARGUMENTS.get(name, ())],
+                [str(target), *cls.SAFE_APPLICATION_ARGUMENTS.get(name, ())],
                 shell=False,
                 close_fds=True,
             )
@@ -411,7 +412,16 @@ class WindowsNativeComputerController:
         if not path.exists() or (kind == "file" and not path.is_file()) or (kind == "folder" and not path.is_dir()):
             return ComputerResult("failed", {"path": str(path)}, "path_not_found")
         os.startfile(str(path))
-        return ComputerResult("succeeded", {"path": str(path), "kind": kind}, verified=True)
+        return ComputerResult(
+            "succeeded",
+            {
+                "path": str(path),
+                "kind": kind,
+                "dispatch_only": True,
+                "verification": "os_startfile_dispatch_not_independently_verified",
+            },
+            verified=False,
+        )
 
     def _file_operation(self, parameters: Mapping[str, Any]) -> ComputerResult:
         operation = parameters.get("operation")
@@ -1432,6 +1442,10 @@ class ComputerActionService:
         identity: Identity | None = None,
         device: DeviceIdentity | None = None,
     ) -> ComputerResult:
+        # Validate the caller against the pending record before consuming it;
+        # an unauthorized decision must not deny service to the owner.  The
+        # synchronous get/validate/pop section is not awaitable, so it also
+        # reserves the action against concurrent decisions.
         pending = self._pending.get(approval_id)
         if pending is None or self.approvals is None:
             # Missing/stale in-memory pending approval (restart, or already
@@ -1443,8 +1457,11 @@ class ComputerActionService:
             raise PermissionError("approval_owner_mismatch")
         if device is not None and device.device_id != pending_device.device_id:
             raise PermissionError("approval_device_mismatch")
-        decision = await self.approvals.decide(approval_id, approved, decided_by)
-        self._pending.pop(approval_id, None)
+        if self._pending.pop(approval_id, None) is None:
+            return ComputerResult("failed", error_code="approval_already_decided", verified=False, approval_id=approval_id)
+        decision, claimed = await self.approvals.decide_with_claim(approval_id, approved, decided_by)
+        if not claimed and decision.status.value == "approved":
+            return ComputerResult("failed", error_code="approval_already_decided", verified=False, approval_id=approval_id)
         if decision.status.value == "expired":
             return ComputerResult("denied", error_code="approval_expired", approval_id=approval_id)
         if decision.status.value != "approved":

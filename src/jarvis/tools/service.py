@@ -187,7 +187,10 @@ class ToolExecutionService:
             raise PermissionError("approval_owner_mismatch")
         if context.device is not None and approval_row.get("device_id") not in {None, context.device.device_id}:
             raise PermissionError("approval_device_mismatch")
-        delegated = self._delegated_approvals.get(approval_id)
+        # Claim the in-memory delegated record before the first await.  This
+        # closes the concurrent-decide window; only the caller that owns the
+        # record may resume the delegated action.
+        delegated = self._delegated_approvals.pop(approval_id, None)
         if delegated is not None:
             try:
                 if self._delegated_resumer is None:
@@ -196,9 +199,7 @@ class ToolExecutionService:
                 return await self._finish_delegated(delegated, approval_id, result, context)
             except KeyError:
                 return self._delegated_failure(delegated, "ephemeral_arguments_unavailable", approval_id=approval_id)
-            finally:
-                self._delegated_approvals.pop(approval_id, None)
-        decision = await self.approvals.decide(approval_id, approved, decided_by)
+        decision, claimed = await self.approvals.decide_with_claim(approval_id, approved, decided_by)
         row = self.repository.tool_call_by_approval(approval_id)
         if row is None:
             raise KeyError(approval_id)
@@ -217,6 +218,23 @@ class ToolExecutionService:
         spec = self.registry.get(name)
         if spec is None:
             raise KeyError(name)
+        if not claimed:
+            # Durable argument retention used to make an already-approved
+            # replay execute the handler a second time.  Ephemeral tools keep
+            # their established typed failure, but neither branch may act.
+            error_code = (
+                "ephemeral_arguments_unavailable"
+                if spec.argument_retention is ToolResultRetention.EPHEMERAL
+                else "approval_already_decided"
+            )
+            return ToolCallResult(
+                tool_call_id,
+                name,
+                ToolExecutionStatus.FAILED,
+                error_code=error_code,
+                argument_digest=str(row["argument_digest"]),
+                retention=spec.retention,
+            )
         pending_arguments = self._pending_arguments.pop(approval_id, None)
         if spec.argument_retention is ToolResultRetention.EPHEMERAL:
             if (

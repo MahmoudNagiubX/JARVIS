@@ -49,20 +49,21 @@ class CapabilityRouter:
 
     def decide(self, request: LLMRequest, route: ModelRoute) -> CapabilityRouteDecision:
         text = " ".join(message.content for message in request.messages[-3:]).casefold()
+        context_chars = sum(len(message.content) for message in request.messages)
         has_media = any(message.media for message in request.messages)
         if has_media or route is ModelRoute.VISION or self._contains_marker(text, self._VISION_MARKERS):
             # Media must not be sent to a text-only fallback. Text-only visual
             # prompts may still use the local model if Gemini is unavailable.
             fallback = ("local",) if not has_media else ()
             return CapabilityRouteDecision(("gemini", *fallback), "multimodal_or_visual_capability")
+        if context_chars > 16_000 or len(request.messages) > 10:
+            return CapabilityRouteDecision(("gemini", "groq", "local"), "large_context")
         if route is ModelRoute.TOOL_ORCHESTRATION and self._contains_marker(text, self._SIMPLE_MARKERS) and not self._contains_marker(text, self._COMPLEX_MARKERS):
             return CapabilityRouteDecision(("local", "groq", "gemini"), "simple_command_capability")
         if route in {ModelRoute.GENERAL_REASONING, ModelRoute.TOOL_ORCHESTRATION, ModelRoute.CODING_WORKER}:
             return CapabilityRouteDecision(("groq", "gemini", "local"), "reasoning_or_tool_capability")
         if request.tools or self._contains_marker(text, self._COMPLEX_MARKERS):
             return CapabilityRouteDecision(("groq", "gemini", "local"), "complex_intent_or_declared_tools")
-        if len(text) > 16_000 or len(request.messages) > 10:
-            return CapabilityRouteDecision(("gemini", "groq", "local"), "large_context")
         return CapabilityRouteDecision(("local", "groq", "gemini"), "fast_local_capability")
 
     @staticmethod

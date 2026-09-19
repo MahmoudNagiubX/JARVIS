@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -33,6 +34,8 @@ class DurableWorldStateService:
         self.event_bus = event_bus
 
     async def observe(self, observation: Observation, owner_id: str | None = None) -> None:
+        if owner_id is not None and observation.owner_id is not None and owner_id != observation.owner_id:
+            raise ValueError("world observation owner binding mismatch")
         owner = owner_id or observation.owner_id
         if not owner:
             raise ValueError("world observation requires owner_id")
@@ -40,17 +43,18 @@ class DurableWorldStateService:
             raise ValueError("world observation subject cannot be empty")
         if not 0.0 <= observation.confidence <= 1.0:
             raise ValueError("observation confidence must be between 0 and 1")
-        self.repository.insert_world_observation(observation, owner)
-        authority = observation.authority_level or self.SOURCE_AUTHORITY.get(observation.source, 0)
-        for key, value in self._fact_values(observation):
+        bound_observation = observation if observation.owner_id == owner else replace(observation, owner_id=owner)
+        self.repository.insert_world_observation(bound_observation, owner)
+        authority = bound_observation.authority_level or self.SOURCE_AUTHORITY.get(bound_observation.source, 0)
+        for key, value in self._fact_values(bound_observation):
             await self._fuse(
                 WorldStateFact(
                     fact_id=f"fact-{uuid4()}", owner_id=owner, key=key, value=value,
-                    source=observation.source, source_reference=observation.source_reference,
-                    observed_at=observation.observed_at, freshness=observation.freshness_seconds,
-                    expires_at=observation.expires_at, confidence=observation.confidence,
-                    authority_level=authority, conflict_state="clear", device_id=observation.device_id,
-                    scope=observation.scope,
+                    source=bound_observation.source, source_reference=bound_observation.source_reference,
+                    observed_at=bound_observation.observed_at, freshness=bound_observation.freshness_seconds,
+                    expires_at=bound_observation.expires_at, confidence=bound_observation.confidence,
+                    authority_level=authority, conflict_state="clear", device_id=bound_observation.device_id,
+                    scope=bound_observation.scope,
                 )
             )
         await self._emit("world_state.observation", owner, {"observation_id": observation.observation_id, "subject": observation.subject})

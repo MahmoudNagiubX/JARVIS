@@ -832,8 +832,8 @@ class CoreApplication:
         action = EngineeringAction(str(values["session_id"]), str(values["action"]), values.get("target") if isinstance(values.get("target"), str) else None, values.get("parameters") if isinstance(values.get("parameters"), dict) else {}, bool(values.get("dry_run", True)), values.get("action_id") if isinstance(values.get("action_id"), str) else None)
         return asdict(await self.runtime.engineering.execute(action, identity, device))
 
-    async def engineering_approval(self, identity: Identity, approval_id: str, approved: bool, decided_by: str) -> dict[str, Any]:
-        result = await self.runtime.engineering.decide(approval_id, approved, decided_by)
+    async def engineering_approval(self, identity: Identity, approval_id: str, approved: bool, decided_by: str, *, device: DeviceIdentity | None = None) -> dict[str, Any]:
+        result = await self.runtime.engineering.decide(approval_id, approved, decided_by, identity=identity, device=device)
         return asdict(result)
 
     def engineering_get_session(self, owner_id: str, session_id: str) -> dict[str, Any] | None:
@@ -1056,8 +1056,8 @@ class CoreApplication:
         )
         return asdict(result)
 
-    async def decide_browser_action(self, approval_id: str, approved: bool, decided_by: str) -> dict[str, Any]:
-        return asdict(await self.runtime.browser_actions.decide(approval_id, approved, decided_by))
+    async def decide_browser_action(self, approval_id: str, approved: bool, decided_by: str, *, identity: Identity | None = None, device: DeviceIdentity | None = None) -> dict[str, Any]:
+        return asdict(await self.runtime.browser_actions.decide(approval_id, approved, decided_by, identity=identity, device=device))
 
     async def home_entities(self, identity: Identity, device: DeviceIdentity) -> list[dict[str, Any]]:
         return [asdict(item) for item in await self.runtime.home.list_entities(identity, device)]
@@ -1112,8 +1112,8 @@ class CoreApplication:
         insight = await self.runtime.communications_intelligence.get(owner_id, thread_id)
         return asdict(insight) if insight else None
 
-    async def decide_communication_send(self, owner_id: str, approval_id: str, approved: bool, decided_by: str) -> dict[str, Any]:
-        return asdict(await self.runtime.communications.decide_send(owner_id, approval_id, approved, decided_by))
+    async def decide_communication_send(self, owner_id: str, approval_id: str, approved: bool, decided_by: str, *, identity: Identity | None = None, device: DeviceIdentity | None = None) -> dict[str, Any]:
+        return asdict(await self.runtime.communications.decide_send(owner_id, approval_id, approved, decided_by, identity=identity, device=device))
 
     async def list_notifications(self, owner_id: str, active_only: bool = False) -> list[dict[str, Any]]:
         return [asdict(item) for item in await self.runtime.notifications.list(owner_id, active_only)]

@@ -498,6 +498,19 @@ class FileAccessServiceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "denied")
         self.assertEqual(result.error_code, "file_path_outside_allowed_root")
 
+    async def test_open_file_reports_dispatch_without_claiming_postcondition_verification(self) -> None:
+        from unittest import mock
+
+        controller = self.runtime.computer_actions.controller.local
+        with mock.patch("jarvis.computer.service.os.startfile", create=True) as startfile:
+            result = controller._open_path({"path": str(self.allowed / "normal.txt")}, "file")
+
+        self.assertEqual(result.status, "succeeded")
+        self.assertFalse(result.verified)
+        self.assertTrue(result.output["dispatch_only"])
+        self.assertEqual(result.output["verification"], "os_startfile_dispatch_not_independently_verified")
+        startfile.assert_called_once_with(str(self.allowed / "normal.txt"))
+
     async def test_open_folder_uses_policy_and_denies_outside_root(self) -> None:
         from jarvis.contracts import ComputerAction
 

@@ -202,6 +202,26 @@ def test_disable_and_surface_preference_persist_only_safe_refs(tmp_path: Path) -
     assert restored.application.preferred_surface.value == "DESKTOP"
 
 
+def test_legacy_discovery_ignores_path_executables_and_uses_standard_locations(tmp_path: Path, monkeypatch) -> None:
+    path_brave = tmp_path / "brave.exe"
+    path_brave.write_bytes(b"PATH-PAYLOAD")
+    standard = tmp_path / "local" / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe"
+    standard.parent.mkdir(parents=True)
+    standard.write_bytes(b"STANDARD-BRAVE")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "program-files"))
+    monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "program-files-x86"))
+    monkeypatch.setenv("WINDIR", str(tmp_path / "windows"))
+
+    candidates = tuple(InstalledApplicationRegistry()._legacy_candidates())
+    brave = [item for item in candidates if item.display_name == "Brave"]
+
+    assert len(brave) == 1
+    assert brave[0].target == standard
+    assert brave[0].target != path_brave
+
+
 class _RecordingComputerAdapter:
     def __init__(self) -> None:
         self.actions: list[ComputerAction] = []

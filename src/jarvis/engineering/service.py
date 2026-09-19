@@ -122,19 +122,44 @@ class EngineeringService:
             return EngineeringResult(action_id, "approval_required", approval_id=approval_id)
         return await self._run(normalized, session, provider, identity, device)
 
-    async def decide(self, approval_id: str, approved: bool, decided_by: str) -> EngineeringResult:
+    async def decide(
+        self,
+        approval_id: str,
+        approved: bool,
+        decided_by: str,
+        *,
+        identity: Identity | None = None,
+        device: DeviceIdentity | None = None,
+    ) -> EngineeringResult:
         pending = self._pending.get(approval_id)
         if pending is None:
-            raise KeyError(approval_id)
-        decision = await self.approvals.decide(approval_id, approved, decided_by)
-        action, identity, device = pending
+            return EngineeringResult(f"engineering-approval-{approval_id}", "failed", error_code="approval_already_decided", approval_id=approval_id)
+        action, pending_identity, pending_device = pending
+        if identity is not None or device is not None:
+            if (
+                identity is None
+                or device is None
+                or identity.identity_id != pending_identity.identity_id
+                or identity.owner_id != pending_identity.owner_id
+                or device.device_id != pending_device.device_id
+                or device.owner_id != pending_identity.owner_id
+            ):
+                raise PermissionError("engineering_approval_principal_mismatch")
+            if decided_by != identity.identity_id:
+                raise PermissionError("engineering_approval_decider_mismatch")
+        pending = self._pending.pop(approval_id, None)
+        if pending is None:
+            return EngineeringResult(action.action_id or f"engineering-action-{uuid4()}", "failed", error_code="approval_already_decided", approval_id=approval_id)
+        decision, claimed = await self.approvals.decide_with_claim(approval_id, approved, decided_by)
+        action, pending_identity, pending_device = pending
+        if not claimed:
+            return EngineeringResult(action.action_id or f"engineering-action-{uuid4()}", "failed", error_code="approval_already_decided", approval_id=approval_id)
+        identity, device = pending_identity, pending_device
         if decision.status.value != "approved":
-            self._pending.pop(approval_id, None)
             await self._emit("engineering.action.failed", identity, device, {"owner_id": identity.owner_id, "session_id": action.session_id, "action": action.action, "approval_id": approval_id, "error_code": "approval_not_approved"}, EventState.FAILED)
             return EngineeringResult(action.action_id or f"engineering-action-{uuid4()}", "denied", error_code="approval_not_approved", approval_id=approval_id)
         session = self._sessions[action.session_id]
         provider = self.providers[session.provider]
-        self._pending.pop(approval_id, None)
         return await self._run(action, session, provider, identity, device)
 
     async def _run(self, action: EngineeringAction, session: EngineeringSession, provider: EngineeringProvider, identity: Identity, device: DeviceIdentity) -> EngineeringResult:

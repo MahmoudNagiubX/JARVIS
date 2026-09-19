@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping
 from ctypes import wintypes
@@ -553,13 +552,7 @@ class InstalledApplicationRegistry:
             "explorer": "explorer.exe",
         }
         for display_name, executable in executable_names.items():
-            target = shutil.which(executable)
-            if target is None and display_name in {"notepad", "calculator", "explorer"}:
-                windows_dir = os.getenv("WINDIR")
-                if windows_dir:
-                    system_target = Path(windows_dir) / "System32" / executable
-                    if system_target.is_file():
-                        target = str(system_target)
+            target = resolve_standard_application_target(display_name)
             if target is None:
                 continue
             args = ("--new-window",) if display_name == "brave" else ()
@@ -644,6 +637,43 @@ class InstalledApplicationRegistry:
         temporary = self.settings_path.with_name(f".{self.settings_path.name}.tmp")
         temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
         temporary.replace(self.settings_path)
+
+
+def resolve_standard_application_target(application: str) -> Path | None:
+    """Resolve only fixed Windows installation locations for legacy names."""
+
+    name = str(application).casefold().strip()
+    executable = {
+        "code": "Code.exe",
+        "vscode": "Code.exe",
+        "notepad": "notepad.exe",
+        "calculator": "calc.exe",
+        "calc": "calc.exe",
+        "brave": "brave.exe",
+        "explorer": "explorer.exe",
+        "file explorer": "explorer.exe",
+    }.get(name)
+    if executable is None:
+        return None
+    roots: list[Path] = []
+    local_appdata = os.getenv("LOCALAPPDATA")
+    program_files = os.getenv("ProgramFiles")
+    program_files_x86 = os.getenv("ProgramFiles(x86)")
+    windows_dir = os.getenv("WINDIR")
+    if name in {"code", "vscode"}:
+        if local_appdata:
+            roots.append(Path(local_appdata) / "Programs" / "Microsoft VS Code" / executable)
+        if program_files:
+            roots.append(Path(program_files) / "Microsoft VS Code" / executable)
+        if program_files_x86:
+            roots.append(Path(program_files_x86) / "Microsoft VS Code" / executable)
+    elif name == "brave":
+        for root in (local_appdata, program_files, program_files_x86):
+            if root:
+                roots.append(Path(root) / "BraveSoftware" / "Brave-Browser" / "Application" / executable)
+    elif windows_dir:
+        roots.append(Path(windows_dir) / "System32" / executable)
+    return next((path for path in dict.fromkeys(roots) if path.is_file()), None)
 
 
 def _bounded_files(root: Path, maximum: int, max_depth: int) -> Iterable[Path]:

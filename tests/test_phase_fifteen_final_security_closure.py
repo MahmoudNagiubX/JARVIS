@@ -174,6 +174,18 @@ class PhaseFifteenFinalSecurityClosureTests(unittest.IsolatedAsyncioTestCase):
                 ToolContext(foreign, DeviceIdentity("foreign-device", foreign.owner_id, "desktop", "windows", frozenset(), frozenset({"tool.request"})), "foreign", "foreign"),
             )
 
+        foreign_device = DeviceIdentity("foreign-device", foreign.owner_id, "desktop", "windows", frozenset(), frozenset({"tool.request"}))
+        with self.assertRaises(PermissionError):
+            await browser.decide(
+                pending.approval_id or "", True, foreign.identity_id,
+                identity=foreign, device=foreign_device,
+            )
+        completed = await browser.decide(
+            pending.approval_id or "", True, self.identity.identity_id,
+            identity=self.identity, device=self.device,
+        )
+        self.assertEqual(completed.status, "succeeded")
+
     async def test_registered_browser_interaction_uses_exactly_one_inner_approval(self) -> None:
         secret = "SUPER_SECRET_PHASE15_VALUE"
         self.runtime.browser_actions.controller = LocalBrowserController(lambda url: ("<input id='name'>", url))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import asyncio
 import json
 import threading
 import unittest
@@ -58,6 +59,24 @@ class PhaseFiveIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(pending.status, "approval_required")
             completed = await self.runtime.engineering.decide(pending.approval_id or "", True, self.identity.identity_id)
             self.assertEqual(completed.status, "completed")
+
+            concurrent_pending = await self.runtime.engineering.execute(
+                EngineeringAction(session.session_id, "edit", target=str(Path(folder) / "second.ipynb"), dry_run=False),
+                self.identity, self.device,
+            )
+            first, second = await asyncio.gather(
+                self.runtime.engineering.decide(
+                    concurrent_pending.approval_id or "", True, self.identity.identity_id,
+                    identity=self.identity, device=self.device,
+                ),
+                self.runtime.engineering.decide(
+                    concurrent_pending.approval_id or "", True, self.identity.identity_id,
+                    identity=self.identity, device=self.device,
+                ),
+            )
+            self.assertEqual(sum(item.status == "completed" for item in (first, second)), 1)
+            replay = second if first.status == "completed" else first
+            self.assertEqual(replay.error_code, "approval_already_decided")
             worker = await self.runtime.engineering_worker.run("inspect the notebook", session.session_id, self.identity, self.device)
             self.assertEqual(worker.status.value, "succeeded")
 

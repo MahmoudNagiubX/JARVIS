@@ -103,3 +103,23 @@ class PhaseSixteenWorldStateFirewallTests(unittest.IsolatedAsyncioTestCase):
         # Verify memory search returns nothing
         recalled = await self.memory.recall("owner-1", "Code")
         self.assertEqual(len(recalled), 0)
+
+    async def test_observation_owner_binding_cannot_split_persistence_and_facts(self) -> None:
+        observation = Observation(
+            "obs-owner-mismatch", "runtime", datetime.now(UTC), "desktop.focused", {"value": "Code"},
+            owner_id="owner-2",
+        )
+
+        with self.assertRaisesRegex(ValueError, "world observation owner binding mismatch"):
+            await self.world_state.observe(observation, owner_id="owner-1")
+
+        self.assertEqual(self.repo.world_observations("owner-1"), [])
+        self.assertEqual(self.repo.world_observations("owner-2"), [])
+
+        unbound = Observation(
+            "obs-owner-bound", "runtime", datetime.now(UTC), "desktop.focused", {"value": "Code"},
+        )
+        await self.world_state.observe(unbound, owner_id="owner-1")
+        self.assertEqual(self.repo.world_observations("owner-1")[0]["owner_id"], "owner-1")
+        facts = await self.world_state.facts(WorldStateQuery("owner-1"))
+        self.assertTrue(any(fact.owner_id == "owner-1" for fact in facts))

@@ -738,13 +738,13 @@ class BraveLauncherTests(unittest.TestCase):
     def test_brave_launcher_uses_allowlisted_name_and_shell_false(self) -> None:
         controller = WindowsNativeComputerController.__new__(WindowsNativeComputerController)
         path = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
-        with patch("jarvis.computer.service.shutil.which", return_value=path) as which:
+        with patch("jarvis.computer.service.resolve_standard_application_target", return_value=Path(path)) as resolver:
             with patch("jarvis.computer.service.subprocess.Popen") as popen:
                 result = controller._open_application({"application": "brave"})
 
         self.assertEqual(result.status, "succeeded")
         self.assertTrue(result.verified)
-        which.assert_called_once_with("brave.exe")
+        resolver.assert_called_once_with("brave")
         popen.assert_called_once_with([path, "--new-window"], shell=False, close_fds=True)
 
 

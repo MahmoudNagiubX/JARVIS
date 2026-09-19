@@ -605,7 +605,7 @@ class CoreHttpServer:
                         return
                     if route.startswith("/engineering/approvals/"):
                         principal = self._authenticated(body)
-                        result = asyncio.run(application.engineering_approval(principal.identity, route.rsplit("/", 1)[-1], bool(body.get("approved", False)), str(body.get("decided_by", principal.identity.identity_id))))
+                        result = asyncio.run(application.engineering_approval(principal.identity, route.rsplit("/", 1)[-1], bool(body.get("approved", False)), principal.identity.identity_id, device=principal.device))
                         self._respond(HTTPStatus.OK, result)
                         return
                     if route == "/workers/developer/run":
@@ -668,7 +668,8 @@ class CoreHttpServer:
                         principal = self._authenticated(body)
                         approval_id = route.rsplit("/", 1)[-1]
                         result = asyncio.run(application.decide_browser_action(
-                            approval_id, bool(body["approved"]), str(body.get("decided_by", principal.identity.identity_id))
+                            approval_id, bool(body["approved"]), principal.identity.identity_id,
+                            identity=principal.identity, device=principal.device,
                         ))
                         self._respond(HTTPStatus.OK, result)
                         return
@@ -716,7 +717,7 @@ class CoreHttpServer:
                         principal = self._authenticated(body)
                         result = asyncio.run(application.decide_communication_send(
                             principal.identity.owner_id, str(body["approval_id"]), bool(body["approved"]),
-                            str(body.get("decided_by", principal.identity.identity_id)),
+                            principal.identity.identity_id, identity=principal.identity, device=principal.device,
                         ))
                         self._respond(HTTPStatus.OK, result)
                         return

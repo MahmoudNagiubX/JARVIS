@@ -159,12 +159,38 @@ class CommunicationsHub:
         message = CommunicationMessage(f"message-{uuid4()}", channel, identity.identity_id, recipient.strip(), content.strip(), datetime.now(UTC), {"scoped_auto_rule_id": rule_id}, owner_id)
         return await self._deliver(owner_id, provider, message, session_id)
 
-    async def decide_send(self, owner_id: str, approval_id: str, approved: bool, decided_by: str) -> CommunicationSendResult:
+    async def decide_send(
+        self,
+        owner_id: str,
+        approval_id: str,
+        approved: bool,
+        decided_by: str,
+        *,
+        identity: Identity | None = None,
+        device: DeviceIdentity | None = None,
+    ) -> CommunicationSendResult:
         pending = self._pending.get(approval_id)
         if pending is None or pending[0] != owner_id:
-            raise KeyError(approval_id)
-        decision = await self.approvals.decide(approval_id, approved, decided_by)
-        self._pending.pop(approval_id, None)
+            return CommunicationSendResult("failed", approval_id=approval_id, error_code="approval_already_decided")
+        _, message, pending_identity, pending_device = pending
+        if identity is not None or device is not None:
+            if (
+                identity is None
+                or device is None
+                or identity.identity_id != pending_identity.identity_id
+                or identity.owner_id != pending_identity.owner_id
+                or device.device_id != pending_device.device_id
+                or device.owner_id != pending_identity.owner_id
+            ):
+                raise PermissionError("communication_approval_principal_mismatch")
+            if decided_by != identity.identity_id:
+                raise PermissionError("communication_approval_decider_mismatch")
+        pending = self._pending.pop(approval_id, None)
+        if pending is None:
+            return CommunicationSendResult("failed", approval_id=approval_id, error_code="approval_already_decided")
+        decision, claimed = await self.approvals.decide_with_claim(approval_id, approved, decided_by)
+        if not claimed:
+            return CommunicationSendResult("failed", pending[1].message_id, approval_id, "approval_already_decided")
         if decision.status.value != "approved":
             await self._emit("communication.failed", owner_id, {"approval_id": approval_id, "reason": decision.status.value}, EventState.FAILED)
             return CommunicationSendResult("denied", pending[1].message_id, approval_id, decision.status.value)

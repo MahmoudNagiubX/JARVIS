@@ -110,6 +110,19 @@ class HybridRoutingTests(unittest.TestCase):
         self.assertEqual(complex_decision.providers, ("groq", "gemini", "local"))
         self.assertEqual(visual.providers, ("gemini",))
 
+    def test_large_context_precedes_reasoning_route(self) -> None:
+        request = LLMRequest("large", (
+            LLMMessage(LLMRole.USER, "context " * 3_000),
+            LLMMessage(LLMRole.USER, "recent context"),
+            LLMMessage(LLMRole.ASSISTANT, "recent answer"),
+            LLMMessage(LLMRole.USER, "reason about the result"),
+        ))
+
+        decision = CapabilityRouter().decide(request, ModelRoute.GENERAL_REASONING)
+
+        self.assertEqual(decision.providers, ("gemini", "groq", "local"))
+        self.assertEqual(decision.reason, "large_context")
+
     def test_architecture_snapshot_exposes_routes_without_exposing_keys(self) -> None:
         gateway = ModelGateway(JarvisConfig(environment="test", model_provider="hybrid"), {
             "local": _RecordingProvider("local", "local"),

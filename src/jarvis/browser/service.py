@@ -468,21 +468,49 @@ class BrowserActionService:
             return BrowserResult("approval_required" if decision.effect.value == "require_approval" else "denied", error_code=decision.reason_code)
         return await self._execute_controller(action, identity, device, session_id, correlation, session_mode)
 
-    async def decide(self, approval_id: str, approved: bool, decided_by: str) -> BrowserResult:
+    async def decide(
+        self,
+        approval_id: str,
+        approved: bool,
+        decided_by: str,
+        *,
+        identity: Identity | None = None,
+        device: DeviceIdentity | None = None,
+    ) -> BrowserResult:
         pending = self._pending.get(approval_id)
         if pending is None or self.approvals is None:
             return BrowserResult("failed", error_code="browser_approval_unavailable", approval_id=approval_id)
-        action, identity, device, session_id, correlation, session_mode, target_binding = pending
-        decision = await self.approvals.decide(approval_id, approved, decided_by)
-        self._pending.pop(approval_id, None)
+
+        action, pending_identity, pending_device, session_id, correlation, session_mode, target_binding = pending
+        if identity is not None or device is not None:
+            if (
+                identity is None
+                or device is None
+                or identity.identity_id != pending_identity.identity_id
+                or identity.owner_id != pending_identity.owner_id
+                or device.device_id != pending_device.device_id
+                or device.owner_id != pending_identity.owner_id
+            ):
+                raise PermissionError("browser_approval_principal_mismatch")
+            if decided_by != identity.identity_id:
+                raise PermissionError("browser_approval_decider_mismatch")
+
+        # Reserve the in-memory action before the first await.  The durable
+        # approval claim below then makes concurrent decisions single-use.
+        pending = self._pending.pop(approval_id, None)
+        if pending is None:
+            return BrowserResult("failed", error_code="browser_approval_unavailable", approval_id=approval_id)
+        decision, claimed = await self.approvals.decide_with_claim(approval_id, approved, decided_by)
+        if not claimed and decision.status.value == "approved":
+            return BrowserResult("failed", error_code="browser_approval_unavailable", approval_id=approval_id)
         if decision.status.value != "approved":
             return BrowserResult("denied", error_code=decision.status.value, approval_id=approval_id)
-        target_error = await self._revalidate_target(action, identity, device, session_id, correlation, session_mode, target_binding)
+        target_error = await self._revalidate_target(action, pending_identity, pending_device, session_id, correlation, session_mode, target_binding)
         if target_error is not None:
-            await self._emit("browser.action_failed", identity.owner_id, correlation, {"action": action.action, "error_code": target_error.error_code, "approval_id": approval_id}, EventState.FAILED)
-            await self.audit.record(AuditRecord(f"audit-{uuid4()}", "browser.action_failed", datetime.now(UTC), identity.identity_id, device.device_id, correlation, target_error.status, target_error.error_code, {"action": action.action, "approval_id": approval_id}))
+            await self._emit("browser.action_failed", pending_identity.owner_id, correlation, {"action": action.action, "error_code": target_error.error_code, "approval_id": approval_id}, EventState.FAILED)
+            await self.audit.record(AuditRecord(f"audit-{uuid4()}", "browser.action_failed", datetime.now(UTC), pending_identity.identity_id, pending_device.device_id, correlation, target_error.status, target_error.error_code, {"action": action.action, "approval_id": approval_id}))
             return BrowserResult(target_error.status, target_error.output, target_error.error_code, target_error.verified, approval_id)
-        return await self._execute_controller(action, identity, device, session_id, correlation, session_mode, approval_id)
+        return await self._execute_controller(action, pending_identity, pending_device, session_id, correlation, session_mode, approval_id)
 
     async def _execute_controller(self, action: BrowserAction, identity: Identity, device: DeviceIdentity, session_id: str, correlation: str, session_mode: BrowserSessionMode, approval_id: str | None = None) -> BrowserResult:
         await self._emit("browser.action_started", identity.owner_id, correlation, {"action": action.action}, EventState.ACCEPTED)

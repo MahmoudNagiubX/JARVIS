@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 
@@ -34,6 +35,7 @@ class MemoryPolicy:
         "browser", "web", "research", "untrusted_web", "untrusted_browser",
         "untrusted_research", "untrusted",
     }
+    _MAX_METADATA_CHARS = 16_000
 
     def evaluate(self, candidate: MemoryCandidate) -> MemoryPolicyDecision:
         content = " ".join(candidate.content.split())
@@ -53,7 +55,10 @@ class MemoryPolicy:
             return MemoryPolicyDecision(False, "sensitivity_invalid", content)
         if candidate.sensitivity == MemorySensitivity.SECRET.value:
             return MemoryPolicyDecision(False, "secret_memory_forbidden", content)
-        if any(pattern.search(content) for pattern in self._blocked_patterns):
+        metadata = self._candidate_metadata(candidate)
+        if metadata is None:
+            return MemoryPolicyDecision(False, "memory_metadata_too_large", content)
+        if any(pattern.search(content) or pattern.search(metadata) for pattern in self._blocked_patterns):
             return MemoryPolicyDecision(False, "credential_like_content_forbidden", content)
         if candidate.source == "audio" or candidate.category in {"raw_audio", "screen_recording", "camera"}:
             return MemoryPolicyDecision(False, "raw_media_retention_forbidden", content)
@@ -65,3 +70,23 @@ class MemoryPolicy:
                 return MemoryPolicyDecision(False, "untrusted_memory_injection_forbidden", content)
             return MemoryPolicyDecision(False, "untrusted_source_direct_memory_forbidden", content)
         return MemoryPolicyDecision(True, "policy_allowed", content)
+
+    @classmethod
+    def _candidate_metadata(cls, candidate: MemoryCandidate) -> str | None:
+        """Serialize bounded non-content fields for the same secret firewall."""
+
+        try:
+            value = json.dumps(
+                {
+                    "structured_data": dict(candidate.structured_data),
+                    "source_reference": candidate.source_reference,
+                    "tags": list(candidate.tags),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError, RecursionError):
+            return None
+        return value if len(value) <= cls._MAX_METADATA_CHARS else None
