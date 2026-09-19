@@ -1325,6 +1325,7 @@ export function SettingsScreen() {
   const { api, projection, screenData, setScreenData, setError } = useJarvis()
   const [refreshingApps, setRefreshingApps] = useState(false)
   const [updatingAppRef, setUpdatingAppRef] = useState<string | null>(null)
+  const [testingAppRef, setTestingAppRef] = useState<string | null>(null)
   const health = screenData.health
   const system = projectionRecord(record(projection), 'system')
   const model = record(health.local_model || health.model)
@@ -1361,6 +1362,42 @@ export function SettingsScreen() {
       setError(error instanceof Error ? error.message : 'Installed application settings update failed.')
     } finally {
       setUpdatingAppRef(null)
+    }
+  }
+
+  async function testInstalledApp(appRef: string) {
+    setTestingAppRef(appRef)
+    try {
+      const result = await api.post<JsonRecord>('/computer/actions', {
+        action: 'application_status',
+        parameters: { app_ref: appRef },
+        dry_run: false,
+      })
+      if (stringValue(result.status).toLowerCase() !== 'succeeded') {
+        setError(stringValue(result.error_code, 'Installed application status was not verified.'))
+      }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Installed application status check failed.')
+    } finally {
+      setTestingAppRef(null)
+    }
+  }
+
+  async function openInstalledApp(appRef: string) {
+    setTestingAppRef(appRef)
+    try {
+      const result = await api.post<JsonRecord>('/computer/actions', {
+        action: 'open_application',
+        parameters: { app_ref: appRef },
+        dry_run: false,
+      })
+      if (stringValue(result.status).toLowerCase() !== 'succeeded' && stringValue(result.status).toLowerCase() !== 'approval_required') {
+        setError(stringValue(result.error_code, 'Installed application did not open.'))
+      }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Installed application open failed.')
+    } finally {
+      setTestingAppRef(null)
     }
   }
 
@@ -1511,6 +1548,20 @@ export function SettingsScreen() {
                           )}
                         >
                           {item.enabled === false ? 'Enable' : 'Disable'}
+                        </Button>
+                        <Button
+                          variant="quiet"
+                          disabled={testingAppRef === stringValue(item.app_ref)}
+                          onClick={() => void testInstalledApp(stringValue(item.app_ref))}
+                        >
+                          Test
+                        </Button>
+                        <Button
+                          variant="quiet"
+                          disabled={testingAppRef === stringValue(item.app_ref)}
+                          onClick={() => void openInstalledApp(stringValue(item.app_ref))}
+                        >
+                          Open
                         </Button>
                       </div>
                     )}

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from jarvis.api.core import CoreApplication
 from jarvis.computer.file_access import FileAccessPolicy
-from jarvis.contracts import StudyResolutionStatus
+from jarvis.contracts import ComputerResult, DeviceIdentity, Identity, StudyResolutionStatus
 from jarvis.study.service import StudyService
 
 
@@ -58,3 +63,19 @@ def test_study_uses_only_configured_roots_and_marks_optional_steps_truthfully(tm
     assert len(plan.steps) == 8
     assert missing.status == "blocked"
     assert missing.resolution.status is StudyResolutionStatus.NOT_CONFIGURED
+
+
+def test_study_open_rejects_string_dry_run_flags() -> None:
+    async def execute(_action, _identity, _device):
+        return ComputerResult("succeeded", verified=True)
+
+    runtime = SimpleNamespace(
+        study=SimpleNamespace(path_for_open=lambda _owner, _resolution, _candidate: Path('C:/approved/Lecture.pdf')),
+        computer_actions=SimpleNamespace(execute=execute),
+    )
+    application = CoreApplication(runtime)
+    identity = Identity("identity-1", "Owner", "owner")
+    device = DeviceIdentity("device-1", "owner-1", "desktop", "windows", frozenset(), frozenset())
+
+    with pytest.raises(ValueError, match="study_dry_run_invalid"):
+        asyncio.run(application.study_open(identity, device, {"resolution_id": "study-resolution-1", "dry_run": "false"}))

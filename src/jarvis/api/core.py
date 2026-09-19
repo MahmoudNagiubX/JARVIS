@@ -399,11 +399,14 @@ class CoreApplication:
         candidate_ref = values.get("candidate_ref")
         if candidate_ref is not None and not isinstance(candidate_ref, str):
             raise ValueError("study_candidate_ref_invalid")
+        dry_run = values.get("dry_run", False)
+        if not isinstance(dry_run, bool):
+            raise ValueError("study_dry_run_invalid")
         path = self.runtime.study.path_for_open(identity.owner_id, resolution_id, candidate_ref)
         if path is None:
             return {"status": "denied", "error_code": "study_resolution_invalid_or_ambiguous", "verified": False}
         result = await self.runtime.computer_actions.execute(
-            ComputerAction("open_file", {"path": str(path)}, bool(values.get("dry_run", False))),
+            ComputerAction("open_file", {"path": str(path)}, dry_run),
             identity,
             device,
         )
