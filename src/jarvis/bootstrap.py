@@ -493,7 +493,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
         focus_view = asdict(focus) if focus else None
         followup_view = tuple(asdict(item) for item in await communication_followups.list(owner_id, active_only=True))
         home_view = asdict(await home_context.snapshot(owner_id))
-        model = await models.health(ModelRoute.GENERAL_REASONING)
+        model = await models.health(ModelRoute.FAST_CONVERSATION)
         current = runtime_ref.get("runtime")
         return {
             "system": {
@@ -566,7 +566,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
 
     async def skill_system_health(skill: object, values: dict[str, object], identity: object, device: object) -> dict[str, object]:
         del skill, values, identity, device
-        health = await models.health(ModelRoute.GENERAL_REASONING)
+        health = await models.health(ModelRoute.FAST_CONVERSATION)
         current = runtime_ref.get("runtime")
         return {"runtime_state": current.state.value if current else "created", "model_provider": health.provider, "model_available": health.available, "offline": not offline.state.online}
 
@@ -667,7 +667,7 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
 
     async def refresh_health() -> dict[str, object]:
         await offline.refresh()
-        model_health = await models.health(ModelRoute.GENERAL_REASONING)
+        model_health = await models.health(ModelRoute.FAST_CONVERSATION)
         return {"model": model_health.provider, "offline": offline.state.online}
 
     scheduler.add("memory-maintenance", 300, maintain_memory)

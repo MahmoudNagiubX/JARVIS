@@ -2,19 +2,22 @@
 
 ## Local-only rule
 
-No model is downloaded, copied, loaded, hashed, repaired, or invoked by the
-runtime. `src/jarvis` uses only a provider-neutral gateway and a standard
-library loopback Ollama adapter; no model runtime or provider SDK is a
-dependency.
+No model is downloaded, copied, loaded, hashed, repaired, or invoked as a
+side effect of import/bootstrap. An explicitly configured local runtime may
+invoke the exact `Qwen3.5-4B-Heretic` GGUF through the provider-neutral
+gateway and bounded llama.cpp supervisor. Ollama is a loopback compatibility
+adapter only; hybrid mode does not assume it exists.
 
 ## Observed local inventory
 
-Phase 00 found an isolated Ollama-style store under
-`C:\Users\mahmo\BMO\phase-08-5-runtime\ollama-isolated-models` with manifests
-for `bge-m3/567m`, `qwen3.5/4b`, and `qwen3.5-heretic/9b-q4km`. It also found
-large GGUF/blob artifacts and approximately 16.36 GB free on the system drive.
-These are inventory facts only; no artifact was opened or copied into the
-repository.
+The bounded 2026-09-19/20 workstation audit verified the JARVIS-owned
+llama.cpp runtime and the exact owner-provisioned Heretic 4B GGUF. The active
+model is checksum-verified, served on loopback, and passed fresh startup and
+generation checks; see `docs/audits/JARVIS_LOCAL_MODEL_READINESS.md`.
+The existing external owner-managed BMO model root still contains a 9B Heretic
+GGUF and an `.invalid-resume` artifact; neither is accepted or auto-selected
+for the required 4B capability. No Ollama or LM Studio runtime was added or
+used. The local server is owned and cleaned up by the single JARVIS supervisor.
 
 ## Required controls before model integration
 
@@ -22,7 +25,10 @@ repository.
   voice where applicable.
 - Record provider, model id, digest/checksum, capability, modality, context
   budget, and local-only status in the model gateway.
-- Refuse missing, mismatched, or unapproved model identity.
+- Refuse missing, mismatched, or unapproved model identity. The production
+  local identity is exactly `Qwen3.5-4B-Heretic` and the main GGUF filename
+  must contain that identity; standard Qwen, 9B, projector, and partial files
+  are rejected.
 - Keep model storage isolated from source checkout and preserve the existing
   isolated store.
 - Do not introduce public bindings or download-on-start behavior.

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..config import JarvisConfig, default_llama_cpp_threads, validate_loopback_http_origin
+from ..local_model_identity import REQUIRED_LOCAL_MODEL, is_required_local_model_path
 from ..network.validation import NetworkValidationError, validate_bind_host, validate_trusted_lan_cidrs
 from ..voice.config import VoiceDeviceSelector, VoiceRuntimeConfig
 
@@ -84,8 +85,8 @@ class DesktopProductConfig:
     tts_ar_model_path: Path | None = None
     llama_cpp_server_path: Path | None = None
     llama_cpp_model_path: Path | None = None
-    model_endpoint: str = "http://127.0.0.1:11434"
-    model_alias: str = "jarvis-local-qwen"
+    model_endpoint: str = "http://127.0.0.1:18765"
+    model_alias: str = REQUIRED_LOCAL_MODEL
     model_context_size: int = 4096
     model_threads: int = field(default_factory=default_llama_cpp_threads)
     model_gpu_layers: int | None = None
@@ -121,6 +122,10 @@ class DesktopProductConfig:
             self.output_device.validate("output")
         if not self.model_endpoint or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@+\-]{0,99}", self.model_alias):
             raise ProductConfigError("model endpoint or alias is invalid")
+        if self.model_alias != REQUIRED_LOCAL_MODEL:
+            raise ProductConfigError("local_model_identity_mismatch")
+        if self.llama_cpp_model_path is not None and not is_required_local_model_path(self.llama_cpp_model_path):
+            raise ProductConfigError("local_model_identity_mismatch")
         try:
             validate_loopback_http_origin(self.model_endpoint)
         except ValueError as exc:
@@ -220,8 +225,8 @@ class DesktopProductConfig:
             tts_ar_model_path=_path(assets.get("tts_ar_model_path"), "tts_ar_model_path"),
             llama_cpp_server_path=_path(values.get("llama_cpp_executable_path"), "llama_cpp_executable_path"),
             llama_cpp_model_path=_path(values.get("qwen_gguf_path"), "qwen_gguf_path"),
-            model_endpoint=str(values.get("model_endpoint", "http://127.0.0.1:11434")).strip(),
-            model_alias=str(values.get("model_alias", "jarvis-local-qwen")).strip(),
+            model_endpoint=str(values.get("model_endpoint", "http://127.0.0.1:18765")).strip(),
+            model_alias=str(values.get("model_alias", REQUIRED_LOCAL_MODEL)).strip(),
             model_context_size=int(values.get("model_context_size", 4096)),
             model_threads=int(values.get("model_threads", default_llama_cpp_threads())),
             model_gpu_layers=(int(values["model_gpu_layers"]) if values.get("model_gpu_layers") is not None else None),
@@ -270,12 +275,17 @@ class DesktopProductConfig:
         """Apply only safe product model settings to the existing runtime config."""
 
         provider = base.model_provider
-        if self.llama_cpp_server_path is not None and self.llama_cpp_model_path is not None:
+        if (
+            provider not in {"hybrid", "llama_cpp", "gguf"}
+            and self.llama_cpp_server_path is not None
+            and self.llama_cpp_model_path is not None
+        ):
             provider = "llama_cpp"
         return replace(
             base,
             model_provider=provider,
             primary_model=self.model_alias,
+            fallback_model=self.model_alias,
             ollama_base_url=self.model_endpoint,
             local_model=self.model_alias,
             llama_cpp_server_path=str(self.llama_cpp_server_path) if self.llama_cpp_server_path else base.llama_cpp_server_path,
@@ -283,7 +293,7 @@ class DesktopProductConfig:
             llama_cpp_context_size=self.model_context_size,
             llama_cpp_threads=self.model_threads,
             llama_cpp_gpu_layers=self.model_gpu_layers,
-            local_model_autostart=bool(self.autostart and provider in {"llama_cpp", "gguf"}),
+            local_model_autostart=bool(self.autostart and provider in {"hybrid", "llama_cpp", "gguf"}),
             voice_input_adapter="sounddevice" if self.voice_enabled else base.voice_input_adapter,
             voice_output_adapter="sounddevice" if self.voice_enabled else base.voice_output_adapter,
         )

@@ -43,7 +43,7 @@ class DesktopDiagnostics:
         secret = self.lifecycle.secret_store.get(PRODUCT_SECRET_KEY) if self.lifecycle.secret_store else None
         results.append(DiagnosticResult("device_credential", "PASS" if secret else "FAIL", "repair_required" if not secret else ""))
         try:
-            model = await runtime.models.health(ModelRoute.GENERAL_REASONING)
+            model = await runtime.models.health(ModelRoute.FAST_CONVERSATION)
             results.append(DiagnosticResult("local_brain", "PASS" if model.available else "FAIL", model.reason))
         except Exception as exc:
             results.append(DiagnosticResult("local_brain", "FAIL", exc.__class__.__name__))

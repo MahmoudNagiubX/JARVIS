@@ -19,6 +19,7 @@ from typing import Any
 
 from ..config import validate_loopback_http_origin
 from ..contracts import LLMRequest, LLMResponse
+from ..local_model_identity import REQUIRED_LOCAL_MODEL
 from .health import ModelHealth
 
 
@@ -69,6 +70,9 @@ class UnavailableModelProvider:
         del request
         raise ModelProviderError(self.reason)
 
+    async def health(self, model: str | None = None) -> ModelHealth:
+        return ModelHealth(self.name, False, datetime.now(UTC), self.reason, model)
+
 
 class LlamaCppProvider:
     """OpenAI-compatible llama-server adapter restricted to loopback HTTP."""
@@ -84,7 +88,7 @@ class LlamaCppProvider:
         self,
         base_url: str,
         *,
-        model_alias: str = "jarvis-local-qwen",
+        model_alias: str = REQUIRED_LOCAL_MODEL,
         urlopen: Callable[..., Any] = urllib.request.urlopen,
     ) -> None:
         validate_loopback_http_origin(base_url)
@@ -142,6 +146,11 @@ class LlamaCppProvider:
             ],
             "max_tokens": max(1, min(int(request.max_output_tokens), 4096)),
             "stream": False,
+            # Qwen3.5 emits its chain of thought in ``reasoning_content`` by
+            # default.  The local JARVIS contract consumes the final
+            # assistant ``content`` and has a bounded response budget, so
+            # request the usable answer channel explicitly.
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         if request.tools:
             payload["tools"] = [dict(tool) for tool in request.tools]
@@ -166,6 +175,8 @@ class LlamaCppProvider:
         if not isinstance(content, str):
             raise ModelProviderError("llama_cpp_invalid_response")
         tool_calls = self._normalize_tool_calls(message.get("tool_calls", ()))
+        if not content.strip() and not tool_calls:
+            raise ModelProviderError("llama_cpp_empty_content")
         finish_reason = choice.get("finish_reason", "stop")
         if finish_reason is None:
             finish_reason = "stop"

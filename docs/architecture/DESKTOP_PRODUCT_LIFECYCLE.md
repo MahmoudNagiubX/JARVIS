@@ -42,10 +42,10 @@ approved, injected provider, is cancellable, and cannot fetch Qwen or a model
 collection.
 
 Existing llama.cpp binaries are searched only under the user-local JARVIS
-runtime directory. Existing GGUF references are searched in the user-local
-JARVIS model directory and the bounded legacy model directory already
-identified by the Phase 12 inventory; files are referenced in place and never
-copied or modified.
+runtime directory. Existing GGUF references are searched only in the
+user-local JARVIS model directory and must name the exact
+`Qwen3.5-4B-Heretic` capability; legacy external files are never auto-selected,
+copied, or modified.
 
 ## UI and shutdown
 

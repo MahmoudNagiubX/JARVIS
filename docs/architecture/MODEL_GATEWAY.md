@@ -17,7 +17,7 @@ JARVIS_MODEL_PROVIDER=hybrid|mock|ollama|gguf|llama_cpp
 JARVIS_PRIMARY_MODEL=Qwen3.5-4B-Heretic
 JARVIS_FALLBACK_MODEL=Qwen3.5-4B-Heretic
 JARVIS_LOCAL_MODEL=Qwen3.5-4B-Heretic
-JARVIS_MODEL_LOOPBACK_ENDPOINT=http://127.0.0.1:11434
+JARVIS_MODEL_LOOPBACK_ENDPOINT=http://127.0.0.1:18765
 JARVIS_GROQ_ENABLED=false
 JARVIS_GROQ_MODEL=openai/gpt-oss-120b
 JARVIS_GROQ_REASONING_EFFORT=low
@@ -25,9 +25,12 @@ JARVIS_GEMINI_ENABLED=false
 JARVIS_GEMINI_MODEL=gemini-3.5-flash
 ```
 
-The default provider is deterministic mock mode. The Ollama adapter only
-calls an already-running loopback `/api/chat` or `/api/tags` endpoint. The
-`llama_cpp` adapter calls the product-owned bounded OpenAI-compatible
+The default provider is deterministic mock mode. In production environment
+bootstrap, hybrid mode uses the explicit loopback llama.cpp endpoint and does
+not assume Ollama is installed or running. The Ollama adapter is an explicit
+compatibility profile only: it calls an already-running loopback `/api/chat`
+or `/api/tags` endpoint when `JARVIS_MODEL_PROVIDER=ollama`. The `llama_cpp`
+adapter calls the product-owned bounded OpenAI-compatible
 `/v1/chat/completions` boundary. It normalizes response and tool-call shapes,
 caps response bodies and generation timeouts, and reports offline/readiness
 errors without a cloud or mock fallback. `gguf` is accepted as a compatibility
@@ -35,10 +38,12 @@ alias for `llama_cpp`.
 
 An explicitly configured local llama.cpp runtime may be started by the single
 `LlamaCppRuntimeSupervisor`; the default bootstrap remains no-autostart. The
-supervisor validates an external `.gguf`, uses a fixed loopback-only argv with
-`shell=False`, and stops only a process it owns. It can attach to a compatible
-listener but never kills an incompatible listener or copies/downloads model
-weights.
+supervisor validates an external `Qwen3.5-4B-Heretic` `.gguf`, uses a fixed
+loopback-only argv with `shell=False`, and stops only a process it owns. It can
+attach to a compatible listener but never kills an incompatible listener or
+copies/downloads model weights. The exact model filename and server alias are
+required; standard Qwen, 9B Heretic, partial-download, and projector GGUFs are
+rejected.
 
 No model provider is contacted during import or runtime composition. Tests
 inject mock providers and can verify routing without GPU or model state.
@@ -70,9 +75,11 @@ It never records prompts, media bytes, or API keys.
 `JARVIS_OLLAMA_BASE_URL` remains a compatibility input, while
 `model_loopback_endpoint` is the profile-neutral health/configuration name.
 Live model validation is documented in `LIVE_MODEL_RUNTIME.md` and remains
-opt-in. Phase 12 validated one existing external Qwen GGUF through llama.cpp;
-the real text path, provider tool normalization, and three fresh real
-AgentRuntime desktop-tool turns passed. The local text model truthfully
+opt-in. The current bounded audit has now verified the owner-provisioned exact
+4B Heretic GGUF, its checksum, the existing llama.cpp runtime, fresh startup,
+live generation, and supervisor cleanup; current evidence is recorded in
+`docs/audits/JARVIS_LOCAL_MODEL_READINESS.md` with verdict
+`LOCAL_HERETIC_LIVE_READY`. The local text model truthfully
 reports `model_route_unsupported` for vision, requires its configured alias in
 `/v1/models`, and serializes generation with one active request plus eight
 bounded waiters. Tool-schema selection is deterministic and selector-only:

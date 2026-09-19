@@ -7,7 +7,9 @@ remains `EventBus -> AgentRuntime -> PermissionEngine -> ApprovalEngine
 SQLite is the zero-install local adapter and remains the automated-test path.
 `PostgresDatabase` is an injected production adapter boundary; it does not add
 a driver or connect during import/bootstrap. Model access is provider-neutral,
-with mock mode as the safe default and Ollama restricted to a loopback endpoint.
+with mock mode as the safe default, the exact Heretic llama.cpp route
+restricted to loopback, and Ollama retained only as an explicit compatibility
+adapter.
 
 All mutation enters through identity/device authentication, permission, and
 approval where required. The HTTP server binds only to loopback. The HUD is a
@@ -21,6 +23,7 @@ On restart, transient core/research work is reconciled to `failed` with
 records are deleted by recovery.
 
 Live adapters are intentionally capability-gated. A missing PostgreSQL,
-Ollama, Playwright, audio, satellite, engineering, Venom, home, or messaging
+llama.cpp/Heretic weights, Ollama, Playwright, audio, satellite, engineering,
+Venom, home, or messaging
 dependency is reported as unavailable/partial/deferred rather than replaced
 with a false success.

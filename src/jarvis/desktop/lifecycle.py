@@ -87,7 +87,7 @@ class JarvisDesktopLifecycle:
         config_path: Path | None = None,
         secret_store: LocalSecretStore | None = None,
         runtime_factory: RuntimeFactory = create_runtime,
-        base_config_factory: Callable[[], JarvisConfig] = JarvisConfig,
+        base_config_factory: Callable[[], JarvisConfig] = JarvisConfig.from_env,
         voice_runner_factory: VoiceRunnerFactory = build_local_voice_runtime,
         asset_manager: VoiceAssetManager | None = None,
         audio_catalog: AudioDeviceCatalog | None = None,
@@ -634,7 +634,7 @@ class JarvisDesktopLifecycle:
         if runtime.config.model_provider in {"llama_cpp", "gguf"}:
             status = await runtime.models.runtime_health()
             return status, bool(status and status.ready)
-        health = await runtime.models.health(ModelRoute.GENERAL_REASONING)
+        health = await runtime.models.health(ModelRoute.FAST_CONVERSATION)
         return None, bool(health.available)
 
     async def _degrade_after_runtime(self, runtime: Any, reason: str) -> None:

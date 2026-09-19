@@ -616,3 +616,21 @@ external service surface, optional hardware, or physical acceptance. In
 particular, Groq/Gemini keys, owner-authenticated browser/service workflows,
 Heretic runtime readiness, interactive application focus, voice, cold
 lifecycle, and cross-app receipts remain open and are not code defects.
+
+## 19. Local Heretic model readiness review - 2026-09-19
+
+- **Heretic local runtime - `LOCAL_HERETIC_LIVE_READY`:** the exact local
+  identity is enforced by `JarvisConfig`, desktop settings, bounded discovery,
+  `LlamaCppRuntimeConfig`, and the hybrid gateway. The owner-provided
+  `Qwen3.5-4B-Heretic-Q4_K_M.gguf` is now installed in the canonical JARVIS
+  model root, independently hash-verified, and served live by the existing
+  loopback-only llama.cpp runtime.
+- The existing external 9B Heretic GGUF and `.invalid-resume` artifact were
+  preserved. They are not valid substitutes and were not deleted because
+  active voice/OCR usage was not disproven.
+- Hybrid mode reports the exact local provider and does not assume Ollama.
+  Groq/Gemini fallback remains capability-based and key-gated; no cloud key was
+  added. Settings update, autostart, multilingual/offline live smoke, process
+  cleanup, and resource observations are complete. The unsigned runtime is
+  recorded as a provenance limitation, not treated as a signature.
+- Evidence: `docs/audits/JARVIS_LOCAL_MODEL_READINESS.md`.

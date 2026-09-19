@@ -3,7 +3,7 @@
 **Status:** SNAPSHOT / IMPLEMENTATION TRUTH SUMMARY  
 **Reviewed:** 2026-09-19
 **Repository:** `MahmoudNagiubX/JARVIS`  
-**Reviewed implementation HEAD:** `a129ddc`
+**Reviewed implementation HEAD:** `8df0979` plus the uncommitted local-model remediation in the current worktree
 
 > Always compare this file with current HEAD before trusting it in a later chat.
 
@@ -105,11 +105,11 @@ voice/device, and hosted CI/branch-protection evidence remain external gates.
 
 | Capability | Status | Current truth |
 |---|---|---|
-| Local text LLM | `PARTIAL` | Existing llama.cpp/Qwen evidence remains valid; production bootstrap now names the owner-provisioned `Qwen3.5-4B-Heretic` local capability, but no fresh live turn is claimed at this HEAD |
-| English/Arabic/mixed text generation | `IMPLEMENTED` | validated in Phase 12 |
+| Local text LLM | `IMPLEMENTED` | The exact `Qwen3.5-4B-Heretic` GGUF is installed in the JARVIS-owned model root, served by the existing loopback-only llama.cpp runtime, and passed fresh health/live generation checks on NIGHTFURY |
+| English/Arabic/mixed text generation | `IMPLEMENTED` | Fresh settings-driven English, Egyptian Arabic, mixed Arabic-English, chat, command-intent, and cloud-disabled fallback generations are recorded in `docs/audits/JARVIS_LOCAL_MODEL_READINESS.md` |
 | Model-facing bounded tool selection | `IMPLEMENTED` | schema/tool budget exists |
 | Local vision model | `PLANNED` | multimodal work is delegated to the optional Gemini provider; no local vision model is claimed |
-| Hybrid capability router | `PARTIAL` | deterministic local/Groq/Gemini routing, bounded fallback, cloud-history compaction, transient media, and route events are implemented and tested; provider keys and live cloud acceptance remain disabled/not configured |
+| Hybrid capability router | `PARTIAL` | Deterministic local/Groq/Gemini routing, bounded fallback, cloud-history compaction, transient media, and route events are implemented and tested. Local live readiness is proven; Groq/Gemini remain optional and key-gated |
 | Groq `openai/gpt-oss-120b` provider | `NOT_CONFIGURED` | modular adapter exists; `JARVIS_GROQ_ENABLED` and `GROQ_API_KEY` are owner-controlled and not configured in the repository |
 | Gemini `gemini-3.5-flash` provider | `NOT_CONFIGURED` | modular GenerateContent adapter exists with transient inline media; `JARVIS_GEMINI_ENABLED` and `GEMINI_API_KEY` are owner-controlled and not configured |
 
@@ -290,7 +290,12 @@ Recorded current host:
 - NVIDIA RTX 4050 Laptop GPU;
 - ~6 GB VRAM.
 
-Current local-model evidence includes a verified llama.cpp CUDA runtime and an existing ~5.5 GB Qwen GGUF loaded in place. Exact future model choice remains benchmark-selected, not architecture-locked.
+Current local-model evidence includes the verified JARVIS-owned llama.cpp CUDA
+runtime and the exact owner-provisioned `Qwen3.5-4B-Heretic-Q4_K_M.gguf` in
+the canonical JARVIS model root. The observed ~5.5 GB external 9B Heretic
+file remains legacy inventory only and is not accepted or activated by the
+current profile. See the local-model readiness report for hashes, live
+generation, resource observations, and unsigned-runtime provenance.
 
 ### VENOM
 Recorded role:
@@ -366,10 +371,10 @@ approval, computer, browser, memory, and audit authorities.
 Backup/restore integrity, deterministic routing, memory retrieval, dry-run
 computer control, installed-app catalog lookup, public ephemeral Brave startup,
 frontend tests/build, and the security/recovery regression suites have current
-local evidence. Owner authentication, configured cloud providers, Heretic
-weight/server readiness, physical voice/focus, cold lifecycle, and semantic
-external-service postconditions remain `OWNER_ACTION_REQUIRED`,
-`NOT_CONFIGURED`, or `PHYSICAL_PENDING` as applicable.
+local evidence. Owner authentication, configured cloud providers, physical
+voice/focus, cold lifecycle, and semantic external-service postconditions
+remain `OWNER_ACTION_REQUIRED`, `NOT_CONFIGURED`, or `PHYSICAL_PENDING` as
+applicable; the local Heretic runtime gate is live-ready.
 
 ## 9. Pre-physical deep review closure — 2026-09-19
 
@@ -392,3 +397,22 @@ not change the release truth: cloud keys, authenticated service targets,
 manual ChatGPT authentication/send confirmation, interactive foreground and
 voice acceptance, cold lifecycle, and final cross-app receipts remain
 `OWNER_ACTION_REQUIRED`, `NOT_CONFIGURED`, or `PHYSICAL_PENDING`.
+
+## 10. Local Heretic readiness review - 2026-09-19
+
+The bounded workstation/model review is recorded in
+`docs/audits/JARVIS_LOCAL_MODEL_READINESS.md`.
+
+- Required local identity: `Qwen3.5-4B-Heretic` only.
+- Runtime: existing JARVIS-owned `llama-server.exe` b10690, loopback-only
+  configuration supported, process ownership/cleanup preserved.
+- Exact 4B GGUF: installed at the canonical JARVIS model path, independently
+  re-hashed to the expected SHA-256, and selected by the saved desktop
+  settings. The endpoint is `127.0.0.1:18765`, the alias is exact, and
+  autostart is enabled through the hybrid supervisor path.
+- Ollama/LM Studio: no bounded executable, process, or PATH registration was
+  found; hybrid startup no longer falls back to an assumed Ollama service.
+- Current status: `LOCAL_HERETIC_LIVE_READY`. Fresh real-server evidence covers
+  English, Egyptian Arabic, mixed Arabic-English, simple conversation,
+  command-intent, and cloud-disabled offline fallback. Groq/Gemini keys remain
+  optional and are not configured.

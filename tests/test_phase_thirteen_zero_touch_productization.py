@@ -68,7 +68,7 @@ def test_safe_config_round_trip_and_forbidden_fields(tmp_path: Path) -> None:
         device_id="device-1",
         input_device=VoiceDeviceSelector("Windows WASAPI", "Microphone"),
         output_device=VoiceDeviceSelector("Windows WASAPI", "Speakers"),
-        llama_cpp_model_path=Path("D:/Models/qwen.gguf"),
+        llama_cpp_model_path=Path("D:/Models/Qwen3.5-4B-Heretic-Q4_K_M.gguf"),
     )
     config.save(path)
     loaded = DesktopProductConfig.load(path)
@@ -96,6 +96,23 @@ def test_runtime_and_voice_config_are_derived_without_voice_environment() -> Non
     assert runtime.voice_input_adapter == "sounddevice"
     assert voice.input_device == config.input_device
     assert voice.output_device == config.output_device
+
+
+def test_runtime_config_preserves_hybrid_router_when_local_runtime_is_configured() -> None:
+    config = DesktopProductConfig(
+        llama_cpp_server_path=Path("C:/JARVIS/llama-server.exe"),
+        llama_cpp_model_path=Path("C:/JARVIS/Qwen3.5-4B-Heretic-Q4_K_M.gguf"),
+        autostart=True,
+    )
+    runtime = config.runtime_config(JarvisConfig(model_provider="hybrid"))
+    assert runtime.model_provider == "hybrid"
+    assert runtime.local_model == "Qwen3.5-4B-Heretic"
+    assert runtime.local_model_autostart
+
+
+def test_desktop_lifecycle_defaults_to_environment_hybrid_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JARVIS_MODEL_PROVIDER", raising=False)
+    assert JarvisDesktopLifecycle().base_config_factory().model_provider == "hybrid"
 
 
 def test_memory_secret_store_has_expected_port() -> None:
@@ -265,11 +282,53 @@ def test_local_model_discovery_is_bounded_and_references_existing_files(tmp_path
     executable.write_bytes(b"server")
     model_root = tmp_path / "models"
     model_root.mkdir()
-    model = model_root / "Qwen-local.gguf"
+    model = model_root / "Qwen3.5-4B-Heretic-Q4_K_M.gguf"
     model.write_bytes(b"model")
     found = LocalModelDiscovery(runtime_root=tmp_path / "runtime", model_roots=(model_root,)).discover()
     assert found.executable_path == executable
     assert found.model_path == model
+
+
+def test_local_model_discovery_never_selects_standard_or_9b_qwen(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    (runtime_root / "llama-server.exe").write_bytes(b"server")
+    model_root = tmp_path / "models"
+    model_root.mkdir()
+    (model_root / "Qwen3.5-4B.gguf").write_bytes(b"standard")
+    (model_root / "Qwen3.5-9B-ultra-uncensored-heretic-v2-Q4_K_M.gguf").write_bytes(b"nine-b")
+    (model_root / "Qwen3.5-4B-Heretic-Q4_K_M.gguf.invalid-resume").write_bytes(b"partial")
+    exact = model_root / "Qwen3.5-4B-Heretic-Q4_K_M.gguf"
+    exact.write_bytes(b"exact")
+
+    found = LocalModelDiscovery(runtime_root=runtime_root, model_roots=(model_root,)).discover()
+
+    assert found.model_path == exact
+
+
+def test_local_model_discovery_returns_none_without_exact_heretic_4b(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    (runtime_root / "llama-server.exe").write_bytes(b"server")
+    model_root = tmp_path / "models"
+    model_root.mkdir()
+    (model_root / "Qwen3.5-4B.gguf").write_bytes(b"standard")
+    (model_root / "Qwen3.5-9B-ultra-uncensored-heretic-v2-Q4_K_M.gguf").write_bytes(b"nine-b")
+    (model_root / "Qwen3.5-4B-Heretic-Q4_K_M.gguf.invalid-resume").write_bytes(b"partial")
+
+    found = LocalModelDiscovery(runtime_root=runtime_root, model_roots=(model_root,)).discover()
+
+    assert found.model_path is None
+
+
+def test_desktop_model_settings_require_exact_heretic_4b_identity() -> None:
+    with pytest.raises(ProductConfigError, match="local_model_identity"):
+        DesktopProductConfig(model_alias="jarvis-local-qwen").validated()
+    with pytest.raises(ProductConfigError, match="local_model_identity"):
+        replace(
+            DesktopProductConfig(),
+            llama_cpp_model_path=Path("D:/Models/Qwen3.5-9B-ultra-uncensored-heretic-v2-Q4_K_M.gguf"),
+        ).validated()
 
 
 def test_audio_catalog_returns_no_default_when_device_choice_is_ambiguous() -> None:

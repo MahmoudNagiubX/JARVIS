@@ -48,7 +48,15 @@ class CapabilityRouter:
     )
 
     def decide(self, request: LLMRequest, route: ModelRoute) -> CapabilityRouteDecision:
-        text = " ".join(message.content for message in request.messages[-3:]).casefold()
+        # Capability markers describe the owner's request, not the system
+        # contract.  System prompts commonly contain words such as
+        # ``explain`` or ``research`` as constraints, which must not promote a
+        # simple local turn to a cloud route.
+        text = " ".join(
+            message.content
+            for message in request.messages[-3:]
+            if message.role.value != "system"
+        ).casefold()
         context_chars = sum(len(message.content) for message in request.messages)
         has_media = any(message.media for message in request.messages)
         if has_media or route is ModelRoute.VISION or self._contains_marker(text, self._VISION_MARKERS):

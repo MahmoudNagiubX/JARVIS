@@ -1,8 +1,9 @@
 # Local models
 
 Direct test construction defaults to mock mode. Production environment
-bootstrap defaults to the hybrid route. To probe an already-running local
-Ollama service explicitly, set aliases and run the optional smoke test:
+bootstrap defaults to the hybrid route. Ollama is not the hybrid local
+runtime. If an owner explicitly chooses the legacy Ollama compatibility
+profile, probe an already-running loopback service with:
 
 ```powershell
 $env:JARVIS_MODEL_PROVIDER = "ollama"
@@ -14,20 +15,27 @@ python -m jarvis --model-smoke
 
 The smoke test only checks `/api/tags` and sends one bounded chat request. It
 does not run `ollama pull`, change the model store, copy GGUF files, or start
-Ollama. Existing local Qwen assets are referenced by alias only.
+Ollama. This profile is not the required production hybrid setup.
 
-For the production hybrid route, the local capability is the existing
-owner-provisioned `Qwen3.5-4B-Heretic` alias:
+For the production hybrid route, the local capability is the exact
+owner-provisioned `Qwen3.5-4B-Heretic` GGUF served by llama.cpp:
 
 ```powershell
 $env:JARVIS_MODEL_PROVIDER = "hybrid"
 $env:JARVIS_LOCAL_MODEL = "Qwen3.5-4B-Heretic"
-$env:JARVIS_MODEL_LOOPBACK_ENDPOINT = "http://127.0.0.1:11434"
+$env:JARVIS_PRIMARY_MODEL = "Qwen3.5-4B-Heretic"
+$env:JARVIS_FALLBACK_MODEL = "Qwen3.5-4B-Heretic"
+$env:JARVIS_LLAMA_CPP_SERVER_PATH = "<JARVIS-owned-runtime>\llama-server.exe"
+$env:JARVIS_LLAMA_CPP_MODEL_PATH = "<JARVIS-owned-models>\Qwen3.5-4B-Heretic-Q4_K_M.gguf"
+$env:JARVIS_MODEL_LOOPBACK_ENDPOINT = "http://127.0.0.1:18765"
+$env:JARVIS_LOCAL_MODEL_AUTOSTART = "true"
+python -m jarvis --model-probe --model-exercise
 ```
 
 The route remains local-first for short/basic commands and is the offline
 fallback. The provider does not download, rename, replace, or copy model
-weights.
+weights. The model path must name the exact required 4B Heretic GGUF; standard
+Qwen, 9B Heretic, `.invalid-resume`, `mmproj`, and `mtp` files are refused.
 
 ## llama.cpp / GGUF
 
@@ -37,7 +45,7 @@ The explicit local path uses the existing `ModelGateway` and one bounded
 ```powershell
 $env:JARVIS_MODEL_PROVIDER = "llama_cpp"
 $env:JARVIS_LLAMA_CPP_SERVER_PATH = "<user-local-runtime>\llama-server.exe"
-$env:JARVIS_LLAMA_CPP_MODEL_PATH = "<external-model-directory>\model.gguf"
+$env:JARVIS_LLAMA_CPP_MODEL_PATH = "<JARVIS-owned-models>\Qwen3.5-4B-Heretic-Q4_K_M.gguf"
 $env:JARVIS_MODEL_LOOPBACK_ENDPOINT = "http://127.0.0.1:18765"
 $env:JARVIS_LLAMA_CPP_CONTEXT_SIZE = "4096"
 $env:JARVIS_LLAMA_CPP_THREADS = "8"
@@ -47,9 +55,10 @@ python -m jarvis --model-smoke
 ```
 
 The executable must already exist and the model must be an existing external
-`.gguf`. Paths are validated; model weights are never downloaded, copied,
-imported, or deleted. `JARVIS_LOCAL_MODEL_AUTOSTART` defaults to false, so
-test/development composition does not launch a heavy model.
+`Qwen3.5-4B-Heretic` `.gguf`. Paths and identity are validated; model weights
+are never downloaded, copied, imported, or deleted. `JARVIS_LOCAL_MODEL_AUTOSTART`
+defaults to false, so test/development composition does not launch a heavy
+model.
 
 ## Direct OpenAI API route
 

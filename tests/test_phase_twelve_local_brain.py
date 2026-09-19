@@ -20,6 +20,7 @@ from jarvis.contracts import LLMMessage, LLMRequest, LLMResponse, LLMRole, ToolR
 from jarvis.models.gateway import ModelGateway
 from jarvis.models.llama_runtime import LlamaCppRuntimeConfig, LlamaCppRuntimeSupervisor, LlamaRuntimeState
 from jarvis.models.providers import LlamaCppProvider, ModelOfflineError, ModelProviderError
+from jarvis.local_model_identity import REQUIRED_LOCAL_MODEL
 from jarvis.tools.registry import ToolRegistry, ToolSpec
 from jarvis.tools.selection import ToolSchemaSelector
 
@@ -55,7 +56,7 @@ class _FakeOpen:
         return response
 
 
-def _completion(body: object, *, model: str = "jarvis-local-qwen", usage: dict[str, int] | None = None) -> _Response:
+def _completion(body: object, *, model: str = "Qwen3.5-4B-Heretic", usage: dict[str, int] | None = None) -> _Response:
     payload = {
         "id": "chatcmpl-test",
         "model": model,
@@ -70,7 +71,7 @@ class LlamaProviderTests(unittest.IsolatedAsyncioTestCase):
         return LLMRequest(
             "request-1",
             (LLMMessage(LLMRole.USER, "hello"),),
-            model="jarvis-local-qwen",
+            model="Qwen3.5-4B-Heretic",
             max_output_tokens=16,
             timeout_seconds=12,
         )
@@ -92,12 +93,23 @@ class LlamaProviderTests(unittest.IsolatedAsyncioTestCase):
         response = await LlamaCppProvider("http://127.0.0.1:8080", urlopen=fake).generate(self._request())
         self.assertEqual(response.text, "ready")
         self.assertEqual(response.provider, "llama_cpp")
-        self.assertEqual(response.model, "jarvis-local-qwen")
+        self.assertEqual(response.model, "Qwen3.5-4B-Heretic")
         self.assertEqual(response.finish_reason, "stop")
         self.assertEqual(dict(response.usage), {"prompt_tokens": 5, "output_tokens": 2})
         payload = json.loads(fake.requests[0].data.decode())
         self.assertEqual(payload["max_tokens"], 16)
         self.assertFalse(payload["stream"])
+
+    async def test_qwen_heretic_disables_thinking_for_usable_local_content(self) -> None:
+        fake = _FakeOpen([_completion({"role": "assistant", "content": "ready"})])
+        await LlamaCppProvider("http://127.0.0.1:8080", urlopen=fake).generate(self._request())
+        payload = json.loads(fake.requests[0].data.decode())
+        self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
+
+    async def test_empty_non_tool_content_is_not_reported_as_success(self) -> None:
+        fake = _FakeOpen([_completion({"role": "assistant", "content": "", "reasoning_content": "unfinished"})])
+        with self.assertRaisesRegex(ModelProviderError, "llama_cpp_empty_content"):
+            await LlamaCppProvider("http://127.0.0.1:8080", urlopen=fake).generate(self._request())
 
     async def test_json_string_tool_arguments_are_normalized(self) -> None:
         message = {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "get_test_status", "arguments": '{"detail":"brief"}'}}]}
@@ -115,12 +127,12 @@ class LlamaProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_health_uses_health_and_reports_safe_model_alias(self) -> None:
         fake = _FakeOpen([
             _Response(b'{"status":"ok"}'),
-            _Response(b'{"object":"list","data":[{"id":"jarvis-local-qwen"}]}'),
+            _Response(b'{"object":"list","data":[{"id":"Qwen3.5-4B-Heretic"}]}'),
         ])
         health = await LlamaCppProvider("http://127.0.0.1:8080", urlopen=fake).health()
         self.assertTrue(health.available)
         self.assertEqual(health.provider, "llama_cpp")
-        self.assertEqual(health.model, "jarvis-local-qwen")
+        self.assertEqual(health.model, "Qwen3.5-4B-Heretic")
         self.assertNotIn("path", repr(health).casefold())
 
     async def test_health_loading_and_offline_are_truthful(self) -> None:
@@ -164,7 +176,7 @@ class LlamaProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_provider_health_requires_the_expected_alias(self) -> None:
         fake = _FakeOpen([
             _Response(b'{"status":"ok"}'),
-            _Response(b'{"object":"list","data":[{"id":"other-model"},{"id":"jarvis-local-qwen"}]}'),
+            _Response(b'{"object":"list","data":[{"id":"other-model"},{"id":"Qwen3.5-4B-Heretic"}]}'),
         ])
         health = await LlamaCppProvider("http://127.0.0.1:8080", urlopen=fake).health()
         self.assertTrue(health.available)
@@ -241,7 +253,7 @@ class LlamaProviderTests(unittest.IsolatedAsyncioTestCase):
                 if self.path == "/health":
                     self._json({"status": "ok"})
                 elif self.path == "/v1/models":
-                    self._json({"object": "list", "data": [{"id": "jarvis-local-qwen"}]})
+                    self._json({"object": "list", "data": [{"id": "Qwen3.5-4B-Heretic"}]})
                 else:
                     self._json({"error": "not found"}, 404)
 
@@ -250,7 +262,7 @@ class LlamaProviderTests(unittest.IsolatedAsyncioTestCase):
                 received.append(json.loads(self.rfile.read(length).decode("utf-8")))
                 self._json({
                     "id": "chatcmpl-http",
-                    "model": "jarvis-local-qwen",
+                    "model": "Qwen3.5-4B-Heretic",
                     "choices": [{"message": {"role": "assistant", "content": "real boundary"}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 3, "completion_tokens": 2},
                 })
@@ -268,7 +280,7 @@ class LlamaProviderTests(unittest.IsolatedAsyncioTestCase):
             response = await provider.generate(self._request())
             self.assertTrue(health.available)
             self.assertEqual(response.text, "real boundary")
-            self.assertEqual(received[0]["model"], "jarvis-local-qwen")
+            self.assertEqual(received[0]["model"], "Qwen3.5-4B-Heretic")
             self.assertFalse(received[0]["stream"])
         finally:
             server.shutdown()
@@ -304,7 +316,7 @@ class LlamaSupervisorTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.executable = self.root / "llama-server.exe"
-        self.model = self.root / "model.gguf"
+        self.model = self.root / "Qwen3.5-4B-Heretic-Q4_K_M.gguf"
         self.executable.write_bytes(b"server")
         self.model.write_bytes(b"fake-model")
 
@@ -325,6 +337,10 @@ class LlamaSupervisorTests(unittest.IsolatedAsyncioTestCase):
             self._config(context_size=999).validate()
         with self.assertRaisesRegex(ValueError, "llama_cpp_model_alias_invalid"):
             self._config(model_alias="bad alias").validate()
+        with self.assertRaisesRegex(ValueError, "llama_cpp_model_identity_mismatch"):
+            self._config(model_alias="jarvis-local-qwen").validate()
+
+        self.assertEqual(self._config().model_alias, REQUIRED_LOCAL_MODEL)
 
     async def test_command_is_fixed_argv_loopback_and_no_arbitrary_flags(self) -> None:
         before = self.model.stat()
@@ -349,9 +365,9 @@ class LlamaSupervisorTests(unittest.IsolatedAsyncioTestCase):
 
         fake = _FakeOpen([
             _Response(b'{"status":"ok"}'),
-            _Response(b'{"object":"list","data":[{"id":"jarvis-local-qwen"}]}'),
+            _Response(b'{"object":"list","data":[{"id":"Qwen3.5-4B-Heretic"}]}'),
             _Response(b'{"status":"ok"}'),
-            _Response(b'{"object":"list","data":[{"id":"jarvis-local-qwen"}]}'),
+            _Response(b'{"object":"list","data":[{"id":"Qwen3.5-4B-Heretic"}]}'),
         ])
         supervisor = LlamaCppRuntimeSupervisor(self._config(), popen_factory=popen, urlopen=fake)
         first = await supervisor.start()
@@ -368,7 +384,7 @@ class LlamaSupervisorTests(unittest.IsolatedAsyncioTestCase):
         process = _FakeProcess()
         fake = _FakeOpen([
             _Response(b'{"status":"ok"}'),
-            _Response(b'{"object":"list","data":[{"id":"jarvis-local-qwen"}]}'),
+            _Response(b'{"object":"list","data":[{"id":"Qwen3.5-4B-Heretic"}]}'),
         ])
         supervisor = LlamaCppRuntimeSupervisor(
             self._config(port=18905),
@@ -398,7 +414,7 @@ class LlamaSupervisorTests(unittest.IsolatedAsyncioTestCase):
     async def test_attached_server_is_not_owned_or_stopped(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
-                body = b'{"status":"ok"}' if self.path == "/health" else b'{"object":"list","data":[{"id":"jarvis-local-qwen"}]}'
+                body = b'{"status":"ok"}' if self.path == "/health" else b'{"object":"list","data":[{"id":"Qwen3.5-4B-Heretic"}]}'
                 self.send_response(200 if self.path in {"/health", "/v1/models"} else 404)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -427,7 +443,7 @@ class LlamaSupervisorTests(unittest.IsolatedAsyncioTestCase):
         process = _FakeProcess()
         loading = _FakeOpen([
             _Response(b'{"status":"loading model"}', status=503),
-            _Response(b'{"object":"list","data":[{"id":"jarvis-local-qwen"}]}'),
+            _Response(b'{"object":"list","data":[{"id":"Qwen3.5-4B-Heretic"}]}'),
         ])
         supervisor = LlamaCppRuntimeSupervisor(
             self._config(port=18904),
@@ -585,7 +601,7 @@ class ModelGatewayAndAgentTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             executable = root / "llama-server.exe"
-            model = root / "model.gguf"
+            model = root / "Qwen3.5-4B-Heretic-Q4_K_M.gguf"
             executable.write_bytes(b"server")
             model.write_bytes(b"fake-model")
             with patch.dict(os.environ, {
@@ -608,6 +624,23 @@ class ModelGatewayAndAgentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(runtime.models.runtime_supervisor.status.state, LlamaRuntimeState.STOPPED)
             await runtime.start()
             await runtime.shutdown()
+
+    async def test_config_rejects_a_9b_heretic_path_for_the_required_4b_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "llama-server.exe"
+            model = root / "Qwen3.5-9B-ultra-uncensored-heretic-v2-Q4_K_M.gguf"
+            executable.write_bytes(b"server")
+            model.write_bytes(b"legacy-9b")
+            config = JarvisConfig(
+                environment="live-workstation",
+                model_provider="llama_cpp",
+                llama_cpp_server_path=str(executable),
+                llama_cpp_model_path=str(model),
+            )
+
+            with self.assertRaisesRegex(ValueError, "llama_cpp_model_identity_mismatch"):
+                LlamaCppRuntimeConfig.from_config(config, repository_root=root / "repo")
 
     async def test_create_runtime_does_not_autostart_or_spawn_model(self) -> None:
         runtime = create_runtime(JarvisConfig(environment="test", model_provider="llama_cpp"))
@@ -636,7 +669,7 @@ class ModelGatewayAndAgentTests(unittest.IsolatedAsyncioTestCase):
                 _completion({"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "status.read", "arguments": {}}}]}),
                 _completion({"role": "assistant", "content": "The local tool reported ready."}),
             ])
-            provider = LlamaCppProvider("http://127.0.0.1:8080", model_alias="jarvis-local-qwen", urlopen=fake)
+            provider = LlamaCppProvider("http://127.0.0.1:8080", model_alias=REQUIRED_LOCAL_MODEL, urlopen=fake)
             gateway = ModelGateway(JarvisConfig(environment="test", model_provider="llama_cpp"), {"llama_cpp": provider})
             runtime.models = gateway
             runtime.agent.models = gateway
@@ -644,7 +677,7 @@ class ModelGatewayAndAgentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(outcome.state.value, "succeeded")
             self.assertEqual(outcome.response, "The local tool reported ready.")
             self.assertEqual(len(fake.requests), 2)
-            self.assertEqual(runtime.repository.run(outcome.run_id).model_id, "jarvis-local-qwen")
+            self.assertEqual(runtime.repository.run(outcome.run_id).model_id, REQUIRED_LOCAL_MODEL)
             first_tools = json.loads(fake.requests[0].data.decode())["tools"]
             second_tools = json.loads(fake.requests[1].data.decode())["tools"]
             self.assertEqual(first_tools, second_tools)

@@ -70,7 +70,7 @@ release when their states remain truthfully `NOT_CONFIGURED`,
 |---|---|---|
 | Core runtime | PASS | Current CLI status is ready; canonical runtime/SQLite path exists. |
 | Desktop lifecycle | PARTIAL | Product-owned lifecycle and single-instance code exist; final cold-launch physical acceptance is pending. |
-| Local model | PASS | Historical NIGHTFURY local-model evidence is accepted; current baseline CLI used mock because no live provider was selected. |
+| Local model | IMPLEMENTED | Exact `Qwen3.5-4B-Heretic-Q4_K_M.gguf` is hash-verified in the JARVIS-owned model root and passed fresh live health/generation/offline-fallback checks through the existing loopback llama.cpp supervisor. See `docs/audits/JARVIS_LOCAL_MODEL_READINESS.md`. |
 | Voice | PHYSICAL_PENDING | Local VoiceCore/runtime exists; full English/Egyptian Arabic/mixed, barge-in, duplex, and recovery acceptance is open. |
 | UI | PASS | 75 frontend tests and production build pass; physical render acceptance is not claimed here. |
 | Memory | PASS | Owner-scoped durable Memory and correction/delete paths are implemented and covered by current tests. |
@@ -407,7 +407,7 @@ them.
 
 | Owner requirement | Status | Current evidence / remaining gate |
 |---|---|---|
-| Local models connected | `PARTIAL` | Existing llama.cpp/Qwen foundation and historical physical evidence remain; the hybrid route names `Qwen3.5-4B-Heretic` as the local capability, but no fresh live local turn is claimed at this HEAD. |
+| Local models connected | `IMPLEMENTED` | The hybrid route names and live responses report exact `Qwen3.5-4B-Heretic`; fresh English/Egyptian Arabic/mixed/intent/offline local evidence is recorded in the readiness report. |
 | Hybrid capability router | `PARTIAL` | Deterministic local/Groq/Gemini selection, bounded fallback, cloud-history compaction, transient multimodal input, and route events are implemented/tested; live provider enablement is not configured. |
 | Direct OpenAI API provider | `REMOVED` | The direct provider, configuration, and tests were removed; `openai/gpt-oss-120b` remains only as the Groq model identifier. |
 | Groq `openai/gpt-oss-120b` | `NOT_CONFIGURED` | Optional standard-library adapter and deterministic reasoning/tool route are implemented; `JARVIS_GROQ_ENABLED` and `GROQ_API_KEY` are not configured. |
@@ -565,3 +565,20 @@ The code-controlled result is `JARVIS_PRE_PHYSICAL_CODE_READY`. The overall
 desktop release remains partial because owner/API-key, authenticated service,
 interactive focus, physical voice, cold lifecycle, and final cross-app
 acceptance are still external or physical gates.
+
+## 15. Local Heretic live closure — 2026-09-19
+
+The exact owner-provided `Qwen3.5-4B-heretic-Q4_K_M.gguf` was independently
+re-hashed, copied into the canonical JARVIS-owned model root, and configured
+through the existing desktop settings and hybrid runtime path. The real
+loopback llama.cpp server loaded it with the exact alias, returned ready health,
+and produced non-empty English, Egyptian Arabic, mixed Arabic-English,
+conversation, command-intent, and cloud-disabled fallback responses. The
+supervisor owned and cleaned up the process after each run. Groq/Gemini remain
+optional and unconfigured; deterministic boundary tests still prove Groq for
+reasoning and Gemini for vision/large context when enabled.
+
+The detailed hashes, launch line, resource/latency observations, unsigned
+runtime provenance, regression results, and final local verdict are owned by
+`docs/audits/JARVIS_LOCAL_MODEL_READINESS.md`, whose current verdict is
+`LOCAL_HERETIC_LIVE_READY`.

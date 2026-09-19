@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..local_model_identity import is_required_local_model_path
+
 
 @dataclass(frozen=True, slots=True)
 class LocalModelReferences:
@@ -22,7 +24,6 @@ class LocalModelDiscovery:
         self.runtime_root = runtime_root or local_root / "JARVIS" / "runtimes" / "llama.cpp"
         self.model_roots = model_roots or (
             local_root / "JARVIS" / "models",
-            Path.home() / "BMO" / "phase-08-5-models",
         )
 
     def discover(self) -> LocalModelReferences:
@@ -32,9 +33,12 @@ class LocalModelDiscovery:
         models: list[Path] = []
         for root in self.model_roots:
             if root.exists() and root.is_dir():
-                models.extend(item for item in root.glob("*.gguf") if item.is_file())
-        qwen = sorted((item for item in models if "qwen" in item.name.casefold()), key=lambda item: str(item).casefold())
-        selected = qwen[0] if qwen else (sorted(models, key=lambda item: str(item).casefold())[0] if len(models) == 1 else None)
+                models.extend(
+                    item for item in root.glob("*.gguf")
+                    if item.is_file() and is_required_local_model_path(item)
+                )
+        candidates = sorted(set(models), key=lambda item: str(item).casefold())
+        selected = candidates[0] if len(candidates) == 1 else None
         return LocalModelReferences(executable, selected)
 
     @staticmethod

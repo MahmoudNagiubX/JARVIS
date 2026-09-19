@@ -221,6 +221,7 @@ class CoreApplication:
 
     async def health(self) -> dict[str, Any]:
         model = await self.runtime.models.health(ModelRoute.GENERAL_REASONING)
+        local_model = await self.runtime.models.health(ModelRoute.FAST_CONVERSATION)
         architecture = self.runtime.models.architecture_snapshot()
         return {
             "service": self.runtime.config.service_name,
@@ -233,11 +234,11 @@ class CoreApplication:
             "offline": asdict(self.runtime.offline.state),
             "internet": asdict(self.runtime.offline.state),
             "local_model": {
-                "available": model.available,
-                "provider": model.provider,
-                "model_alias": model.model,
-                "latency_ms": model.latency_ms,
-                "reason": model.reason,
+                "available": local_model.available,
+                "provider": local_model.provider,
+                "model_alias": local_model.model,
+                "latency_ms": local_model.latency_ms,
+                "reason": local_model.reason,
             },
             "venom": asdict(self.runtime.venom.health()),
             "perception": self.runtime.perception.health(),

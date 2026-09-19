@@ -21,8 +21,10 @@ or an existing service wrapper. The repository does not silently create a
 scheduled task or elevate privileges. Configure restart-on-failure in the
 chosen host and verify it with the startup/recovery checklist.
 
-Optional local model deployment points only at an already-running Ollama
-endpoint. PostgreSQL, pgvector, Playwright, audio, satellite, engineering,
+The production hybrid local route points at an explicitly configured,
+loopback-only llama.cpp server for the exact `Qwen3.5-4B-Heretic` GGUF. Ollama
+remains an explicit compatibility profile only and is never assumed by hybrid
+bootstrap. PostgreSQL, pgvector, Playwright, audio, satellite, engineering,
 Venom, Home Assistant/MQTT, and communications are deployment-owned adapters;
 install/configure them separately and record their acceptance evidence.
 

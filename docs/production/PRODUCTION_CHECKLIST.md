@@ -7,7 +7,7 @@
 | SQLite backup/restore | PASS | Online backup, integrity verification, explicit CLI |
 | PostgreSQL | PARTIAL | Injected adapter and reconnect health; no local listener/client |
 | pgvector | DEFERRED | No PostgreSQL deployment or extension available |
-| llama.cpp/Qwen local brain | PASS | Existing external GGUF loaded through one loopback llama.cpp server; text/provider-tool/three real AgentRuntime desktop turns/status tool/offline/restart PASS; bounded evidence in `docs/phase12/evidence/PHYSICAL_LOCAL_BRAIN.json` |
+| llama.cpp/Heretic local brain | PASS | Exact `Qwen3.5-4B-Heretic-Q4_K_M.gguf` is hash-verified in the JARVIS-owned model root; the existing loopback llama.cpp runtime passed live English/Egyptian Arabic/mixed/intent/offline fallback checks; see `docs/audits/JARVIS_LOCAL_MODEL_READINESS.md` |
 | Physical voice | PARTIAL | Explicit local wake/VAD/STT/TTS/playback runner and safe local smoke checks; human/operator acceptance remains open; `docs/phase13/evidence/PHYSICAL_LOCAL_VOICE.json` |
 | Windows satellite | PASS | Same-host process-separated Core/typed agent authority-path observation passed; second-host deployment not claimed; bounded evidence in `docs/phase09/evidence/PHYSICAL_COMPUTER_AUTHORITY_ACCEPTANCE.json` |
 | Computer control | PASS | Phase 11 grounded window, clipboard, and literal keyboard acceptance; bounded media-key volume; mute-state query remains explicitly unavailable |

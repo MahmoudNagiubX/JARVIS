@@ -8,9 +8,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ..config import JarvisConfig
+from ..config import REQUIRED_GEMINI_MODEL, REQUIRED_GROQ_MODEL, JarvisConfig
 from ..contracts import LLMMessage, LLMRequest, LLMResponse
 from ..events import Event, EventCategory, EventState
+from ..local_model_identity import REQUIRED_LOCAL_MODEL
 from .cloud import GeminiProvider, GroqProvider
 from .config import ModelGatewayConfig
 from .health import ModelHealth
@@ -37,6 +38,11 @@ class ModelGateway:
         self._repository = repository
         self.runtime_supervisor: LlamaCppRuntimeSupervisor | None = None
         provider_name = "llama_cpp" if gateway_config.provider == "gguf" else gateway_config.provider
+        if provider_name == "llama_cpp" and any(
+            model != REQUIRED_LOCAL_MODEL
+            for model in (gateway_config.primary_model, gateway_config.fallback_model, gateway_config.local_model)
+        ):
+            raise ValueError("local_model_identity_mismatch")
         self.providers = dict(providers or {})
         if provider_name not in self.providers and gateway_config.provider in self.providers:
             self.providers[provider_name] = self.providers[gateway_config.provider]
@@ -46,6 +52,11 @@ class ModelGateway:
             "groq": gateway_config.groq_model,
             "gemini": gateway_config.gemini_model,
         }
+        if gateway_config.provider == "hybrid" and (
+            gateway_config.groq_model != REQUIRED_GROQ_MODEL
+            or gateway_config.gemini_model != REQUIRED_GEMINI_MODEL
+        ):
+            raise ValueError("hybrid_cloud_model_identity_mismatch")
         if provider_name == "hybrid":
             self._configure_hybrid(config, gateway_config)
         elif not self.providers:
@@ -85,8 +96,6 @@ class ModelGateway:
     def _configure_hybrid(self, config: JarvisConfig, gateway_config: ModelGatewayConfig) -> None:
         """Build all three adapters behind this gateway without contacting them."""
 
-        if "local" not in self.providers and "ollama" in self.providers:
-            self.providers["local"] = self.providers["ollama"]
         if "local" not in self.providers:
             if gateway_config.llama_cpp_server_path is not None and gateway_config.llama_cpp_model_path is not None:
                 try:
@@ -108,7 +117,16 @@ class ModelGateway:
                         model_alias=runtime_config.model_alias,
                     )
             else:
-                self.providers["local"] = OllamaProvider(gateway_config.ollama_base_url)
+                # Hybrid mode must not silently assume that an optional
+                # Ollama installation exists.  Ollama remains available only
+                # through the explicit ``model_provider=ollama`` compatibility
+                # profile or an injected provider.
+                reason = (
+                    "llama_cpp_runtime_incomplete"
+                    if gateway_config.llama_cpp_server_path is not None or gateway_config.llama_cpp_model_path is not None
+                    else "llama_cpp_runtime_not_configured"
+                )
+                self.providers["local"] = UnavailableModelProvider(reason)
         self.providers.setdefault(
             "groq",
             GroqProvider(

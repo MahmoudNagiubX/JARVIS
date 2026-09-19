@@ -8,7 +8,7 @@ Memory, logs, prompts, browser pages, or audit payloads.
 |---|---:|---:|---|---|---|
 | Groq API key | Optional for cloud reasoning | Yes | Create a Groq Free Tier key and supply it to the JARVIS process as `GROQ_API_KEY`; do not paste it into chat or commit it | Process environment / approved secret store; `JARVIS_GROQ_ENABLED=true` | Run a complex planning request and confirm the UI/event shows Groq `openai/gpt-oss-120b` without exposing the key |
 | Gemini API key | Optional for vision/large context | Yes | Supply `GEMINI_API_KEY` to the JARVIS process and set `JARVIS_GEMINI_ENABLED=true` | Process environment / approved secret store | Submit a screenshot or document and confirm Gemini `gemini-3.5-flash` is selected |
-| Local model | Required for offline/local-first use | No, but path is private | Configure the existing `Qwen3.5-4B-Heretic` GGUF and bounded llama-server path if not already configured; do not replace it with standard Qwen | Local desktop settings or process environment: `JARVIS_LOCAL_MODEL`, `JARVIS_LLAMA_CPP_SERVER_PATH`, `JARVIS_LLAMA_CPP_MODEL_PATH`, `JARVIS_LOCAL_MODEL_AUTOSTART=true` | Run the local model health/smoke test and confirm the Heretic model name |
+| Local model | Configured and live-ready | No, but path is private | No remaining download action; keep the exact owner-provisioned `Qwen3.5-4B-Heretic-Q4_K_M.gguf` and never replace it with standard Qwen or the legacy 9B file | JARVIS-owned desktop settings: exact Heretic alias/path, existing llama.cpp runtime, loopback `http://127.0.0.1:18765`, autostart enabled | Read `docs/audits/JARVIS_LOCAL_MODEL_READINESS.md`; re-hash before any future relocation and rerun the live smoke matrix |
 | Codex login | Only for live developer work | Session credential | Sign in to the installed Codex CLI yourself | Codex CLI; enable `JARVIS_CODEX_WORKER_ENABLED=true` only after review | Run a read-only task, then an explicitly approved fixture workspace-write task |
 | AntiGravity via Codex | Optional | Session credential | If desired, configure the approved AntiGravity interface for Codex only; JARVIS must not launch or authenticate to AntiGravity directly | Developer environment used by Codex | Ask Codex for one bounded UI-review child and confirm the parent reviews it |
 | Spotify | Optional | App login | Sign in inside the installed Spotify app | Native desktop app; configure an exact study playlist alias | Open/focus, resolve the exact playlist, play, pause, and verify title/playlist |
@@ -29,3 +29,25 @@ Owner login, API-key entry, exact private destinations, microphone choice, and
 physical acceptance remain manual. JARVIS must show `Missing key`, `Login
 Required`, `Service Blocked`, `Offline`, or `PHYSICAL_PENDING` truthfully rather
 than inventing a ready state.
+
+The current local-model evidence is recorded separately in
+`docs/audits/JARVIS_LOCAL_MODEL_READINESS.md`. The download gate is complete;
+future changes must preserve the exact identity, loopback boundary, and
+supervisor cleanup behavior.
+
+## Safe one-shot cloud probe
+
+When a cloud key is available, use the repository helper from a PowerShell
+session. It prompts with hidden input, supplies the key only to the child
+process, runs exactly one bounded provider probe, and removes the process
+environment value before exiting. It never writes `.env`, SQLite, Memory,
+logs, or command-line arguments.
+
+```powershell
+.\scripts\invoke_cloud_provider_probe.ps1 -Provider groq
+.\scripts\invoke_cloud_provider_probe.ps1 -Provider gemini
+```
+
+The owner must run these commands locally; JARVIS cannot discover or extract
+the keys.
+without downloading weights.

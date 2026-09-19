@@ -42,7 +42,7 @@ class LocalModelCapabilityProbe:
 
     async def run(
         self,
-        route: ModelRoute = ModelRoute.GENERAL_REASONING,
+        route: ModelRoute = ModelRoute.FAST_CONVERSATION,
         *,
         exercise_generation: bool = False,
         timeout_seconds: float = 10.0,

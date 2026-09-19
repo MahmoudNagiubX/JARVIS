@@ -18,6 +18,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from ..config import default_llama_cpp_threads, validate_loopback_http_origin
+from ..local_model_identity import REQUIRED_LOCAL_MODEL, is_required_local_model_path
 
 
 class LlamaRuntimeState(StrEnum):
@@ -35,7 +36,7 @@ class LlamaCppRuntimeConfig:
     executable_path: Path
     model_path: Path
     endpoint: str
-    model_alias: str = "jarvis-local-qwen"
+    model_alias: str = REQUIRED_LOCAL_MODEL
     context_size: int = 4096
     threads: int = field(default_factory=default_llama_cpp_threads)
     gpu_layers: int | None = None
@@ -69,6 +70,8 @@ class LlamaCppRuntimeConfig:
             raise ValueError("llama_cpp_invalid_model")
         if not model.is_file():
             raise ValueError("llama_cpp_model_not_found")
+        if not is_required_local_model_path(model):
+            raise ValueError("llama_cpp_model_identity_mismatch")
         validate_loopback_http_origin(self.endpoint)
         if not 1024 <= self.context_size <= 32768:
             raise ValueError("llama_cpp_context_out_of_bounds")
@@ -81,6 +84,8 @@ class LlamaCppRuntimeConfig:
             raise ValueError("llama_cpp_readiness_timeout_out_of_bounds")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@+\-]{0,99}", self.model_alias):
             raise ValueError("llama_cpp_model_alias_invalid")
+        if self.model_alias != REQUIRED_LOCAL_MODEL:
+            raise ValueError("llama_cpp_model_identity_mismatch")
 
 
 @dataclass(frozen=True, slots=True)

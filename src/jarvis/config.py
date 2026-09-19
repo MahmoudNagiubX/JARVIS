@@ -13,6 +13,10 @@ from ipaddress import ip_address
 from urllib.parse import urlsplit
 
 
+REQUIRED_GROQ_MODEL = "openai/gpt-oss-120b"
+REQUIRED_GEMINI_MODEL = "gemini-3.5-flash"
+
+
 def default_llama_cpp_threads() -> int:
     """Return a safe bounded default for the current host.
 
@@ -41,11 +45,11 @@ class JarvisConfig:
     # Ollama/llama.cpp profiles and tests.
     local_model: str = "Qwen3.5-4B-Heretic"
     groq_enabled: bool = False
-    groq_model: str = "openai/gpt-oss-120b"
+    groq_model: str = REQUIRED_GROQ_MODEL
     groq_timeout_seconds: float = 30.0
     groq_reasoning_effort: str = "low"
     gemini_enabled: bool = False
-    gemini_model: str = "gemini-3.5-flash"
+    gemini_model: str = REQUIRED_GEMINI_MODEL
     gemini_timeout_seconds: float = 45.0
     codex_worker_enabled: bool = False
     ollama_base_url: str = "http://127.0.0.1:11434"
@@ -113,10 +117,16 @@ class JarvisConfig:
             "JARVIS_CODEX_WORKER_ENABLED",
             "true" if defaults.codex_worker_enabled else "false",
         ).strip().lower()
-        ollama_base_url = os.getenv(
-            "JARVIS_MODEL_LOOPBACK_ENDPOINT",
-            os.getenv("JARVIS_OLLAMA_BASE_URL", defaults.ollama_base_url),
-        ).strip()
+        explicit_model_endpoint = os.getenv("JARVIS_MODEL_LOOPBACK_ENDPOINT", "").strip()
+        explicit_ollama_endpoint = os.getenv("JARVIS_OLLAMA_BASE_URL", "").strip()
+        if explicit_model_endpoint:
+            ollama_base_url = explicit_model_endpoint
+        elif explicit_ollama_endpoint:
+            ollama_base_url = explicit_ollama_endpoint
+        elif model_provider in {"hybrid", "llama_cpp", "gguf"}:
+            ollama_base_url = "http://127.0.0.1:18765"
+        else:
+            ollama_base_url = defaults.ollama_base_url
         llama_cpp_server_path = os.getenv("JARVIS_LLAMA_CPP_SERVER_PATH", "").strip() or None
         llama_cpp_model_path = os.getenv("JARVIS_LLAMA_CPP_MODEL_PATH", "").strip() or None
         context_text = os.getenv("JARVIS_LLAMA_CPP_CONTEXT_SIZE", str(defaults.llama_cpp_context_size)).strip()
@@ -206,6 +216,10 @@ class JarvisConfig:
             raise ValueError("JARVIS_BROWSER_BACKEND must be local or playwright")
         if not primary_model or not fallback_model:
             raise ValueError("model aliases cannot be empty")
+        if local_model != "Qwen3.5-4B-Heretic":
+            raise ValueError("JARVIS_LOCAL_MODEL must be Qwen3.5-4B-Heretic")
+        if model_provider in {"llama_cpp", "gguf"} and (primary_model != local_model or fallback_model != local_model):
+            raise ValueError("local_model_identity_mismatch")
         for name, value in (
             ("JARVIS_LOCAL_MODEL", local_model),
             ("JARVIS_GROQ_MODEL", groq_model),
@@ -213,6 +227,10 @@ class JarvisConfig:
         ):
             if not value or len(value) > 200 or any(char.isspace() for char in value):
                 raise ValueError(f"{name} must be a bounded non-empty token")
+        if groq_model != REQUIRED_GROQ_MODEL:
+            raise ValueError(f"JARVIS_GROQ_MODEL must be {REQUIRED_GROQ_MODEL}")
+        if gemini_model != REQUIRED_GEMINI_MODEL:
+            raise ValueError(f"JARVIS_GEMINI_MODEL must be {REQUIRED_GEMINI_MODEL}")
         if not 1.0 <= groq_timeout <= 180.0 or not 1.0 <= gemini_timeout <= 180.0:
             raise ValueError("JARVIS cloud provider timeouts must be between 1 and 180")
         if groq_reasoning_effort not in {"none", "default", "minimal", "low", "medium", "high", "xhigh", "max"}:

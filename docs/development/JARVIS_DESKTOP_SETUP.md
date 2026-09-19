@@ -39,11 +39,13 @@ Voice assets must already be present locally or be supplied by an approved
 cancellable provisioning provider; ordinary startup never downloads speech or
 brain assets.
 
-The setup discovery is bounded to the existing JARVIS llama.cpp runtime/model
-locations and the Phase 12 legacy model directory. It references the existing
-Qwen GGUF in place and starts or attaches the one existing
-`LlamaCppRuntimeSupervisor` with alias `jarvis-local-qwen`; it does not pull,
-copy, or import model weights.
+The setup discovery is bounded to the JARVIS-owned llama.cpp runtime and model
+locations. It selects exactly one existing
+`Qwen3.5-4B-Heretic` GGUF and the existing
+`LlamaCppRuntimeSupervisor` with the exact Heretic alias; it does not inspect
+the legacy BMO model directory, pull, copy, or import model weights. Standard
+Qwen, 9B Heretic, partial-download, projector, and ambiguous model files are
+left unselected and surface as setup-required rather than guessed.
 
 Automated validation for this product is in
 `tests/test_phase_thirteen_zero_touch_productization.py` and
