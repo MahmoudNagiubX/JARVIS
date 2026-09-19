@@ -546,3 +546,22 @@ The code-controlled verdict is now `PASS`. The overall release verdict remains
 provider configuration, physical device/voice evidence, and cold lifecycle
 acceptance are external gates still marked `OWNER_ACTION_REQUIRED` or
 `PHYSICAL_PENDING`.
+
+## 14. Pre-physical deep review closure — 2026-09-19
+
+The later pre-physical review supersedes the preceding historical test-count
+snapshot for current implementation truth. Starting from `d5869e3`, commit
+`a129ddc` closes nine code-controlled findings across approval replay and
+principal binding, hybrid large-context routing, World State, Memory metadata,
+file-open verification, and installed-app path resolution.
+
+Current full Python evidence is `998 passed, 3 skipped, 45 subtests`; the
+optional EasyOCR/torch/torchvision checks are the only skips. The complete
+review and issue register are recorded in
+`docs/audits/JARVIS_PRE_PHYSICAL_DEEP_REVIEW.md` and
+`docs/audits/JARVIS_PRE_PHYSICAL_ISSUE_REGISTER.md`.
+
+The code-controlled result is `JARVIS_PRE_PHYSICAL_CODE_READY`. The overall
+desktop release remains partial because owner/API-key, authenticated service,
+interactive focus, physical voice, cold lifecycle, and final cross-app
+acceptance are still external or physical gates.

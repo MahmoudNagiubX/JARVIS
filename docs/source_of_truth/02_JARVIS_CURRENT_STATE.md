@@ -3,11 +3,11 @@
 **Status:** SNAPSHOT / IMPLEMENTATION TRUTH SUMMARY  
 **Reviewed:** 2026-09-19
 **Repository:** `MahmoudNagiubX/JARVIS`  
-**Reviewed HEAD:** `5a0ea52`
+**Reviewed implementation HEAD:** `a129ddc`
 
 > Always compare this file with current HEAD before trusting it in a later chat.
 
-**Final-completion feature-branch checkpoint:** `5a0ea52` — bounded desktop
+**Final-completion feature-branch checkpoint:** `a129ddc` — bounded desktop
 release slices plus the native installed-application control addendum are
 implemented; external/physical release gates remain explicitly partial where
 evidence is unavailable.
@@ -370,3 +370,25 @@ local evidence. Owner authentication, configured cloud providers, Heretic
 weight/server readiness, physical voice/focus, cold lifecycle, and semantic
 external-service postconditions remain `OWNER_ACTION_REQUIRED`,
 `NOT_CONFIGURED`, or `PHYSICAL_PENDING` as applicable.
+
+## 9. Pre-physical deep review closure — 2026-09-19
+
+The implementation review continued from `d5869e3` and committed its
+code-controlled fixes as `a129ddc`. Nine defects were found and resolved:
+durable approval replay, large-context route precedence, World State owner
+binding, Memory metadata secret filtering, file-open verification truth,
+PATH-safe installed-app resolution, and owner/device/exactly-once approval
+binding for browser, communications, and engineering actions.
+
+Current verification is `998 passed, 3 skipped, 45 subtests`; compileall,
+clean-tree import, and diff checks pass. The three skips are optional
+EasyOCR/torch/torchvision reproducibility checks unavailable in the active
+interpreter. The authoritative details and two-pass review record are in
+`docs/audits/JARVIS_PRE_PHYSICAL_DEEP_REVIEW.md` and
+`docs/audits/JARVIS_PRE_PHYSICAL_ISSUE_REGISTER.md`.
+
+The code-controlled verdict is `JARVIS_PRE_PHYSICAL_CODE_READY`. This does
+not change the release truth: cloud keys, authenticated service targets,
+manual ChatGPT authentication/send confirmation, interactive foreground and
+voice acceptance, cold lifecycle, and final cross-app receipts remain
+`OWNER_ACTION_REQUIRED`, `NOT_CONFIGURED`, or `PHYSICAL_PENDING`.

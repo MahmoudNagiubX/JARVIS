@@ -595,3 +595,24 @@ configuration/evidence, not silently treated as complete.
 - **P10 integration UX — `PARTIAL`:** Settings exposes backend-derived
   integration status cards and native installed-app Test/Open actions; it does
   not fabricate active study sessions, login state, or service readiness.
+
+## 18. Pre-physical deep review closure — 2026-09-19
+
+The pre-physical review found nine code-controlled issues (`PRP-001` through
+`PRP-009`). All are resolved in implementation commit `a129ddc`; no P0/P1
+code-controlled blocker or required P2 daily-use blocker remains. The field-
+level evidence is owned by
+`docs/audits/JARVIS_PRE_PHYSICAL_ISSUE_REGISTER.md`.
+
+The resolved findings cover approval replay and principal binding across the
+generic tool, browser, communications, engineering, and computer paths;
+large-context hybrid routing; World State owner binding; Memory metadata
+credential filtering; truthful file-open verification; and fixed-location
+installed-app compatibility resolution. No new authority or scheduler was
+introduced.
+
+The remaining open entries are correctly classified as owner configuration,
+external service surface, optional hardware, or physical acceptance. In
+particular, Groq/Gemini keys, owner-authenticated browser/service workflows,
+Heretic runtime readiness, interactive application focus, voice, cold
+lifecycle, and cross-app receipts remain open and are not code defects.
