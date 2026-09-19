@@ -155,6 +155,42 @@ class ModelGateway:
     def selection(self, route: ModelRoute) -> ModelSelection:
         return self.selections[route]
 
+    def architecture_snapshot(self) -> dict[str, object]:
+        """Return model routing/configuration truth without making provider calls."""
+
+        def provider_state(name: str, model: str, *, enabled: bool | None = None) -> dict[str, object]:
+            provider = self.providers.get(name)
+            if provider is None:
+                return {"provider": name, "model": model, "state": "not_registered", "available": False, "reason": "provider_not_registered"}
+            provider_name = str(getattr(provider, "name", name))
+            if provider_name == "unavailable":
+                return {"provider": provider_name, "model": model, "state": "unavailable", "available": False, "reason": str(getattr(provider, "reason", "provider_unavailable"))[:160]}
+            if name in {"groq", "gemini"}:
+                active = bool(enabled)
+                has_key = bool(getattr(provider, "_api_key", ""))
+                if not active:
+                    state, available, reason = "disabled", False, f"{name}_not_enabled"
+                elif not has_key:
+                    state, available, reason = "missing_key", False, f"{name}_api_key_missing"
+                else:
+                    state, available, reason = "configured_unprobed", None, f"{name}_health_not_probed"
+                return {"provider": provider_name, "model": model, "state": state, "available": available, "reason": reason}
+            if provider_name == "mock":
+                return {"provider": provider_name, "model": model, "state": "ready", "available": True, "reason": "mock_provider"}
+            return {"provider": provider_name, "model": model, "state": "configured_unprobed", "available": None, "reason": "local_health_not_probed"}
+
+        return {
+            "provider_mode": self.config.provider,
+            "local": provider_state("local", self.config.local_model),
+            "groq": provider_state("groq", self.config.groq_model, enabled=self.config.groq_enabled),
+            "gemini": provider_state("gemini", self.config.gemini_model, enabled=self.config.gemini_enabled),
+            "routes": {
+                "simple_fast_offline": {"provider": "local", "model": self.config.local_model, "reason": "simple_or_offline_capability"},
+                "complex_reasoning_tools": {"provider": "groq", "model": self.config.groq_model, "reason": "reasoning_or_tool_capability"},
+                "vision_multimodal_large_context": {"provider": "gemini", "model": self.config.gemini_model, "reason": "visual_or_large_context_capability"},
+            },
+        }
+
     async def generate(self, request: LLMRequest, route: ModelRoute = ModelRoute.GENERAL_REASONING) -> LLMResponse:
         if self.config.provider == "hybrid":
             return await self._generate_hybrid(request, route)

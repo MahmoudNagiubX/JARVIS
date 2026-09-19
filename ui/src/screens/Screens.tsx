@@ -1330,6 +1330,12 @@ export function SettingsScreen() {
   const model = record(health.local_model || health.model)
   const voice = projectionRecord(record(projection), 'voice')
   const mcp = list(health.mcp)
+  const architecture = record(health.model_architecture)
+  const modelCards = [
+    { key: 'local', title: 'Qwen3.5-4B-Heretic', route: 'Simple / offline / intent', value: record(architecture.local) },
+    { key: 'groq', title: 'openai/gpt-oss-120b', route: 'Reasoning / tools / coding', value: record(architecture.groq) },
+    { key: 'gemini', title: 'gemini-3.5-flash', route: 'Vision / documents / large context', value: record(architecture.gemini) },
+  ]
 
   async function refreshInstalledApps() {
     setRefreshingApps(true)
@@ -1376,6 +1382,28 @@ export function SettingsScreen() {
               Venom: record(health.venom).status || 'Not connected',
             }}
           />
+        </FramePanel>
+
+        <FramePanel
+          title="Hybrid model routing"
+          eyebrow="CAPABILITY ROUTER"
+          status={stringValue(architecture.provider_mode, 'not reported')}
+        >
+          <div className="compact-list">
+            {modelCards.map((item) => (
+              <div className="compact-row" key={item.key}>
+                <div>
+                  <strong>{item.title}</strong>
+                  <span>{item.route}</span>
+                  <span>{stringValue(item.value.reason, 'No provider status reported')}</span>
+                </div>
+                <StatusBadge value={stringValue(item.value.state, 'not reported')} />
+              </div>
+            ))}
+          </div>
+          <div className="notice">
+            Only the selected capability route is called. Cloud cards stay unavailable until their environment key and provider health are confirmed; local fallback remains the offline path.
+          </div>
         </FramePanel>
 
         <FramePanel

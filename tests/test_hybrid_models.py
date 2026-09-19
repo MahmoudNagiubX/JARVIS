@@ -108,6 +108,22 @@ class HybridRoutingTests(unittest.TestCase):
         self.assertEqual(complex_decision.providers, ("groq", "gemini", "local"))
         self.assertEqual(visual.providers, ("gemini",))
 
+    def test_architecture_snapshot_exposes_routes_without_exposing_keys(self) -> None:
+        gateway = ModelGateway(JarvisConfig(environment="test", model_provider="hybrid"), {
+            "local": _RecordingProvider("local", "local"),
+            "groq": GroqProvider(api_key="groq-secret", enabled=True),
+            "gemini": GeminiProvider(api_key="gemini-secret", enabled=True),
+        })
+
+        snapshot = gateway.architecture_snapshot()
+
+        assert snapshot["routes"]["simple_fast_offline"]["model"] == "Qwen3.5-4B-Heretic"
+        assert snapshot["routes"]["complex_reasoning_tools"]["model"] == "openai/gpt-oss-120b"
+        assert snapshot["routes"]["vision_multimodal_large_context"]["model"] == "gemini-3.5-flash"
+        blob = json.dumps(snapshot)
+        self.assertNotIn("groq-secret", blob)
+        self.assertNotIn("gemini-secret", blob)
+
 
 class CloudProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_groq_chat_payload_and_tool_call_normalization(self) -> None:

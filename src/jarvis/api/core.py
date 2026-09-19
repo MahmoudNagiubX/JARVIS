@@ -227,6 +227,7 @@ class CoreApplication:
             "state": self.runtime.state.value,
             "database": "closed" if self.runtime.database.closed else "open",
             "model": asdict(model),
+            "model_architecture": self.runtime.models.architecture_snapshot(),
             "offline": asdict(self.runtime.offline.state),
             "internet": asdict(self.runtime.offline.state),
             "local_model": {
