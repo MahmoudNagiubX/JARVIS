@@ -1331,6 +1331,7 @@ export function SettingsScreen() {
   const voice = projectionRecord(record(projection), 'voice')
   const mcp = list(health.mcp)
   const architecture = record(health.model_architecture)
+  const integrations = list(health.integrations)
   const modelCards = [
     { key: 'local', title: 'Qwen3.5-4B-Heretic', route: 'Simple / offline / intent', value: record(architecture.local) },
     { key: 'groq', title: 'openai/gpt-oss-120b', route: 'Reasoning / tools / coding', value: record(architecture.groq) },
@@ -1404,6 +1405,32 @@ export function SettingsScreen() {
           <div className="notice">
             Only the selected capability route is called. Cloud cards stay unavailable until their environment key and provider health are confirmed; local fallback remains the offline path.
           </div>
+        </FramePanel>
+
+        <FramePanel
+          title="Integrations"
+          eyebrow="SETUP / INTEGRATIONS"
+          status={integrations.length ? `${integrations.length} surfaces` : 'not reported'}
+        >
+          {integrations.length ? (
+            <div className="compact-list">
+              {integrations.map((item, index) => (
+                <div className="compact-row" key={stringValue(item.name, String(index))}>
+                  <div>
+                    <strong>{stringValue(item.name, 'Integration')}</strong>
+                    <span>{stringValue(item.surface, 'AUTO')}</span>
+                    <span>{stringValue(item.reason, 'No setup reason reported')}</span>
+                  </div>
+                  <StatusBadge value={stringValue(item.status, 'NOT_CONFIGURED')} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              title="No integration status reported"
+              detail="Only backend-confirmed provider, desktop, browser, worker, and voice state appears here."
+            />
+          )}
         </FramePanel>
 
         <FramePanel

@@ -516,6 +516,7 @@ describe('Phase 14 final closure screens', () => {
       },
     }
     const api = apiFor(projection, vi.fn(async () => ({})), {
+      '/personalization/profile': { owner_name: 'Tony Stark' },
       '/health': {
         state: 'ready',
         database: 'Connected SQLite',
@@ -529,8 +530,11 @@ describe('Phase 14 final closure screens', () => {
             capabilities: [{ name: 'fs.read' }, { name: 'fs.write' }],
           },
         ],
+        integrations: [
+          { name: 'Codex', surface: 'LOCAL_WORKER', status: 'NOT_CONFIGURED', reason: 'owner_opt_in_required' },
+          { name: 'AntiGravity via Codex', surface: 'CODEX_CHILD', status: 'SERVICE_BLOCKED', reason: 'direct_antigravity_access_disabled' },
+        ],
       },
-      '/personalization/profile': { owner_name: 'Tony Stark' },
     })
     render(<App api={api} initialSession={session} />)
 
@@ -540,6 +544,8 @@ describe('Phase 14 final closure screens', () => {
     expect(screen.getAllByText('Local Ollama').length).toBeGreaterThan(0)
     expect(screen.getByText('Local Filesystem MCP')).toBeInTheDocument()
     expect(screen.getByText('5 discovered tools')).toBeInTheDocument()
+    expect(screen.getByText('Integrations')).toBeInTheDocument()
+    expect(screen.getByText('AntiGravity via Codex')).toBeInTheDocument()
     expect(screen.getByText('fs.read · fs.write')).toBeInTheDocument()
     expect(screen.getByText('Privacy center')).toBeInTheDocument()
   })

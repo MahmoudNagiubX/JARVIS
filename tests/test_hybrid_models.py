@@ -11,6 +11,8 @@ from typing import Any
 from unittest.mock import patch
 from urllib.request import Request
 
+from jarvis.api.core import CoreApplication
+from jarvis.bootstrap import create_runtime
 from jarvis.config import JarvisConfig
 from jarvis.contracts import LLMInputMedia, LLMMessage, LLMRequest, LLMResponse, LLMRole
 from jarvis.models.cloud import GeminiProvider, GroqProvider
@@ -123,6 +125,25 @@ class HybridRoutingTests(unittest.TestCase):
         blob = json.dumps(snapshot)
         self.assertNotIn("groq-secret", blob)
         self.assertNotIn("gemini-secret", blob)
+
+    def test_health_projects_truthful_integration_and_worker_states(self) -> None:
+        async def exercise() -> dict[str, object]:
+            runtime = create_runtime(JarvisConfig(environment="test", model_provider="hybrid"))
+            await runtime.start()
+            try:
+                return await CoreApplication(runtime).health()
+            finally:
+                await runtime.shutdown()
+
+        health = asyncio.run(exercise())
+        cards = {item["name"]: item for item in health["integrations"]}
+        self.assertIn("Brave", cards)
+        self.assertIn("Codex", cards)
+        self.assertEqual(cards["AntiGravity via Codex"]["status"], "SERVICE_BLOCKED")
+        self.assertEqual(cards["Groq"]["status"], "NOT_CONFIGURED")
+        self.assertEqual(cards["Gemini"]["status"], "NOT_CONFIGURED")
+        self.assertEqual(cards["Local Model"]["model"], "Qwen3.5-4B-Heretic")
+        self.assertNotIn("api_key", json.dumps(health, default=str).casefold())
 
 
 class CloudProviderTests(unittest.IsolatedAsyncioTestCase):

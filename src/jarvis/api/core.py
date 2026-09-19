@@ -221,13 +221,15 @@ class CoreApplication:
 
     async def health(self) -> dict[str, Any]:
         model = await self.runtime.models.health(ModelRoute.GENERAL_REASONING)
+        architecture = self.runtime.models.architecture_snapshot()
         return {
             "service": self.runtime.config.service_name,
             "environment": self.runtime.config.environment,
             "state": self.runtime.state.value,
             "database": "closed" if self.runtime.database.closed else "open",
             "model": asdict(model),
-            "model_architecture": self.runtime.models.architecture_snapshot(),
+            "model_architecture": architecture,
+            "integrations": self._integration_status(architecture),
             "offline": asdict(self.runtime.offline.state),
             "internet": asdict(self.runtime.offline.state),
             "local_model": {
@@ -252,6 +254,92 @@ class CoreApplication:
             "mcp": self.runtime.mcp.health_snapshot(),
             "mcp_reporting": await self.runtime.mcp.health_report(),
         }
+
+    def _integration_status(self, architecture: dict[str, object]) -> list[dict[str, object]]:
+        """Project bounded setup truth without probing external services."""
+
+        def state_for_architecture(key: str, model: str | None = None) -> dict[str, object]:
+            value = architecture.get(key)
+            state = value if isinstance(value, dict) else {}
+            raw_state = str(state.get("state", "not_configured"))
+            if raw_state in {"configured_unprobed", "ready"}:
+                status = "DEGRADED" if raw_state == "configured_unprobed" else "READY"
+            elif raw_state in {"unavailable", "not_registered"}:
+                status = "SERVICE_BLOCKED"
+            else:
+                status = "NOT_CONFIGURED"
+            item: dict[str, object] = {
+                "status": status,
+                "reason": str(state.get("reason", "provider_not_configured"))[:160],
+            }
+            if model:
+                item["model"] = model
+            return item
+
+        catalog_loaded = self.runtime.application_registry.loaded
+
+        def desktop_state(alias: str, *, host_only: bool = False) -> dict[str, object]:
+            if not catalog_loaded:
+                return {"status": "NOT_CONFIGURED", "reason": "application_catalog_not_loaded"}
+            lookup = self.runtime.application_registry.find(alias)
+            if lookup.status == "ambiguous":
+                return {"status": "SERVICE_BLOCKED", "reason": "application_identity_ambiguous"}
+            if lookup.application is None:
+                return {"status": "NOT_CONFIGURED", "reason": lookup.reason or "application_not_installed"}
+            if host_only:
+                return {"status": "DEGRADED", "reason": "bounded_open_focus_surface_only"}
+            return {"status": "LOGIN_REQUIRED", "reason": "owner_login_status_unverified"}
+
+        cards: list[dict[str, object]] = []
+        for name, alias, host_only in (
+            ("Brave", "brave", True),
+            ("ChatGPT", "chatgpt", False),
+            ("Notion", "notion", False),
+            ("Spotify", "spotify", False),
+            ("WhatsApp", "whatsapp", False),
+            ("Discord", "discord", False),
+            ("OneNote", "onenote", False),
+        ):
+            cards.append({"name": name, "surface": "DESKTOP", **desktop_state(alias, host_only=host_only)})
+
+        browser_ready = bool(self.runtime.config.browser_backend == "playwright" and self.runtime.config.browser_executable_path)
+        cards.append({
+            "name": "Gmail",
+            "surface": "BROWSER",
+            "status": "LOGIN_REQUIRED" if browser_ready and self.runtime.config.browser_owner_persistent_opt_in else "NOT_CONFIGURED",
+            "reason": "dedicated_owner_browser_session_required",
+        })
+        cards.append({
+            "name": "YouTube",
+            "surface": "BROWSER",
+            "status": "DEGRADED" if browser_ready else "NOT_CONFIGURED",
+            "reason": "bounded_public_browser_surface" if browser_ready else "browser_surface_not_configured",
+        })
+        cards.extend((
+            {"name": "Groq", "surface": "API", **state_for_architecture("groq", architecture.get("groq", {}).get("model") if isinstance(architecture.get("groq"), dict) else None)},
+            {"name": "Gemini", "surface": "API", **state_for_architecture("gemini", architecture.get("gemini", {}).get("model") if isinstance(architecture.get("gemini"), dict) else None)},
+            {"name": "Local Model", "surface": "LOCAL", **state_for_architecture("local", architecture.get("local", {}).get("model") if isinstance(architecture.get("local"), dict) else None)},
+        ))
+
+        providers = self.runtime.developer_workers.providers()
+        codex = next((provider for provider in providers if provider.name == "codex"), None)
+        if not self.runtime.config.codex_worker_enabled:
+            codex_status = {"status": "NOT_CONFIGURED", "reason": "owner_opt_in_required"}
+        elif codex is None or not codex.available:
+            codex_status = {"status": "NOT_CONFIGURED", "reason": "developer_cli_not_installed"}
+        else:
+            codex_status = {"status": "DEGRADED", "reason": "workspace_and_authentication_not_verified"}
+        cards.append({"name": "Codex", "surface": "LOCAL_WORKER", **codex_status})
+        cards.append({"name": "AntiGravity via Codex", "surface": "CODEX_CHILD", "status": "SERVICE_BLOCKED", "reason": "direct_antigravity_access_disabled"})
+
+        audio_configured = self.runtime.config.voice_input_adapter != "noop" and self.runtime.config.voice_output_adapter != "noop"
+        cards.append({
+            "name": "Voice",
+            "surface": "LOCAL",
+            "status": "DEGRADED" if audio_configured else "NOT_CONFIGURED",
+            "reason": "physical_audio_acceptance_pending" if audio_configured else "physical_audio_adapters_not_configured",
+        })
+        return cards
 
     async def installed_applications(self, *, refresh: bool = False) -> dict[str, Any]:
         applications = self.runtime.application_registry.public_list(refresh=refresh)
