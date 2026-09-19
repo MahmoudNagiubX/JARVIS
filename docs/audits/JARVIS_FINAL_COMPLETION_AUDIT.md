@@ -439,3 +439,110 @@ them.
 | Backup | `PASS` | Isolated current-schema backup/restore integrity proof passed without overwriting the live DB. |
 | Security | `PARTIAL` | Local boundary/security counters are green; full owner-service and physical red-team matrix is not run. |
 | Cross-app mission | `NOT_CONFIGURED` | Required owner destinations and authenticated services are absent; no fake mission acceptance was attempted. |
+
+## 13. Autonomous completion continuation — 2026-09-19
+
+This continuation records the code-controlled work completed after the T06
+owner-session preflight. It does not replace the owner, provider, browser,
+voice, or physical gates above.
+
+### Code-controlled slices
+
+| Slice | Truth | Evidence |
+|---|---|---|
+| P3 service workflow boundary | `PARTIAL` | `a205227` adds native-first Spotify/Discord/WhatsApp/OneNote/Notion/ChatGPT/Gmail/YouTube adapter helpers over the existing app/computer/browser authorities. Exact target, ambiguity, unsafe-destination, opaque-app-ref, and fresh-readback tests pass. Semantic sends/edits/playback remain owner/configuration and physical-readback work. |
+| P4/P5 developer worker boundary | `PARTIAL` | Existing approval-bound Codex workspace worker and optional one-child Codex boundary remain the only developer path. No direct AntiGravity process or second authority was added; live provider/authentication is not claimed. |
+| P8 study workflow | `PARTIAL` | Approved-root opaque lecture resolution, ambiguity handling, ordered preparation, and canonical open-file routing are implemented. Optional OneNote/Notion/video/music steps remain truthful `not_configured` until owner targets exist. Strict boolean validation was added for study open dry-run requests. |
+| P10 setup/integrations UX | `PARTIAL` | `fb288cb` and `4f889c3` add backend-derived integration status cards, visible Codex/AntiGravity boundaries, native installed-app Test/Open controls, and the existing exact three-model card. UI tests/build remain green. |
+| P11 authority/hardening | `PASS` for completed local checks | Authority scan found one canonical AgentRuntime, approval engine, permission engine, model gateway, browser service, computer service, memory service, scheduler, worker coordinator, and skill executor. Structural matches are bounded cleanup/provider exception paths or test fixtures; no new duplicate authority or false-success path was found in this scan. |
+
+### Current backup and restore evidence
+
+The live `data/jarvis.sqlite3` was opened read-only as the source for the
+existing `SQLiteBackupService`. A unique temporary destination was used; the
+live database was not overwritten. The result was:
+
+```text
+source_bytes=5300224
+backup_bytes=5300224
+backup_integrity=ok
+backup_valid=true
+restore_integrity=ok
+restored_database_open=true
+restored_owner_rows=1
+restored_memory_rows=0
+```
+
+The current-schema backup/restore gate is therefore `PASS`; this is database
+integrity evidence, not owner-data or external-service acceptance.
+
+### Bounded performance observations
+
+These are observations from the current Windows runner, not invented product
+SLAs. The model measurement used an in-memory test runtime and did not call a
+cloud provider or claim a live local-weight turn.
+
+| Operation | Observation | Interpretation |
+|---|---:|---|
+| Runtime composition | 190.4 ms | bounded in-memory construction |
+| Runtime start | 2.8 ms | test runtime with no external model autostart |
+| Memory retrieval | 0.54 ms | one deterministic local fixture hit |
+| Computer Use dry-run | 0.39 ms | canonical typed service path only |
+| Deterministic route selection | 2.67 ms / 1,000 decisions | no LLM router call; simple-command route selected local first |
+| Installed-app registry refresh | 1.27 s repeat cold refresh; 7.57 s first combined observation | bounded Windows sources; warm exact lookup 0.63 ms; keep as a future performance-budget observation |
+| Ephemeral Brave open/readiness | 5.85 s | one public `https://example.com/` Playwright run, headless and non-persistent; not authenticated acceptance |
+| Wake state fixture | 0.27 ms / 1,000 frames | deterministic detector fixture only, not microphone reliability |
+| Local model startup | not configured | no local model server/weights were started or claimed in this run |
+| Frontend build | 0.9–1.1 s | TypeScript/Vite build passed; runtime visual/physical acceptance remains pending |
+
+`npm audit --audit-level=high` reported no high-severity finding; it reports
+two moderate development-tool advisories in the installed Vitest dependency,
+with a breaking-change-only forced upgrade suggested. No forced dependency
+upgrade was applied during this scoped completion pass.
+
+### Recovery/security truth
+
+The existing model, memory, skill, worker, computer, browser, voice, stale
+reference, approval replay, prompt-injection, SSRF, path/junction, sensitive
+retention, workspace-boundary, secret-redaction, and direct-AntiGravity
+regressions remain the current deterministic recovery/security evidence. The
+new health projection reports missing cloud keys, owner login, browser
+configuration, Codex opt-in, physical voice adapters, and service-surface
+blocking as explicit states; it does not turn those states into `READY`.
+
+The autonomous code-controlled result is therefore:
+
+```text
+CODE_ACCEPTANCE=PASS
+INTEGRATION_ACCEPTANCE=OWNER_ACTION_REQUIRED
+PHYSICAL_ACCEPTANCE=PHYSICAL_PENDING
+RELEASE_READY=OWNER_ACTION_REQUIRED
+OVERALL=JARVIS_AUTONOMOUS_COMPLETION_PARTIAL
+```
+
+The owner must still configure/authenticate exact services in the dedicated
+profile, prove real semantic service workflows, run the physical voice and
+cold-lifecycle gates, and supply final cross-app receipts. No credentials,
+normal Brave profile data, raw screenshots/audio, or owner-specific values
+were committed.
+
+### Final local verification
+
+The fresh completion pass produced:
+
+```text
+targeted_regression=221 passed, 774 deselected, 12 subtests passed
+full_python_regression=992 passed, 3 skipped, 45 subtests passed
+compileall=PASS
+clean_tree_import=PASS
+frontend_tests=75 passed
+frontend_build=PASS
+frontend_audit=0 high, 2 moderate dev-tool advisories; breaking upgrade not applied
+git_diff_check=PASS
+```
+
+The code-controlled verdict is now `PASS`. The overall release verdict remains
+`JARVIS_AUTONOMOUS_COMPLETION_PARTIAL` because owner-authenticated services,
+provider configuration, physical device/voice evidence, and cold lifecycle
+acceptance are external gates still marked `OWNER_ACTION_REQUIRED` or
+`PHYSICAL_PENDING`.

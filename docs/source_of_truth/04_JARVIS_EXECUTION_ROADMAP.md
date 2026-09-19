@@ -383,3 +383,13 @@ public browser page substitutes for authenticated or physical acceptance. The
 closure verdict is `OWNER_ACTION_REQUIRED`: code acceptance is green, while
 owner integrations, physical voice, cold lifecycle acceptance, and the final
 cross-app missions still require direct owner-controlled evidence.
+
+## 10. Autonomous completion continuation — 2026-09-19
+
+The code-controlled continuation is complete through the bounded P3 service
+workflow, P8 developer-worker, P10 integration-health/UI, and P11 backup,
+performance, and security-diagnostic slices. The next gates remain owner and
+physical evidence: configure providers and exact destinations, authenticate in
+the dedicated owner session, prove physical voice/focus and cold lifecycle,
+then run the bounded cross-app missions. These gates must not be replaced by
+fixtures, public-browser evidence, or optimistic UI state.

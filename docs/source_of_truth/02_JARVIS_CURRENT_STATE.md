@@ -354,3 +354,19 @@ installed OpenAI desktop package was verified as Codex rather than ChatGPT.
 Owner-session opt-in, exact service destinations, manual authentication,
 physical voice, safe-paste foreground proof, and clean cold shutdown remain
 open gates. See the current completion audit for the evidence matrix.
+
+## 8. Autonomous completion continuation — 2026-09-19
+
+The current feature branch adds bounded native-first service workflow adapters,
+truthful integration-health projections, approval-bound Codex worker and child
+delegation seams, bounded study/lecture preparation, and installed-application
+Test/Open controls. These additions preserve the canonical runtime, policy,
+approval, computer, browser, memory, and audit authorities.
+
+Backup/restore integrity, deterministic routing, memory retrieval, dry-run
+computer control, installed-app catalog lookup, public ephemeral Brave startup,
+frontend tests/build, and the security/recovery regression suites have current
+local evidence. Owner authentication, configured cloud providers, Heretic
+weight/server readiness, physical voice/focus, cold lifecycle, and semantic
+external-service postconditions remain `OWNER_ACTION_REQUIRED`,
+`NOT_CONFIGURED`, or `PHYSICAL_PENDING` as applicable.

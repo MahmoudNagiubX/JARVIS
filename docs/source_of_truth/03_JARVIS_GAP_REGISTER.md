@@ -566,3 +566,32 @@ configuration/evidence, not silently treated as complete.
   the authenticated shell was `uncertain`. No credentials or nonce-send action
   was attempted; manual authentication and explicit send confirmation remain
   outside unattended execution.
+
+## 17. Autonomous completion continuation — 2026-09-19
+
+- **GAP-0803 — remains `PARTIAL`:** canonical health projection now exposes
+  provider, desktop, browser, worker, voice, and service-surface degradation
+  states; deterministic recovery/security suites remain green. Owner
+  authentication, external-provider failure, physical voice/device loss, cold
+  lifecycle, and cross-app restart evidence remain required.
+- **GAP-0804 — `RESOLVED`:** current live SQLite backup, integrity check,
+  isolated restore, restored open, owner-row, and memory-table checks passed
+  without overwriting the live database.
+- **GAP-0805 — `PARTIAL`:** bounded observations cover runtime composition and
+  start, deterministic route selection, memory retrieval, Computer Use
+  dry-run, installed-app registry cold/warm lookup, ephemeral Brave
+  startup/open, wake fixture, and frontend build. No local weight startup or
+  first-token, authenticated browser, physical audio, or production resource
+  ceiling is claimed; first app-catalog refresh remains a future budget
+  candidate.
+- **GAP-0806 — remains `PARTIAL`:** authority and structural scans found no
+  new duplicate authority or unbounded secret surface; owner-service and
+  physical red-team evidence remain pending.
+- **P3 service integrations — `PARTIAL`:** bounded native-first adapters,
+  exact target resolution, ambiguity rejection, and canonical open/focus
+  readback are implemented and tested. Real login, semantic playback,
+  compose/send/edit, authenticated browser, and independent physical
+  postconditions remain gates.
+- **P10 integration UX — `PARTIAL`:** Settings exposes backend-derived
+  integration status cards and native installed-app Test/Open actions; it does
+  not fabricate active study sessions, login state, or service readiness.
