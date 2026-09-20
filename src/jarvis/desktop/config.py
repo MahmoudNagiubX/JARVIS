@@ -356,6 +356,30 @@ class DesktopProductConfig:
         )
 
 
+def resolve_runtime_config(
+    base: JarvisConfig | None = None,
+    *,
+    path: Path | None = None,
+    settings: DesktopProductConfig | None = None,
+) -> JarvisConfig:
+    """Resolve normal runtime settings through the desktop config authority.
+
+    The environment remains a development/bootstrap input, while an existing
+    product settings file owns persisted non-secret model enablement. Missing
+    settings preserve the environment-only behavior used by first-run and
+    test processes; an existing invalid settings file fails closed through
+    :class:`ProductConfigError`.
+    """
+
+    effective_base = base or JarvisConfig.from_env()
+    if settings is not None:
+        return settings.runtime_config(effective_base)
+    target = path or product_config_path()
+    if not target.is_file():
+        return effective_base
+    return DesktopProductConfig.load(target).runtime_config(effective_base)
+
+
 def _path_text(value: Path | None) -> str | None:
     return str(value) if value is not None else None
 

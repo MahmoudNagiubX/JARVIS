@@ -109,9 +109,9 @@ voice/device, and hosted CI/branch-protection evidence remain external gates.
 | English/Arabic/mixed text generation | `IMPLEMENTED` | Fresh settings-driven English, Egyptian Arabic, mixed Arabic-English, chat, command-intent, and cloud-disabled fallback generations are recorded in `docs/audits/JARVIS_LOCAL_MODEL_READINESS.md` |
 | Model-facing bounded tool selection | `IMPLEMENTED` | schema/tool budget exists |
 | Local vision model | `PLANNED` | multimodal work is delegated to the optional Gemini provider; no local vision model is claimed |
-| Hybrid capability router | `PARTIAL` | Deterministic local/Groq/Gemini routing, bounded fallback, cloud-history compaction, transient media, and route events are implemented and tested. Local live readiness is proven; Groq/Gemini remain optional and key-gated |
-| Groq `openai/gpt-oss-120b` provider | `NOT_CONFIGURED` | modular adapter exists; `JARVIS_GROQ_ENABLED` and `GROQ_API_KEY` are owner-controlled and not configured in the repository |
-| Gemini `gemini-3.5-flash` provider | `NOT_CONFIGURED` | modular GenerateContent adapter exists with transient inline media; `JARVIS_GEMINI_ENABLED` and `GEMINI_API_KEY` are owner-controlled and not configured |
+| Hybrid capability router | `IMPLEMENTED` | Deterministic local/Groq/Gemini routing, bounded fallback, cloud-history compaction, transient media, route events, persisted non-secret enablement, and protected credential injection are implemented and tested; all three providers have fresh live evidence |
+| Groq `openai/gpt-oss-120b` provider | `IMPLEMENTED` | Modular adapter uses the protected current-user store, persisted hybrid enablement, exact model identity, catalog access, and direct generation; fresh-process acceptance is PASS |
+| Gemini `gemini-3.5-flash` provider | `IMPLEMENTED` | Modular GenerateContent adapter uses the protected current-user store, persisted hybrid enablement, exact model identity, text generation, and transient inline media; fresh-process acceptance is PASS |
 
 ### Memory/personal intelligence
 
@@ -414,5 +414,6 @@ The bounded workstation/model review is recorded in
   found; hybrid startup no longer falls back to an assumed Ollama service.
 - Current status: `LOCAL_HERETIC_LIVE_READY`. Fresh real-server evidence covers
   English, Egyptian Arabic, mixed Arabic-English, simple conversation,
-  command-intent, and cloud-disabled offline fallback. Groq/Gemini keys remain
-  optional and are not configured.
+  command-intent, and cloud-disabled offline fallback. Groq/Gemini fresh
+  process acceptance is recorded in
+  `docs/audits/JARVIS_THREE_MODEL_LIVE_ACCEPTANCE.md`.

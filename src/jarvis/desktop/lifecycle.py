@@ -24,7 +24,7 @@ from ..voice.config import VoiceDeviceSelector
 from ..voice.runtime import LocalVoiceRuntime, VoiceRunnerState, build_local_voice_runtime
 from .assets import VoiceAssetManager
 from .audio import AudioDeviceCatalog, MicrophoneCandidateResult, MicrophoneMeterUpdate, MicrophoneProbeResult, PROBE_DEFAULT_SECONDS
-from .config import DesktopProductConfig, ProductConfigError, product_config_path
+from .config import DesktopProductConfig, ProductConfigError, product_config_path, resolve_runtime_config
 from .instance import SingleInstanceLock
 from .installation import ensure_product_interpreter, repository_root
 from .logging import DesktopOperationalLogger
@@ -544,7 +544,7 @@ class JarvisDesktopLifecycle:
             return DesktopProductConfig()
 
     def _new_runtime(self, settings: DesktopProductConfig) -> Any:
-        config = settings.runtime_config(self.base_config_factory())
+        config = resolve_runtime_config(self.base_config_factory(), settings=settings)
         provider_api_keys = self._cloud_provider_keys()
         # Keep custom test/runtime factories backwards compatible while the
         # product-owned factory receives the secure-store values explicitly.

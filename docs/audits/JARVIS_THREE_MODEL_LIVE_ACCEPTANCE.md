@@ -1,18 +1,19 @@
 # JARVIS three-model live acceptance
 
-**Final verdict: `THREE_MODEL_OWNER_KEYS_REQUIRED`**
+**Final verdict: `THREE_MODEL_LIVE_READY`**
 
 **Review date:** 2026-09-20
 **Repository:** `C:\Jarivs\00_final\jarvis`
 **Branch:** `feature/jarvis-final-completion`
-**Code status:** secure-store integration is implemented and tested; owner
-secret entry and a fresh desktop-process cloud retest remain pending.
+**Code status:** secure-store integration and persisted non-secret enablement
+are implemented, tested, and proven from fresh processes.
 
 This report separates provider live evidence from credential-persistence
-evidence. The three providers have real live acceptance evidence from the
-owner's process-only helper runs, but `THREE_MODEL_LIVE_READY` is not claimed
-until the same providers are proven after a normal desktop restart using keys
-read from the protected current-user store.
+evidence. The three providers have real live acceptance evidence, and the
+cloud probes were rerun from fresh PowerShell child processes with
+`GROQ_API_KEY` and `GEMINI_API_KEY` removed from the process environment.
+Those probes loaded credentials from the protected current-user store and
+loaded model enablement from persisted desktop settings.
 
 ## LOCAL
 
@@ -27,6 +28,7 @@ read from the protected current-user store.
 | Runtime SHA-256 | `13C6F274CA84B6BABBDB6EABF51AC109D76C8EA3D1125F8A5C773C9733512E61` |
 | Runtime signature | Authenticode `NotSigned`; signer certificate `NONE` |
 | Endpoint | `http://127.0.0.1:18765` |
+| Fresh-process model exercise | PASS; `llama_cpp_ready`; generation checked |
 
 Live local evidence is `Qwen3.5-4B-Heretic` through llama.cpp with health and
 generation passing. The supervisor owns startup and cleanup; previous runs
@@ -46,10 +48,11 @@ not service-level guarantees.
 | Live text generation | PASS |
 | Fallback used | `false` |
 | Health reason | `groq_ready` |
-| Persistent desktop key | Not yet owner-entered in the protected store |
+| Persistent desktop key | Configured in the protected current-user store; fresh-process probe PASS |
 
-The live result came from the owner-approved process-only acceptance flow. No
-key value is retained in this report.
+The fresh-process result came from the protected current-user store with the
+process-only Groq environment variable removed. No key value is retained in
+this report.
 
 ### Gemini
 
@@ -60,10 +63,11 @@ key value is retained in this report.
 | Live text generation | PASS |
 | Live vision generation | PASS |
 | Fallback used | `false` |
-| Persistent desktop key | Not yet owner-entered in the protected store |
+| Persistent desktop key | Configured in the protected current-user store; fresh-process probe PASS |
 
-The vision acceptance used the bounded generated PNG fixture and direct
-provider isolation. No owner media or key value is retained in this report.
+The fresh-process vision acceptance used the bounded generated PNG fixture and
+direct provider isolation with the process-only Gemini environment variable
+removed. No owner media or key value is retained in this report.
 
 ## SECURE-STORE IMPLEMENTATION
 
@@ -85,9 +89,15 @@ provider objects, and does not copy them to `os.environ`. Missing store values
 are explicit empty provider credentials, so a stale process environment cannot
 silently override the secure-store decision. The existing process-environment
 compatibility path remains available for acceptance tooling and direct tests,
-but it is not the normal desktop source. A normal `python -m jarvis` runtime
-also prefers stored values when present; an empty store preserves the
-process-only acceptance-helper path.
+but it is not the normal desktop source.
+
+The non-secret authority is `%LOCALAPPDATA%\JARVIS\config\settings.json`.
+`resolve_runtime_config()` is shared by the desktop lifecycle and the normal
+CLI runtime, so provider probes do not have a special enablement path. The
+persisted values are `hybrid`, local `Qwen3.5-4B-Heretic`, Groq enabled with
+`openai/gpt-oss-120b`, and Gemini enabled with `gemini-3.5-flash`. A fresh
+`python -m jarvis` process therefore uses the same settings and secure-store
+resolution as desktop startup without requiring cloud environment variables.
 
 Only non-secret desktop settings are persisted: `hybrid` mode, provider
 enablement, the exact required cloud model IDs, and the existing Heretic local
@@ -119,9 +129,8 @@ local requests do not require cloud access.
 | No internet | local Heretic |
 | Gemini media route unavailable | truthful Gemini failure; no unsafe text-only acceptance |
 
-The fallback matrix is covered by deterministic hybrid tests. The owner still
-needs one fresh desktop-process check after secure key entry to close the
-restart-persistence gate.
+The fallback matrix is covered by deterministic hybrid tests. The fresh
+process provider probes above close the restart-persistence gate.
 
 ## SECURITY AND PROVENANCE
 
@@ -138,8 +147,17 @@ restart-persistence gate.
 ## TESTS
 
 The current change adds secure-store round-trip, replacement/deletion, hidden
-entry, no-environment-fallback, settings-scrubbing, and provider-injection
-regressions. Required release checks remain:
+entry, no-environment-fallback, settings-scrubbing, provider-injection, and
+fresh-process settings-resolution regressions. Verification evidence:
+
+- Focused model/config/desktop suite: `134 passed, 919 deselected, 9
+  subtests passed`.
+- Full suite: `1050 passed, 3 skipped, 54 subtests passed`.
+- `python -m compileall src tests scripts -q`: PASS.
+- `python scripts/verify_clean_tree_import.py`: PASS.
+- `git diff --check`: PASS.
+
+The required release commands are:
 
 ```text
 python -m pytest tests -q
@@ -150,15 +168,6 @@ git diff --check
 
 ## OWNER ACTIONS REMAINING
 
-Run these two commands locally and enter each key only at the hidden prompt:
-
-```powershell
-python -m jarvis --set-cloud-key groq
-python -m jarvis --set-cloud-key gemini
-python -m jarvis --cloud-key-status
-```
-
-Then start a fresh normal desktop process and run the bounded provider probes
-or the desktop diagnostics. Once both providers are observed using the stored
-credentials after restart, update this verdict to
-`THREE_MODEL_LIVE_READY` with that fresh-process evidence.
+No additional key entry is required for this acceptance. The existing
+protected current-user entries were read successfully from fresh processes;
+the raw values remain outside the repository and this report.

@@ -42,9 +42,13 @@ python -m jarvis --cloud-key-status
 the protected values into the provider objects for that process only. If a
 value is absent, diagnostics report `missing_key`; they never inspect or show
 the key itself. The non-secret desktop settings persist `hybrid` mode, the
-required model IDs, and provider enablement only. A normal `python -m jarvis`
-runtime also prefers any configured protected values; when the store is empty,
-the provider-acceptance helper retains its process-only compatibility path.
+required model IDs, and provider enablement only at
+`%LOCALAPPDATA%\JARVIS\config\settings.json`. Both desktop startup and normal
+`python -m jarvis` startup resolve that same settings authority through
+`resolve_runtime_config()`. Protected values are injected directly into
+provider objects and are never copied to `os.environ`. When the store is
+empty, the provider-acceptance helper retains its process-only compatibility
+path for explicit development/testing use.
 
 If the secure credential is missing or invalid after setup, the product shows
 `DEGRADED` with `Repair This Device`. Repair uses the existing enrollment

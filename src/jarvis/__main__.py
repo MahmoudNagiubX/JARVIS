@@ -102,6 +102,14 @@ def _secure_provider_keys_for_runtime() -> dict[str, str] | None:
     return values if any(values.values()) else None
 
 
+def _normal_runtime_config() -> JarvisConfig:
+    """Use the same persisted non-secret settings authority as the desktop."""
+
+    from .desktop.config import resolve_runtime_config
+
+    return resolve_runtime_config()
+
+
 def _make_probe_png_fixture(size: int = 64) -> bytes:
     """Build a normal deterministic RGB PNG without reading owner media."""
 
@@ -677,7 +685,8 @@ async def _run_provider_probe(runtime: object, provider_name: str) -> dict[str, 
 
 
 async def _main(args: argparse.Namespace) -> None:
-    async with running_runtime(provider_api_keys=_secure_provider_keys_for_runtime()) as runtime:
+    config = _normal_runtime_config()
+    async with running_runtime(config, provider_api_keys=_secure_provider_keys_for_runtime()) as runtime:
         application = CoreApplication(runtime)
         print(f"JARVIS runtime ready: {runtime.runtime_id}")
         if args.text is not None:

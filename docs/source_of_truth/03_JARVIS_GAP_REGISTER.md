@@ -629,8 +629,24 @@ lifecycle, and cross-app receipts remain open and are not code defects.
   preserved. They are not valid substitutes and were not deleted because
   active voice/OCR usage was not disproven.
 - Hybrid mode reports the exact local provider and does not assume Ollama.
-  Groq/Gemini fallback remains capability-based and key-gated; no cloud key was
-  added. Settings update, autostart, multilingual/offline live smoke, process
-  cleanup, and resource observations are complete. The unsigned runtime is
-  recorded as a provenance limitation, not treated as a signature.
+  Groq/Gemini fallback remains capability-based and key-gated; protected
+  current-user credentials and non-secret provider enablement are now wired
+  through the normal desktop/CLI settings authority. Settings update,
+  autostart, multilingual/offline live smoke, process cleanup, and resource
+  observations are complete. The unsigned runtime is recorded as a provenance
+  limitation, not treated as a signature.
 - Evidence: `docs/audits/JARVIS_LOCAL_MODEL_READINESS.md`.
+
+## 20. Three-model cloud enablement closure - 2026-09-20
+
+- **Three-model live brain - `THREE_MODEL_LIVE_READY`:** the exact Groq
+  `openai/gpt-oss-120b` and Gemini `gemini-3.5-flash` providers are enabled by
+  persisted non-secret settings and receive their credentials only from the
+  existing protected current-user store. The normal desktop lifecycle and
+  `python -m jarvis` resolve the same settings authority; provider probes do
+  not force enablement.
+- Fresh-process acceptance passed with both cloud environment variables
+  removed: Groq catalog plus direct generation, Gemini metadata plus text and
+  vision generation, and local Heretic generation. No raw credential was
+  written to settings, environment, SQLite, Memory, logs, or audit evidence.
+- Evidence: `docs/audits/JARVIS_THREE_MODEL_LIVE_ACCEPTANCE.md`.

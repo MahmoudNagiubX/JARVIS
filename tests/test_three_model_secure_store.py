@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import patch
 
-from jarvis.__main__ import _cloud_key_store_action, _secure_provider_keys_for_runtime
+from jarvis.__main__ import _cloud_key_store_action, _normal_runtime_config, _secure_provider_keys_for_runtime
 from jarvis.config import JarvisConfig
-from jarvis.desktop.config import DesktopProductConfig
+from jarvis.desktop.config import DesktopProductConfig, resolve_runtime_config
 from jarvis.desktop.lifecycle import JarvisDesktopLifecycle
 from jarvis.desktop.secret_store import (
     CLOUD_PROVIDER_SECRET_KEYS,
@@ -160,3 +162,79 @@ def test_desktop_settings_persist_only_non_secret_three_model_enablement(tmp_pat
     assert payload["gemini_model"] == "gemini-3.5-flash"
     assert "api_key" not in json.dumps(payload).casefold()
     assert "secret" not in json.dumps(payload).casefold()
+
+
+def test_fresh_process_loads_persisted_three_model_enablement_without_environment(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    DesktopProductConfig().save(settings_path)
+    child_env = os.environ.copy()
+    child_env.pop("GROQ_API_KEY", None)
+    child_env.pop("GEMINI_API_KEY", None)
+    child_env["PYTHONPATH"] = str(Path(__file__).parents[1] / "src")
+    child_code = """
+import json
+import sys
+from pathlib import Path
+from jarvis.config import JarvisConfig
+from jarvis.desktop.config import resolve_runtime_config
+
+config = resolve_runtime_config(JarvisConfig.from_env(), path=Path(sys.argv[1]))
+print(json.dumps({
+    "model_provider": config.model_provider,
+    "local_model": config.local_model,
+    "groq_enabled": config.groq_enabled,
+    "groq_model": config.groq_model,
+    "gemini_enabled": config.gemini_enabled,
+    "gemini_model": config.gemini_model,
+    "groq_key_in_environment": bool(config.groq_enabled and "GROQ_API_KEY" in __import__("os").environ),
+    "gemini_key_in_environment": bool(config.gemini_enabled and "GEMINI_API_KEY" in __import__("os").environ),
+}))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", child_code, str(settings_path)],
+        cwd=Path(__file__).parents[1],
+        env=child_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    resolved = json.loads(result.stdout)
+    assert resolved == {
+        "model_provider": "hybrid",
+        "local_model": "Qwen3.5-4B-Heretic",
+        "groq_enabled": True,
+        "groq_model": "openai/gpt-oss-120b",
+        "gemini_enabled": True,
+        "gemini_model": "gemini-3.5-flash",
+        "groq_key_in_environment": False,
+        "gemini_key_in_environment": False,
+    }
+
+
+def test_explicit_provider_disablement_survives_normal_settings_resolution(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    DesktopProductConfig(groq_enabled=False, gemini_enabled=False).save(settings_path)
+
+    resolved = resolve_runtime_config(JarvisConfig.from_env(), path=settings_path)
+
+    assert resolved.model_provider == "hybrid"
+    assert resolved.groq_enabled is False
+    assert resolved.gemini_enabled is False
+
+
+def test_cli_runtime_uses_the_same_persisted_settings_authority(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    DesktopProductConfig().save(settings_path)
+
+    with patch("jarvis.desktop.config.product_config_path", return_value=settings_path):
+        resolved = _normal_runtime_config()
+
+    assert resolved.model_provider == "hybrid"
+    assert resolved.local_model == "Qwen3.5-4B-Heretic"
+    assert resolved.groq_enabled is True
+    assert resolved.groq_model == "openai/gpt-oss-120b"
+    assert resolved.gemini_enabled is True
+    assert resolved.gemini_model == "gemini-3.5-flash"
