@@ -7,7 +7,16 @@ import ctypes
 import ctypes.wintypes as wintypes
 import os
 from pathlib import Path
-from typing import Protocol
+from typing import Mapping, Protocol
+
+
+# These identifiers are intentionally bounded and contain no owner-specific
+# value.  The platform store remains the only persistence authority; callers
+# receive the raw value only long enough to construct an in-memory provider.
+CLOUD_PROVIDER_SECRET_KEYS: Mapping[str, str] = {
+    "groq": "jarvis-groq-api-key",
+    "gemini": "jarvis-gemini-api-key",
+}
 
 
 class LocalSecretStore(Protocol):
@@ -18,6 +27,39 @@ class LocalSecretStore(Protocol):
 
 class SecretStoreUnavailable(RuntimeError):
     """The host cannot provide a current-user protected secret store."""
+
+
+def cloud_secret_key(provider: str) -> str:
+    """Return the bounded platform-store identifier for one cloud provider."""
+
+    try:
+        return CLOUD_PROVIDER_SECRET_KEYS[provider.strip().lower()]
+    except (AttributeError, KeyError) as exc:
+        raise ValueError("unsupported cloud provider") from exc
+
+
+def read_cloud_provider_keys(store: LocalSecretStore) -> dict[str, str]:
+    """Read cloud keys for one runtime without consulting process environment.
+
+    An empty string is deliberate: when this mapping is supplied to the model
+    gateway it disables the provider adapters' legacy environment compatibility
+    path for normal desktop startup.
+    """
+
+    values: dict[str, str] = {}
+    for provider, key in CLOUD_PROVIDER_SECRET_KEYS.items():
+        value = store.get(key)
+        values[provider] = value.strip() if isinstance(value, str) else ""
+    return values
+
+
+def cloud_provider_secret_states(store: LocalSecretStore) -> dict[str, str]:
+    """Return only product-facing configured/missing-key states."""
+
+    return {
+        provider: "configured" if bool(value) else "missing_key"
+        for provider, value in read_cloud_provider_keys(store).items()
+    }
 
 
 class MemorySecretStore:

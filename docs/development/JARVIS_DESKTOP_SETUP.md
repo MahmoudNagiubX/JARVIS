@@ -24,6 +24,28 @@ jarvis.desktop` with `PYTHONPATH` and all `JARVIS_VOICE_*` variables absent, and
 creates both the Startup VBS and current-user Start Menu
 `Programs\\JARVIS.lnk`. Neither launcher carries a secret.
 
+## Cloud brain keys
+
+Groq and Gemini keys are separate owner actions and are stored only through
+the same current-user protected secret-store authority. Enter them with the
+hidden prompt; never put a key in a command argument, `.env`, a Windows
+environment variable, settings JSON, SQLite, memory, or a log:
+
+```text
+python -m jarvis --set-cloud-key groq
+python -m jarvis --set-cloud-key gemini
+python -m jarvis --cloud-key-status
+```
+
+`--set-cloud-key` replaces an existing value without printing it, and
+`--delete-cloud-key` removes one provider value. Normal desktop startup reads
+the protected values into the provider objects for that process only. If a
+value is absent, diagnostics report `missing_key`; they never inspect or show
+the key itself. The non-secret desktop settings persist `hybrid` mode, the
+required model IDs, and provider enablement only. A normal `python -m jarvis`
+runtime also prefers any configured protected values; when the store is empty,
+the provider-acceptance helper retains its process-only compatibility path.
+
 If the secure credential is missing or invalid after setup, the product shows
 `DEGRADED` with `Repair This Device`. Repair uses the existing enrollment
 service and does not revoke unrelated devices, reset the database, or copy or

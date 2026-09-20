@@ -263,8 +263,10 @@ class CoreApplication:
             value = architecture.get(key)
             state = value if isinstance(value, dict) else {}
             raw_state = str(state.get("state", "not_configured"))
-            if raw_state in {"configured_unprobed", "ready"}:
-                status = "DEGRADED" if raw_state == "configured_unprobed" else "READY"
+            if raw_state in {"configured", "configured_unprobed", "ready"}:
+                status = "DEGRADED" if raw_state in {"configured", "configured_unprobed"} else "READY"
+            elif raw_state == "unavailable" and str(state.get("reason", "")).endswith("_not_enabled"):
+                status = "NOT_CONFIGURED"
             elif raw_state in {"unavailable", "not_registered"}:
                 status = "SERVICE_BLOCKED"
             else:

@@ -10,7 +10,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..config import JarvisConfig, default_llama_cpp_threads, validate_loopback_http_origin
+from ..config import (
+    REQUIRED_GEMINI_MODEL,
+    REQUIRED_GROQ_MODEL,
+    JarvisConfig,
+    default_llama_cpp_threads,
+    validate_loopback_http_origin,
+)
 from ..local_model_identity import REQUIRED_LOCAL_MODEL, is_required_local_model_path
 from ..network.validation import NetworkValidationError, validate_bind_host, validate_trusted_lan_cidrs
 from ..voice.config import VoiceDeviceSelector, VoiceRuntimeConfig
@@ -87,6 +93,11 @@ class DesktopProductConfig:
     llama_cpp_model_path: Path | None = None
     model_endpoint: str = "http://127.0.0.1:18765"
     model_alias: str = REQUIRED_LOCAL_MODEL
+    model_provider: str = "hybrid"
+    groq_enabled: bool = True
+    groq_model: str = REQUIRED_GROQ_MODEL
+    gemini_enabled: bool = True
+    gemini_model: str = REQUIRED_GEMINI_MODEL
     model_context_size: int = 4096
     model_threads: int = field(default_factory=default_llama_cpp_threads)
     model_gpu_layers: int | None = None
@@ -124,6 +135,16 @@ class DesktopProductConfig:
             raise ProductConfigError("model endpoint or alias is invalid")
         if self.model_alias != REQUIRED_LOCAL_MODEL:
             raise ProductConfigError("local_model_identity_mismatch")
+        if self.model_provider not in {"hybrid", "llama_cpp", "gguf"}:
+            raise ProductConfigError("unsupported model provider")
+        for name, value, required in (
+            ("groq_model", self.groq_model, REQUIRED_GROQ_MODEL),
+            ("gemini_model", self.gemini_model, REQUIRED_GEMINI_MODEL),
+        ):
+            if value != required:
+                raise ProductConfigError(f"{name} must remain {required}")
+        if not isinstance(self.groq_enabled, bool) or not isinstance(self.gemini_enabled, bool):
+            raise ProductConfigError("cloud provider enablement must be boolean")
         if self.llama_cpp_model_path is not None and not is_required_local_model_path(self.llama_cpp_model_path):
             raise ProductConfigError("local_model_identity_mismatch")
         try:
@@ -181,6 +202,11 @@ class DesktopProductConfig:
             "qwen_gguf_path": _path_text(self.llama_cpp_model_path),
             "model_endpoint": self.model_endpoint,
             "model_alias": self.model_alias,
+            "model_provider": self.model_provider,
+            "groq_enabled": self.groq_enabled,
+            "groq_model": self.groq_model,
+            "gemini_enabled": self.gemini_enabled,
+            "gemini_model": self.gemini_model,
             "model_context_size": self.model_context_size,
             "model_threads": self.model_threads,
             "model_gpu_layers": self.model_gpu_layers,
@@ -227,6 +253,11 @@ class DesktopProductConfig:
             llama_cpp_model_path=_path(values.get("qwen_gguf_path"), "qwen_gguf_path"),
             model_endpoint=str(values.get("model_endpoint", "http://127.0.0.1:18765")).strip(),
             model_alias=str(values.get("model_alias", REQUIRED_LOCAL_MODEL)).strip(),
+            model_provider=str(values.get("model_provider", "hybrid")).strip().lower(),
+            groq_enabled=_bool_value(values.get("groq_enabled", True), "groq_enabled"),
+            groq_model=str(values.get("groq_model", REQUIRED_GROQ_MODEL)).strip(),
+            gemini_enabled=_bool_value(values.get("gemini_enabled", True), "gemini_enabled"),
+            gemini_model=str(values.get("gemini_model", REQUIRED_GEMINI_MODEL)).strip(),
             model_context_size=int(values.get("model_context_size", 4096)),
             model_threads=int(values.get("model_threads", default_llama_cpp_threads())),
             model_gpu_layers=(int(values["model_gpu_layers"]) if values.get("model_gpu_layers") is not None else None),
@@ -275,6 +306,8 @@ class DesktopProductConfig:
         """Apply only safe product model settings to the existing runtime config."""
 
         provider = base.model_provider
+        if provider in {"hybrid", "llama_cpp", "gguf"}:
+            provider = self.model_provider
         if (
             provider not in {"hybrid", "llama_cpp", "gguf"}
             and self.llama_cpp_server_path is not None
@@ -288,6 +321,10 @@ class DesktopProductConfig:
             fallback_model=self.model_alias,
             ollama_base_url=self.model_endpoint,
             local_model=self.model_alias,
+            groq_enabled=self.groq_enabled,
+            groq_model=self.groq_model,
+            gemini_enabled=self.gemini_enabled,
+            gemini_model=self.gemini_model,
             llama_cpp_server_path=str(self.llama_cpp_server_path) if self.llama_cpp_server_path else base.llama_cpp_server_path,
             llama_cpp_model_path=str(self.llama_cpp_model_path) if self.llama_cpp_model_path else base.llama_cpp_model_path,
             llama_cpp_context_size=self.model_context_size,

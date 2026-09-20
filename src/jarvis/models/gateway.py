@@ -31,6 +31,7 @@ class ModelGateway:
         *,
         event_bus: Any | None = None,
         repository: Any | None = None,
+        provider_api_keys: Mapping[str, str | None] | None = None,
     ) -> None:
         gateway_config = ModelGatewayConfig.from_config(config)
         self.config = gateway_config
@@ -58,7 +59,7 @@ class ModelGateway:
         ):
             raise ValueError("hybrid_cloud_model_identity_mismatch")
         if provider_name == "hybrid":
-            self._configure_hybrid(config, gateway_config)
+            self._configure_hybrid(config, gateway_config, provider_api_keys=provider_api_keys)
         elif not self.providers:
             if provider_name == "mock":
                 self.providers["mock"] = MockModelProvider()
@@ -93,7 +94,13 @@ class ModelGateway:
                 gateway_config.fallback_model,
             )
 
-    def _configure_hybrid(self, config: JarvisConfig, gateway_config: ModelGatewayConfig) -> None:
+    def _configure_hybrid(
+        self,
+        config: JarvisConfig,
+        gateway_config: ModelGatewayConfig,
+        *,
+        provider_api_keys: Mapping[str, str | None] | None = None,
+    ) -> None:
         """Build all three adapters behind this gateway without contacting them."""
 
         if "local" not in self.providers:
@@ -131,6 +138,7 @@ class ModelGateway:
             "groq",
             GroqProvider(
                 model=gateway_config.groq_model,
+                api_key=self._provider_api_key(provider_api_keys, "groq"),
                 enabled=gateway_config.groq_enabled,
                 timeout_seconds=gateway_config.groq_timeout_seconds,
                 reasoning_effort=gateway_config.groq_reasoning_effort,
@@ -140,10 +148,29 @@ class ModelGateway:
             "gemini",
             GeminiProvider(
                 model=gateway_config.gemini_model,
+                api_key=self._provider_api_key(provider_api_keys, "gemini"),
                 enabled=gateway_config.gemini_enabled,
                 timeout_seconds=gateway_config.gemini_timeout_seconds,
             ),
         )
+
+    @staticmethod
+    def _provider_api_key(
+        provider_api_keys: Mapping[str, str | None] | None,
+        provider: str,
+    ) -> str | None:
+        """Resolve an explicit key mapping without retaining the mapping.
+
+        A missing mapping preserves the historical provider compatibility path
+        for direct CLI/tests. Once desktop startup supplies a mapping, a
+        missing entry becomes ``""`` so a stale environment value cannot
+        silently override the secure-store decision.
+        """
+
+        if provider_api_keys is None:
+            return None
+        value = provider_api_keys.get(provider)
+        return value.strip() if isinstance(value, str) else ""
 
     async def start(self) -> LlamaRuntimeStatus | None:
         """Optionally start an explicitly configured live local model."""
@@ -187,15 +214,15 @@ class ModelGateway:
                 active = bool(enabled)
                 has_key = bool(getattr(provider, "_api_key", ""))
                 if not active:
-                    state, available, reason = "disabled", False, f"{name}_not_enabled"
+                    state, available, reason = "unavailable", False, f"{name}_not_enabled"
                 elif not has_key:
                     state, available, reason = "missing_key", False, f"{name}_api_key_missing"
                 else:
-                    state, available, reason = "configured_unprobed", None, f"{name}_health_not_probed"
+                    state, available, reason = "configured", None, f"{name}_health_not_probed"
                 return {"provider": provider_name, "model": model, "state": state, "available": available, "reason": reason}
             if provider_name == "mock":
                 return {"provider": provider_name, "model": model, "state": "ready", "available": True, "reason": "mock_provider"}
-            return {"provider": provider_name, "model": model, "state": "configured_unprobed", "available": None, "reason": "local_health_not_probed"}
+            return {"provider": provider_name, "model": model, "state": "configured", "available": None, "reason": "local_health_not_probed"}
 
         return {
             "provider_mode": self.config.provider,
@@ -209,6 +236,67 @@ class ModelGateway:
             },
         }
 
+    async def generate_direct(self, provider_name: str, request: LLMRequest, route: ModelRoute) -> LLMResponse:
+        """Call one selected provider exactly once, without hybrid fallback."""
+
+        if self.config.provider != "hybrid":
+            raise ModelProviderError("direct_provider_probe_requires_hybrid")
+        if provider_name not in self._hybrid_models:
+            raise ModelProviderError("provider_not_registered")
+        selection = self.selection(route)
+        if selection.provider != provider_name:
+            raise ModelProviderError("provider_route_mismatch")
+        provider = self.providers.get(provider_name)
+        if provider is None:
+            raise ModelProviderError("provider_not_registered")
+        if hasattr(provider, "supports_route") and not provider.supports_route(route):
+            raise ModelProviderError("model_route_unsupported")
+        routed = self._request_for_provider(request, self._hybrid_models[provider_name], provider_name)
+        response = await provider.generate(routed)
+        if response.provider is None:
+            return replace(response, provider=provider_name)
+        return response
+
+    def provider_response_summary(self, provider_name: str) -> dict[str, object] | None:
+        """Return a provider's bounded in-memory diagnostic summary, if available."""
+
+        provider = self.providers.get(provider_name)
+        summary = getattr(provider, "last_response_summary", None)
+        return dict(summary) if isinstance(summary, dict) else None
+
+    def provider_credential_status(self, provider_name: str) -> dict[str, object] | None:
+        """Return only provider-owned credential presence metadata."""
+
+        provider = self.providers.get(provider_name)
+        status_getter = getattr(provider, "credential_status", None)
+        status = status_getter() if callable(status_getter) else None
+        return dict(status) if isinstance(status, dict) else None
+
+    def reset_provider_request_trace(self, provider_name: str) -> None:
+        """Reset a provider's bounded, secret-free request trace."""
+
+        provider = self.providers.get(provider_name)
+        resetter = getattr(provider, "reset_request_trace", None)
+        if callable(resetter):
+            resetter()
+
+    def provider_request_trace(self, provider_name: str) -> list[dict[str, object]]:
+        """Return bounded request structure for acceptance diagnostics only."""
+
+        provider = self.providers.get(provider_name)
+        getter = getattr(provider, "request_trace", None)
+        trace = getter() if callable(getter) else None
+        return [dict(item) for item in trace if isinstance(item, dict)] if isinstance(trace, list) else []
+
+    def provider_http_diagnostic(self, provider_name: str) -> dict[str, object] | None:
+        """Return the provider's bounded HTTP diagnostic, if one was recorded."""
+
+        provider = self.providers.get(provider_name)
+        diagnostic = getattr(provider, "last_http_diagnostic", None)
+        as_dict = getattr(diagnostic, "as_dict", None)
+        values = as_dict() if callable(as_dict) else None
+        return dict(values) if isinstance(values, dict) else None
+
     async def generate(self, request: LLMRequest, route: ModelRoute = ModelRoute.GENERAL_REASONING) -> LLMResponse:
         if self.config.provider == "hybrid":
             return await self._generate_hybrid(request, route)
@@ -218,14 +306,7 @@ class ModelGateway:
             raise ModelProviderError("provider_not_registered")
         if hasattr(provider, "supports_route") and not provider.supports_route(route):
             raise ModelProviderError("model_route_unsupported")
-        routed = request if request.model == selection.model else request.__class__(
-            request_id=request.request_id,
-            messages=request.messages,
-            model=selection.model,
-            tools=request.tools,
-            max_output_tokens=request.max_output_tokens,
-            timeout_seconds=request.timeout_seconds,
-        )
+        routed = request if request.model == selection.model else replace(request, model=selection.model)
         response = await provider.generate(routed)
         if response.provider is None:
             return response.__class__(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -280,7 +281,11 @@ class JarvisRuntime:
         await self.event_bus.close()
 
 
-def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
+def create_runtime(
+    config: JarvisConfig | None = None,
+    *,
+    provider_api_keys: Mapping[str, str | None] | None = None,
+) -> JarvisRuntime:
     """Compose the foundation without opening I/O or loading any model."""
 
     effective_config = config or JarvisConfig.from_env()
@@ -299,7 +304,12 @@ def create_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
     audit = DurableAuditService(repository)
     registry = default_registry()
     tool_service = ToolExecutionService(repository, event_bus, registry, permission, approval, audit)
-    models = ModelGateway(effective_config, event_bus=event_bus, repository=repository)
+    models = ModelGateway(
+        effective_config,
+        event_bus=event_bus,
+        repository=repository,
+        provider_api_keys=provider_api_keys,
+    )
     satellite = WindowsSatelliteRegistry()
     satellite_transport = SatelliteTransportService(
         satellite,
@@ -793,15 +803,23 @@ def _register_capabilities(capabilities: CapabilityRegistry) -> None:
     capabilities.register(CapabilityDescriptor("perception.screen", "perception-adapter", None, windows, "read", permission="tool.request", metadata={"continuous_capture": False, "raw_frame_retention": False, "reason": None if windows else "windows_desktop_unavailable"}))
 
 
-async def bootstrap_runtime(config: JarvisConfig | None = None) -> JarvisRuntime:
-    runtime = create_runtime(config)
+async def bootstrap_runtime(
+    config: JarvisConfig | None = None,
+    *,
+    provider_api_keys: Mapping[str, str | None] | None = None,
+) -> JarvisRuntime:
+    runtime = create_runtime(config, provider_api_keys=provider_api_keys)
     await runtime.start()
     return runtime
 
 
 @asynccontextmanager
-async def running_runtime(config: JarvisConfig | None = None) -> AsyncIterator[JarvisRuntime]:
-    runtime = await bootstrap_runtime(config)
+async def running_runtime(
+    config: JarvisConfig | None = None,
+    *,
+    provider_api_keys: Mapping[str, str | None] | None = None,
+) -> AsyncIterator[JarvisRuntime]:
+    runtime = await bootstrap_runtime(config, provider_api_keys=provider_api_keys)
     try:
         yield runtime
     finally:

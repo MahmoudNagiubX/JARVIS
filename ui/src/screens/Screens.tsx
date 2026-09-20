@@ -1440,7 +1440,7 @@ export function SettingsScreen() {
             ))}
           </div>
           <div className="notice">
-            Only the selected capability route is called. Cloud cards stay unavailable until their environment key and provider health are confirmed; local fallback remains the offline path.
+            Only the selected capability route is called. Cloud cards use the protected current-user store and report configured, missing_key, ready, or unavailable; local fallback remains the offline path.
           </div>
         </FramePanel>
 

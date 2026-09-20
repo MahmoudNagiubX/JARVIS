@@ -11,6 +11,7 @@ from ..browser.profile import BrowserProfilePolicy, BrowserProfilePolicyError, v
 from .assets import VoiceAssetManager
 from .config import DesktopProductConfig, ProductConfigError
 from .lifecycle import PRODUCT_SECRET_KEY, JarvisDesktopLifecycle
+from .secret_store import SecretStoreUnavailable, cloud_provider_secret_states
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +48,18 @@ class DesktopDiagnostics:
             results.append(DiagnosticResult("local_brain", "PASS" if model.available else "FAIL", model.reason))
         except Exception as exc:
             results.append(DiagnosticResult("local_brain", "FAIL", exc.__class__.__name__))
+        architecture = runtime.models.architecture_snapshot()
+        for provider in ("groq", "gemini"):
+            value = architecture.get(provider)
+            state = value.get("state") if isinstance(value, dict) else None
+            display_state = {
+                "configured_unprobed": "configured",
+                "configured": "configured",
+                "missing_key": "missing_key",
+                "ready": "ready",
+            }.get(str(state), "unavailable")
+            reason = value.get("reason", "provider_unavailable") if isinstance(value, dict) else "provider_unavailable"
+            results.append(DiagnosticResult(f"{provider}_brain", display_state, str(reason)[:160]))
         if settings is not None:
             assets = self.lifecycle.asset_manager.configured_or_discovered(settings.voice_config())
             results.extend(DiagnosticResult(item.name, "PASS" if item.ready else "FAIL", item.reason) for item in assets.statuses())
@@ -58,15 +71,26 @@ class DesktopDiagnostics:
 
     def _offline_checks(self, settings: DesktopProductConfig | None) -> list[DiagnosticResult]:
         if settings is None:
-            return [DiagnosticResult("core_db", "UNKNOWN", "runtime_not_started")]
+            return [DiagnosticResult("core_db", "UNKNOWN", "runtime_not_started"), *self._cloud_checks()]
         assets = self.lifecycle.asset_manager.configured_or_discovered(settings.voice_config())
         return [
             DiagnosticResult("core_db", "UNKNOWN", "runtime_not_started"),
             DiagnosticResult("identity", "PASS" if settings.identity_id else "FAIL", "identity_missing" if not settings.identity_id else ""),
             DiagnosticResult("device_credential", "UNKNOWN", "runtime_not_started"),
+            *self._cloud_checks(),
             *(DiagnosticResult(item.name, "PASS" if item.ready else "FAIL", item.reason) for item in assets.statuses()),
             DiagnosticResult("microphone", "PASS" if settings.input_device else "FAIL", "selector_missing" if not settings.input_device else ""),
             DiagnosticResult("speaker", "PASS" if settings.output_device else "FAIL", "selector_missing" if not settings.output_device else ""),
+        ]
+
+    def _cloud_checks(self) -> list[DiagnosticResult]:
+        try:
+            states = cloud_provider_secret_states(self.lifecycle._secret_store())
+        except (OSError, SecretStoreUnavailable):
+            states = {"groq": "unavailable", "gemini": "unavailable"}
+        return [
+            DiagnosticResult(f"{provider}_brain", state, f"{provider}_{state}")
+            for provider, state in states.items()
         ]
 
     def _node_checks(self, settings: DesktopProductConfig | None) -> list[DiagnosticResult]:

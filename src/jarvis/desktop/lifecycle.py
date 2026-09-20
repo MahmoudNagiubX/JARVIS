@@ -29,7 +29,7 @@ from .instance import SingleInstanceLock
 from .installation import ensure_product_interpreter, repository_root
 from .logging import DesktopOperationalLogger
 from .model import LocalModelDiscovery
-from .secret_store import LocalSecretStore, SecretStoreUnavailable, platform_secret_store
+from .secret_store import LocalSecretStore, SecretStoreUnavailable, platform_secret_store, read_cloud_provider_keys
 from .startup import UserStartupManager
 
 
@@ -544,7 +544,25 @@ class JarvisDesktopLifecycle:
             return DesktopProductConfig()
 
     def _new_runtime(self, settings: DesktopProductConfig) -> Any:
-        return self.runtime_factory(settings.runtime_config(self.base_config_factory()))
+        config = settings.runtime_config(self.base_config_factory())
+        provider_api_keys = self._cloud_provider_keys()
+        # Keep custom test/runtime factories backwards compatible while the
+        # product-owned factory receives the secure-store values explicitly.
+        if self.runtime_factory is create_runtime:
+            return create_runtime(config, provider_api_keys=provider_api_keys)
+        return self.runtime_factory(config)
+
+    def _cloud_provider_keys(self) -> dict[str, str]:
+        """Load cloud credentials only for the lifetime of this runtime.
+
+        A missing/unavailable store is a truthful missing-key state. It never
+        falls back to process environment during normal desktop startup.
+        """
+
+        try:
+            return read_cloud_provider_keys(self._secret_store())
+        except (OSError, SecretStoreUnavailable):
+            return {"groq": "", "gemini": ""}
 
     @staticmethod
     def _resolve_single_owner(runtime: Any) -> dict[str, Any] | None:

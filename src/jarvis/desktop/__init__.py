@@ -8,7 +8,15 @@ it does not create a second domain authority.
 from .config import DesktopProductConfig, ProductConfigError, product_config_path
 from .lifecycle import DesktopPhase, DesktopStatus, JarvisDesktopLifecycle
 from .model import LocalModelDiscovery, LocalModelReferences
-from .secret_store import LocalSecretStore, MemorySecretStore, platform_secret_store
+from .secret_store import (
+    CLOUD_PROVIDER_SECRET_KEYS,
+    LocalSecretStore,
+    MemorySecretStore,
+    cloud_provider_secret_states,
+    cloud_secret_key,
+    platform_secret_store,
+    read_cloud_provider_keys,
+)
 
 __all__ = [
     "DesktopPhase",
@@ -19,7 +27,11 @@ __all__ = [
     "LocalModelReferences",
     "LocalSecretStore",
     "MemorySecretStore",
+    "CLOUD_PROVIDER_SECRET_KEYS",
     "ProductConfigError",
+    "cloud_provider_secret_states",
+    "cloud_secret_key",
     "platform_secret_store",
     "product_config_path",
+    "read_cloud_provider_keys",
 ]

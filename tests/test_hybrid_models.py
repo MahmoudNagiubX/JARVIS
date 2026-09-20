@@ -7,6 +7,8 @@ import unittest
 import urllib.error
 from collections import deque
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -16,8 +18,15 @@ from jarvis.api.core import CoreApplication
 from jarvis.bootstrap import create_runtime
 from jarvis.config import JarvisConfig
 from jarvis.contracts import LLMInputMedia, LLMMessage, LLMRequest, LLMResponse, LLMRole
-from jarvis.models.cloud import GeminiProvider, GroqProvider
+from jarvis.models.cloud import (
+    GeminiHTTPDiagnostic,
+    GeminiHTTPError,
+    GeminiProvider,
+    GroqHTTPError,
+    GroqProvider,
+)
 from jarvis.models.gateway import ModelGateway
+from jarvis.models.health import ModelHealth
 from jarvis.models.routing import CapabilityRouter, ModelRoute
 from jarvis.models.providers import ModelProviderError, MockModelProvider
 
@@ -86,6 +95,16 @@ class _Repository:
 
 
 class HybridRoutingTests(unittest.TestCase):
+    def test_groq_probe_helper_keeps_secret_process_only_and_cleans_up(self) -> None:
+        helper = (Path(__file__).parents[1] / "scripts" / "invoke_cloud_provider_probe.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("SecureStringToBSTR", helper)
+        self.assertIn("SetEnvironmentVariable($environmentName, $plain, 'Process')", helper)
+        self.assertIn("& python -m jarvis --model-provider-probe $Provider", helper)
+        self.assertIn("SetEnvironmentVariable($environmentName, $null, 'Process')", helper)
+        self.assertNotIn("'User'", helper)
+        self.assertNotIn("'Machine'", helper)
+
     def test_exact_hybrid_model_contract_is_preserved(self) -> None:
         config = JarvisConfig(environment="test", model_provider="hybrid")
         self.assertEqual(config.local_model, "Qwen3.5-4B-Heretic")
@@ -231,14 +250,173 @@ class CloudProviderTests(unittest.IsolatedAsyncioTestCase):
             "https://api.groq.com/openai/v1/chat/completions", 429, "rate", {}, None,
         )])
         provider = GroqProvider(api_key="groq-secret", enabled=True, urlopen=fake)
-        with self.assertRaisesRegex(ModelProviderError, "groq_rate_limited") as raised:
+        with self.assertRaisesRegex(ModelProviderError, "groq_http_429_rate_limit_or_quota") as raised:
             await provider.generate(LLMRequest("r", (LLMMessage(LLMRole.USER, "x"),)))
         self.assertNotIn("groq-secret", str(raised.exception))
+
+    async def test_groq_health_uses_working_model_catalog_and_exact_required_id(self) -> None:
+        fake = _FakeOpen([_Response(json.dumps({
+            "object": "list",
+            "data": [{"id": "openai/gpt-oss-120b", "active": True}],
+        }).encode())])
+        provider = GroqProvider(api_key="groq-secret", enabled=True, urlopen=fake)
+
+        health = await provider.health("openai/gpt-oss-120b")
+
+        self.assertTrue(health.available)
+        self.assertEqual(health.provider, "groq")
+        self.assertEqual(health.model, "openai/gpt-oss-120b")
+        self.assertEqual(health.reason, "groq_ready")
+        self.assertEqual(fake.requests[0].full_url, "https://api.groq.com/openai/v1/models")
+        self.assertNotIn("/models/", fake.requests[0].full_url)
+
+    async def test_groq_runtime_trace_matches_catalog_and_generation_contract(self) -> None:
+        fake = _FakeOpen([
+            _Response(json.dumps({
+                "object": "list",
+                "data": [{"id": "openai/gpt-oss-120b", "active": True}],
+            }).encode()),
+            _Response(json.dumps({
+                "id": "chatcmpl-probe",
+                "model": "openai/gpt-oss-120b",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "READY"},
+                    "finish_reason": "stop",
+                }],
+            }).encode()),
+        ])
+        trace_key = "gsk_synthetic_trace_key_123456"
+        provider = GroqProvider(api_key=trace_key, enabled=True, urlopen=fake)
+
+        health = await provider.health("openai/gpt-oss-120b")
+        await provider.generate(LLMRequest(
+            "groq-trace",
+            (LLMMessage(LLMRole.USER, "Reply READY."),),
+            model="openai/gpt-oss-120b",
+            max_output_tokens=64,
+        ))
+
+        self.assertTrue(health.available)
+        trace = provider.request_trace()
+        self.assertEqual([item["phase"] for item in trace], ["catalog", "generation"])
+        self.assertEqual(trace[0]["method"], "GET")
+        self.assertEqual(trace[0]["url"], "https://api.groq.com/openai/v1/models")
+        self.assertEqual(trace[1]["method"], "POST")
+        self.assertEqual(trace[1]["url"], "https://api.groq.com/openai/v1/chat/completions")
+        for item in trace:
+            self.assertTrue(item["authorization_present"])
+            self.assertEqual(item["accept_header"], "application/json")
+            self.assertEqual(item["user_agent"], "JARVIS/1.0")
+            self.assertFalse(item["user_agent"].startswith("Python-urllib"))
+            self.assertTrue(item["prefix_valid"])
+            self.assertEqual(item["key_length"], len(trace_key))
+        for request in fake.requests:
+            self.assertEqual(request.get_header("User-agent"), "JARVIS/1.0")
+            self.assertFalse(request.get_header("User-agent").startswith("Python-urllib"))
+            self.assertTrue(request.get_header("Authorization"))
+            self.assertEqual(request.get_header("Accept"), "application/json")
+        trace_blob = json.dumps(trace)
+        self.assertNotIn(trace_key, trace_blob)
+        self.assertNotIn("Bearer", trace_blob)
+        self.assertFalse(any("/models/" in request.full_url for request in fake.requests))
+
+    async def test_groq_cloudflare_1010_summary_is_bounded_and_secret_safe(self) -> None:
+        body = (
+            b"<!DOCTYPE html><html><title>Attention Required</title>"
+            b"<p>Error 1010: browser_signature_banned</p>"
+            b"<p>Bearer groq-secret must never be retained</p></html>"
+        )
+        provider = GroqProvider(
+            api_key="groq-secret",
+            enabled=True,
+            urlopen=_FakeOpen([_Response(body, status=403)]),
+        )
+
+        health = await provider.health("openai/gpt-oss-120b")
+
+        self.assertFalse(health.available)
+        diagnostic = provider.last_http_diagnostic
+        self.assertIsNotNone(diagnostic)
+        assert diagnostic is not None
+        summary = diagnostic.as_dict()
+        self.assertEqual(summary["http_status"], 403)
+        self.assertTrue(summary["body_contains_1010"])
+        self.assertTrue(summary["body_contains_browser_signature_banned"])
+        self.assertEqual(summary["response_format"], "cloudflare_html_or_text")
+        self.assertNotIn("groq-secret", json.dumps(summary))
+        self.assertNotIn("Attention Required", json.dumps(summary))
+
+    async def test_groq_success_clears_stale_http_diagnostic(self) -> None:
+        fake = _FakeOpen([
+            _Response(b"<html>Error 1010 browser_signature_banned</html>", status=403),
+            _Response(json.dumps({
+                "object": "list",
+                "data": [{"id": "openai/gpt-oss-120b", "active": True}],
+            }).encode()),
+        ])
+        provider = GroqProvider(api_key="groq-secret", enabled=True, urlopen=fake)
+
+        first = await provider.health("openai/gpt-oss-120b")
+        second = await provider.health("openai/gpt-oss-120b")
+
+        self.assertFalse(first.available)
+        self.assertTrue(second.available)
+        self.assertIsNone(provider.last_http_diagnostic)
+
+    async def test_groq_credential_status_is_safe_and_provider_reads_process_environment(self) -> None:
+        with patch.dict(os.environ, {"GROQ_API_KEY": "gsk_synthetic_process_key_123456"}, clear=True):
+            provider = GroqProvider(enabled=True, urlopen=_FakeOpen([]))
+
+        self.assertEqual(provider.credential_status(), {
+            "present": True,
+            "length": len("gsk_synthetic_process_key_123456"),
+            "prefix_valid": True,
+        })
+        self.assertNotIn("synthetic", json.dumps(provider.credential_status()))
+
+    async def test_groq_http_diagnostics_are_structured_without_error_message_or_secret(self) -> None:
+        body = json.dumps({
+            "error": {
+                "type": "authentication_error",
+                "code": "invalid_api_key",
+                "message": "Authorization header and groq-secret must never be emitted",
+            },
+        }).encode()
+        provider = GroqProvider(api_key="groq-secret", enabled=True, urlopen=_FakeOpen([_Response(body, status=401)]))
+
+        health = await provider.health("openai/gpt-oss-120b")
+
+        self.assertFalse(health.available)
+        self.assertEqual(health.reason, "groq_http_401_authentication_failure:authentication_error:invalid_api_key")
+        self.assertNotIn("groq-secret", health.reason)
+        self.assertNotIn("Authorization", health.reason)
+
+    async def test_groq_generate_exposes_only_sanitized_http_diagnostic(self) -> None:
+        body = json.dumps({
+            "error": {
+                "type": "rate_limit_error",
+                "code": "rate_limit_exceeded",
+                "message": "request body and groq-secret must never be emitted",
+            },
+        }).encode()
+        provider = GroqProvider(api_key="groq-secret", enabled=True, urlopen=_FakeOpen([_Response(body, status=429)]))
+
+        with self.assertRaisesRegex(ModelProviderError, "^groq_http_429_rate_limit_or_quota:rate_limit_error:rate_limit_exceeded$") as raised:
+            await provider.generate(LLMRequest("groq-http", (LLMMessage(LLMRole.USER, "hello"),)))
+
+        self.assertIsInstance(raised.exception, GroqHTTPError)
+        diagnostic = getattr(raised.exception, "diagnostic")
+        self.assertEqual(diagnostic.http_status, 429)
+        self.assertEqual(diagnostic.classification, "rate_limit_or_quota")
+        self.assertNotIn("groq-secret", str(raised.exception))
+        self.assertNotIn("request body", str(raised.exception))
 
     async def test_gemini_multimodal_payload_and_function_call_normalization(self) -> None:
         fake = _FakeOpen([_Response(json.dumps({
             "candidates": [{
                 "content": {"parts": [
+                    {"thought": True, "thoughtSignature": "do-not-expose"},
                     {"text": "I see it."},
                     {"functionCall": {"name": "status.read", "args": {}}},
                 ]},
@@ -257,16 +435,384 @@ class CloudProviderTests(unittest.IsolatedAsyncioTestCase):
             tools=({"type": "function", "function": {"name": "status.read", "description": "status", "parameters": {"type": "object"}}},),
         ))
         payload = json.loads(fake.requests[0].data.decode("utf-8"))
-        self.assertEqual(payload["system_instruction"]["parts"][0]["text"], "Be concise.")
-        self.assertEqual(payload["contents"][0]["parts"][1]["inline_data"]["mime_type"], "image/png")
-        self.assertEqual(payload["tools"][0]["function_declarations"][0]["name"], "status.read")
+        self.assertEqual(payload["systemInstruction"]["parts"][0]["text"], "Be concise.")
+        self.assertNotIn("system_instruction", payload)
+        self.assertEqual(payload["contents"][0]["parts"][1]["inlineData"]["mimeType"], "image/png")
+        self.assertEqual(payload["tools"][0]["functionDeclarations"][0]["name"], "status.read")
         self.assertEqual(response.provider, "gemini")
         self.assertEqual(response.text, "I see it.")
         self.assertEqual(response.finish_reason, "tool_calls")
         self.assertEqual(response.tool_calls[0]["function"]["arguments"], {})
+        self.assertNotIn("do-not-expose", json.dumps(provider.last_response_summary))
+
+    async def test_gemini_probe_thinking_config_uses_realistic_budget_without_global_override(self) -> None:
+        fake = _FakeOpen([_Response(json.dumps({
+            "candidates": [{"content": {"parts": [{"text": "READY"}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 1},
+        }).encode())])
+        provider = GeminiProvider(api_key="gemini-secret", enabled=True, urlopen=fake)
+        await provider.generate(LLMRequest(
+            "gemini-thinking-probe",
+            (LLMMessage(LLMRole.USER, "Reply with one short word."),),
+            max_output_tokens=256,
+            provider_options={"gemini_thinking_level": "minimal"},
+        ))
+        payload = json.loads(fake.requests[0].data.decode("utf-8"))
+        self.assertEqual(payload["generationConfig"]["maxOutputTokens"], 256)
+        self.assertEqual(payload["generationConfig"]["thinkingConfig"], {"thinkingLevel": "minimal"})
+
+    async def test_gemini_max_tokens_without_visible_content_is_output_truncated(self) -> None:
+        fake = _FakeOpen([_Response(json.dumps({
+            "candidates": [{
+                "content": {"parts": [{"thought": True, "thoughtSignature": "opaque"}]},
+                "finishReason": "MAX_TOKENS",
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 8,
+                "candidatesTokenCount": 0,
+                "thoughtsTokenCount": 24,
+                "totalTokenCount": 32,
+            },
+        }).encode())])
+        provider = GeminiProvider(api_key="gemini-secret", enabled=True, urlopen=fake)
+        with self.assertRaisesRegex(ModelProviderError, "^gemini_output_truncated$") as raised:
+            await provider.generate(LLMRequest("gemini-truncated", (LLMMessage(LLMRole.USER, "hello"),)))
+        summary = getattr(raised.exception, "summary")
+        self.assertEqual(summary["candidate_count"], 1)
+        self.assertEqual(summary["finish_reason"], "MAX_TOKENS")
+        self.assertEqual(summary["parts_count"], 1)
+        self.assertEqual(summary["usageMetadata"]["thoughtsTokenCount"], 24)
+        self.assertNotIn("opaque", json.dumps(summary))
+
+    async def test_gemini_safety_candidate_without_visible_content_is_content_blocked(self) -> None:
+        fake = _FakeOpen([_Response(json.dumps({
+            "candidates": [{"content": {"parts": []}, "finishReason": "SAFETY"}],
+            "promptFeedback": {"blockReason": "SAFETY"},
+        }).encode())])
+        provider = GeminiProvider(api_key="gemini-secret", enabled=True, urlopen=fake)
+        with self.assertRaisesRegex(ModelProviderError, "^gemini_content_blocked$"):
+            await provider.generate(LLMRequest("gemini-safety", (LLMMessage(LLMRole.USER, "hello"),)))
+
+    async def test_gemini_structural_summary_is_bounded_and_secret_safe(self) -> None:
+        fake = _FakeOpen([_Response(json.dumps({
+            "candidates": [{
+                "content": {"parts": [
+                    {"thought": True, "thoughtSignature": "private-signature", "text": "visible"},
+                ]},
+                "finishReason": "STOP",
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 11,
+                "candidatesTokenCount": 2,
+                "thoughtsTokenCount": 5,
+                "totalTokenCount": 18,
+            },
+            "promptFeedback": {"blockReason": ""},
+            "privateResponseText": "must-not-be-captured",
+        }).encode())])
+        provider = GeminiProvider(api_key="gemini-secret", enabled=True, urlopen=fake)
+        response = await provider.generate(LLMRequest("gemini-summary", (LLMMessage(LLMRole.USER, "hello"),)))
+        self.assertEqual(response.text, "visible")
+        summary = provider.last_response_summary
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertEqual(summary["http_status"], 200)
+        self.assertIn("candidates", summary["top_level_fields"])
+        self.assertEqual(summary["candidate_count"], 1)
+        self.assertTrue(summary["content_exists"])
+        self.assertEqual(summary["parts_count"], 1)
+        self.assertEqual(summary["part_field_names"], [["text", "thought", "thoughtSignature"]])
+        self.assertEqual(summary["usageMetadata"]["thoughtsTokenCount"], 5)
+        self.assertEqual(summary["usageMetadata"]["totalTokenCount"], 18)
+        self.assertNotIn("private-signature", json.dumps(summary))
+        self.assertNotIn("must-not-be-captured", json.dumps(summary))
+
+    async def test_gemini_http_statuses_are_classified_without_emitting_error_body(self) -> None:
+        cases = (
+            (400, "INVALID_ARGUMENT", "gemini_http_400_invalid_request"),
+            (400, "FAILED_PRECONDITION", "gemini_http_400_failed_prerequisite"),
+            (401, "UNAUTHENTICATED", "gemini_http_401_authentication_failure"),
+            (403, "PERMISSION_DENIED", "gemini_http_403_permission_failure"),
+            (404, "NOT_FOUND", "gemini_http_404_model_or_resource_unavailable"),
+            (429, "RESOURCE_EXHAUSTED", "gemini_http_429_rate_limit_or_quota"),
+            (503, "UNAVAILABLE", "gemini_http_5xx_service_unavailable"),
+        )
+        for http_status, google_status, expected_reason in cases:
+            with self.subTest(http_status=http_status, google_status=google_status):
+                body = json.dumps({
+                    "error": {
+                        "code": http_status,
+                        "status": google_status,
+                        "message": "request-body and gemini-secret must never be emitted",
+                    },
+                }).encode("utf-8")
+                provider = GeminiProvider(api_key="gemini-secret", enabled=True, urlopen=_FakeOpen([_Response(body, status=http_status)]))
+
+                health = await provider.health()
+
+                self.assertFalse(health.available)
+                self.assertEqual(health.reason, f"{expected_reason}:{google_status}")
+                self.assertNotIn("gemini-secret", health.reason)
+                self.assertNotIn("request-body", health.reason)
+
+    async def test_gemini_generate_raises_sanitized_structured_http_error(self) -> None:
+        body = json.dumps({
+            "error": {
+                "code": 400,
+                "status": "INVALID_ARGUMENT",
+                "message": "request-body and gemini-secret must never be emitted",
+            },
+        }).encode("utf-8")
+        provider = GeminiProvider(
+            api_key="gemini-secret",
+            enabled=True,
+            urlopen=_FakeOpen([_Response(body, status=400)]),
+        )
+
+        with self.assertRaisesRegex(ModelProviderError, r"^gemini_http_400_invalid_request:INVALID_ARGUMENT$") as raised:
+            await provider.generate(LLMRequest("gemini-http", (LLMMessage(LLMRole.USER, "hello"),)))
+
+        diagnostic = getattr(raised.exception, "diagnostic")
+        self.assertEqual(diagnostic.http_status, 400)
+        self.assertEqual(diagnostic.google_code, 400)
+        self.assertEqual(diagnostic.google_status, "INVALID_ARGUMENT")
+        self.assertNotIn("gemini-secret", str(raised.exception))
+        self.assertNotIn("request-body", str(raised.exception))
+
+    async def test_gemini_acceptance_probe_is_metadata_then_text_then_normal_png(self) -> None:
+        from jarvis.__main__ import _run_provider_probe
+
+        class _ProbeModels:
+            def __init__(self) -> None:
+                self.requests: list[LLMRequest] = []
+                self.gateway_calls = 0
+
+            def selection(self, route: ModelRoute) -> SimpleNamespace:
+                return SimpleNamespace(model="gemini-3.5-flash")
+
+            def architecture_snapshot(self) -> dict[str, object]:
+                return {"gemini": {"state": "configured_unprobed", "reason": "gemini_health_not_probed"}}
+
+            async def health(self, route: ModelRoute) -> ModelHealth:
+                self.health_route = route
+                return ModelHealth("gemini", True, datetime.now(UTC), "gemini_ready", "gemini-3.5-flash")
+
+            async def generate(self, request: LLMRequest, route: ModelRoute) -> LLMResponse:
+                self.gateway_calls += 1
+                raise AssertionError("Gemini acceptance must not use hybrid fallback")
+
+            async def generate_direct(self, provider_name: str, request: LLMRequest, route: ModelRoute) -> LLMResponse:
+                self.assert_direct_provider = provider_name
+                self.requests.append(request)
+                return LLMResponse(request.request_id, "ready", request.model, "STOP", provider="gemini")
+
+        models = _ProbeModels()
+        result = await _run_provider_probe(SimpleNamespace(models=models), "gemini")
+
+        self.assertEqual(result["result"], "PASS")
+        self.assertEqual(result["model_access"]["result"], "PASS")
+        self.assertEqual(result["text_generation"]["result"], "PASS")
+        self.assertEqual(result["vision_generation"]["result"], "PASS")
+        self.assertEqual(result["actual_provider"], "gemini")
+        self.assertEqual(result["actual_model"], "gemini-3.5-flash")
+        self.assertFalse(result["fallback_used"])
+        self.assertEqual(models.assert_direct_provider, "gemini")
+        self.assertEqual(models.gateway_calls, 0)
+        self.assertEqual(models.health_route, ModelRoute.VISION)
+        self.assertEqual(len(models.requests), 2)
+        self.assertEqual([request.max_output_tokens for request in models.requests], [256, 256])
+        self.assertEqual(
+            [request.provider_options for request in models.requests],
+            [{"gemini_thinking_level": "minimal"}, {"gemini_thinking_level": "minimal"}],
+        )
+        self.assertFalse(models.requests[0].messages[0].media)
+        media = models.requests[1].messages[0].media
+        self.assertEqual(media[0].mime_type, "image/png")
+        self.assertGreater(len(media[0].data), 100)
+        self.assertEqual(media[0].data[:8], b"\x89PNG\r\n\x1a\n")
+
+    async def test_gemini_acceptance_probe_exposes_only_sanitized_http_diagnostics(self) -> None:
+        from jarvis.__main__ import _run_provider_probe
+
+        class _ProbeModels:
+            def selection(self, route: ModelRoute) -> SimpleNamespace:
+                return SimpleNamespace(model="gemini-3.5-flash")
+
+            def architecture_snapshot(self) -> dict[str, object]:
+                return {"gemini": {"state": "configured_unprobed", "reason": "gemini_health_not_probed"}}
+
+            async def health(self, route: ModelRoute) -> ModelHealth:
+                return ModelHealth("gemini", True, datetime.now(UTC), "gemini_ready", "gemini-3.5-flash")
+
+            async def generate(self, request: LLMRequest, route: ModelRoute) -> LLMResponse:
+                raise AssertionError("Gemini acceptance must not use hybrid fallback")
+
+            async def generate_direct(self, provider_name: str, request: LLMRequest, route: ModelRoute) -> LLMResponse:
+                raise GeminiHTTPError(GeminiHTTPDiagnostic(
+                    400,
+                    400,
+                    "INVALID_ARGUMENT",
+                    "invalid_request",
+                    "gemini_http_400_invalid_request:INVALID_ARGUMENT",
+                ))
+
+        result = await _run_provider_probe(SimpleNamespace(models=_ProbeModels()), "gemini")
+        blob = json.dumps(result)
+
+        self.assertEqual(result["result"], "FAIL")
+        self.assertEqual(result["text_generation"]["error"], "gemini_http_400_invalid_request:INVALID_ARGUMENT")
+        self.assertIn("diagnostic", result["text_generation"])
+        self.assertNotIn("api_key", blob.casefold())
+        self.assertNotIn("request-body", blob)
+
+    async def test_gemini_acceptance_probe_rejects_fallback_without_calling_gateway_fallback(self) -> None:
+        from jarvis.__main__ import _run_provider_probe
+
+        class _ProbeModels:
+            def __init__(self) -> None:
+                self.direct_calls = 0
+                self.gateway_calls = 0
+
+            def selection(self, route: ModelRoute) -> SimpleNamespace:
+                return SimpleNamespace(model="gemini-3.5-flash")
+
+            def architecture_snapshot(self) -> dict[str, object]:
+                return {"gemini": {"state": "configured_unprobed", "reason": "gemini_health_not_probed"}}
+
+            async def health(self, route: ModelRoute) -> ModelHealth:
+                return ModelHealth("gemini", True, datetime.now(UTC), "gemini_ready", "gemini-3.5-flash")
+
+            async def generate(self, request: LLMRequest, route: ModelRoute) -> LLMResponse:
+                self.gateway_calls += 1
+                raise AssertionError("hybrid fallback must not be reachable")
+
+            async def generate_direct(self, provider_name: str, request: LLMRequest, route: ModelRoute) -> LLMResponse:
+                self.direct_calls += 1
+                return LLMResponse(request.request_id, "local fallback", "Qwen3.5-4B-Heretic", "stop", provider="llama_cpp")
+
+        models = _ProbeModels()
+        result = await _run_provider_probe(SimpleNamespace(models=models), "gemini")
+
+        self.assertEqual(result["result"], "FAIL")
+        self.assertEqual(result["text_generation"]["error"], "provider_model_or_content_mismatch")
+        self.assertTrue(result["text_generation"]["fallback_used"])
+        self.assertEqual(models.direct_calls, 1)
+        self.assertEqual(models.gateway_calls, 0)
 
 
 class HybridGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_groq_acceptance_probe_checks_key_metadata_then_direct_generation(self) -> None:
+        from jarvis.__main__ import _run_provider_probe
+
+        class _ProbeModels:
+            def __init__(self) -> None:
+                self.direct_requests: list[LLMRequest] = []
+                self.gateway_calls = 0
+
+            def selection(self, route: ModelRoute) -> SimpleNamespace:
+                return SimpleNamespace(model="openai/gpt-oss-120b")
+
+            def architecture_snapshot(self) -> dict[str, object]:
+                return {"groq": {"state": "configured_unprobed", "reason": "groq_health_not_probed"}}
+
+            def provider_credential_status(self, provider_name: str) -> dict[str, object]:
+                self.credential_provider = provider_name
+                return {"present": True, "length": 31, "prefix_valid": True}
+
+            def provider_request_trace(self, provider_name: str) -> list[dict[str, object]]:
+                self.trace_provider = provider_name
+                return [{
+                    "phase": "catalog",
+                    "url": "https://api.groq.com/openai/v1/models",
+                    "method": "GET",
+                    "authorization_present": True,
+                    "accept_header": "application/json",
+                    "user_agent": "JARVIS/1.0",
+                    "content_type_present": False,
+                    "key_length": 31,
+                    "prefix_valid": True,
+                    "timeout_seconds": 2.0,
+                }]
+
+            def provider_http_diagnostic(self, provider_name: str) -> dict[str, object]:
+                self.diagnostic_provider = provider_name
+                return {
+                    "http_status": 403,
+                    "classification": "permission_failure",
+                    "error_type": None,
+                    "error_code": None,
+                    "reason": "groq_http_403_permission_failure:cloudflare_1010_browser_signature_banned",
+                    "body_contains_1010": True,
+                    "body_contains_browser_signature_banned": True,
+                    "response_format": "cloudflare_html_or_text",
+                }
+
+            async def health(self, route: ModelRoute) -> ModelHealth:
+                self.health_route = route
+                return ModelHealth("groq", True, datetime.now(UTC), "groq_ready", "openai/gpt-oss-120b")
+
+            async def generate(self, request: LLMRequest, route: ModelRoute) -> LLMResponse:
+                self.gateway_calls += 1
+                raise AssertionError("Groq acceptance must not use hybrid fallback")
+
+            async def generate_direct(self, provider_name: str, request: LLMRequest, route: ModelRoute) -> LLMResponse:
+                self.direct_requests.append(request)
+                self.direct_provider = provider_name
+                return LLMResponse(request.request_id, "Ready", request.model, "stop", provider="groq")
+
+        models = _ProbeModels()
+        result = await _run_provider_probe(SimpleNamespace(models=models), "groq")
+
+        self.assertEqual(result["credential"]["present"], True)
+        self.assertEqual(result["model_access"]["result"], "PASS")
+        self.assertEqual(result["text_generation"]["result"], "PASS")
+        self.assertEqual(result["actual_provider"], "groq")
+        self.assertEqual(result["actual_model"], "openai/gpt-oss-120b")
+        self.assertFalse(result["fallback_used"])
+        self.assertEqual(models.credential_provider, "groq")
+        self.assertEqual(models.health_route, ModelRoute.GENERAL_REASONING)
+        self.assertEqual(models.direct_provider, "groq")
+        self.assertEqual(models.gateway_calls, 0)
+        self.assertEqual(len(models.direct_requests), 1)
+        self.assertEqual(models.direct_requests[0].model, "openai/gpt-oss-120b")
+        self.assertEqual(result["request_trace"][0]["url"], "https://api.groq.com/openai/v1/models")
+        self.assertEqual(models.trace_provider, "groq")
+        self.assertTrue(result["model_access"]["diagnostic"]["body_contains_1010"])
+        self.assertEqual(result["model_access"]["diagnostic"]["response_format"], "cloudflare_html_or_text")
+        self.assertEqual(models.diagnostic_provider, "groq")
+        self.assertEqual(Path(result["source_identity"]["jarvis_package_file"]).name, "__init__.py")
+        self.assertEqual(Path(result["source_identity"]["cloud_module_file"]).name, "cloud.py")
+        self.assertEqual(Path(result["source_identity"]["probe_implementation_file"]).name, "__main__.py")
+
+    async def test_groq_acceptance_probe_rejects_non_groq_response_without_fallback_acceptance(self) -> None:
+        from jarvis.__main__ import _run_provider_probe
+
+        class _ProbeModels:
+            def selection(self, route: ModelRoute) -> SimpleNamespace:
+                return SimpleNamespace(model="openai/gpt-oss-120b")
+
+            def architecture_snapshot(self) -> dict[str, object]:
+                return {"groq": {"state": "configured_unprobed", "reason": "groq_health_not_probed"}}
+
+            def provider_credential_status(self, provider_name: str) -> dict[str, object]:
+                return {"present": True, "length": 31, "prefix_valid": True}
+
+            async def health(self, route: ModelRoute) -> ModelHealth:
+                return ModelHealth("groq", True, datetime.now(UTC), "groq_ready", "openai/gpt-oss-120b")
+
+            async def generate(self, request: LLMRequest, route: ModelRoute) -> LLMResponse:
+                raise AssertionError("hybrid fallback must not be reachable")
+
+            async def generate_direct(self, provider_name: str, request: LLMRequest, route: ModelRoute) -> LLMResponse:
+                return LLMResponse(request.request_id, "local fallback", "Qwen3.5-4B-Heretic", "stop", provider="llama_cpp")
+
+        result = await _run_provider_probe(SimpleNamespace(models=_ProbeModels()), "groq")
+
+        self.assertEqual(result["result"], "FAIL")
+        self.assertEqual(result["text_generation"]["result"], "FAIL")
+        self.assertEqual(result["text_generation"]["error"], "provider_model_or_content_mismatch")
+        self.assertTrue(result["text_generation"]["fallback_used"])
+
     async def test_provider_probe_stops_at_missing_key_without_a_provider_call(self) -> None:
         from jarvis.__main__ import _run_provider_probe
 
@@ -303,7 +849,17 @@ class HybridGatewayTests(unittest.IsolatedAsyncioTestCase):
             def architecture_snapshot(self) -> dict[str, object]:
                 return {"groq": {"state": "configured_unprobed", "reason": "groq_health_not_probed"}}
 
+            def provider_credential_status(self, provider_name: str) -> dict[str, object]:
+                return {"present": True, "length": 31, "prefix_valid": True}
+
+            async def health(self, route: ModelRoute) -> ModelHealth:
+                return ModelHealth("groq", True, datetime.now(UTC), "groq_ready", "openai/gpt-oss-120b")
+
             async def generate(self, request: LLMRequest, route: ModelRoute) -> LLMResponse:
+                self.calls += 1
+                return LLMResponse(request.request_id, "bounded cloud answer", request.model, "stop", provider="groq")
+
+            async def generate_direct(self, provider_name: str, request: LLMRequest, route: ModelRoute) -> LLMResponse:
                 self.calls += 1
                 return LLMResponse(request.request_id, "bounded cloud answer", request.model, "stop", provider="groq")
 
@@ -315,6 +871,32 @@ class HybridGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["actual_model"], "openai/gpt-oss-120b")
         self.assertEqual(result["fallback_used"], False)
         self.assertEqual(models.calls, 1)
+
+    async def test_direct_provider_generation_calls_only_the_requested_gemini_provider(self) -> None:
+        local = _RecordingProvider("local", "local")
+        groq = _RecordingProvider("groq", "groq")
+        gemini = _RecordingProvider("gemini", "gemini")
+        gateway = ModelGateway(
+            JarvisConfig(environment="test", model_provider="hybrid"),
+            {"local": local, "groq": groq, "gemini": gemini},
+        )
+
+        response = await gateway.generate_direct(
+            "gemini",
+            LLMRequest(
+                "direct-gemini",
+                (LLMMessage(LLMRole.USER, "describe"),),
+                provider_options={"gemini_thinking_level": "minimal"},
+            ),
+            ModelRoute.VISION,
+        )
+
+        self.assertEqual(response.provider, "gemini")
+        self.assertEqual(len(gemini.calls), 1)
+        self.assertEqual(gemini.calls[0].model, "gemini-3.5-flash")
+        self.assertEqual(gemini.calls[0].provider_options, {"gemini_thinking_level": "minimal"})
+        self.assertEqual(len(groq.calls), 0)
+        self.assertEqual(len(local.calls), 0)
 
     async def test_hybrid_without_explicit_local_runtime_does_not_assume_ollama(self) -> None:
         gateway = ModelGateway(JarvisConfig(environment="test", model_provider="hybrid"))

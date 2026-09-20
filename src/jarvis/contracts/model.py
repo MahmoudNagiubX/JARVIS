@@ -38,6 +38,7 @@ class LLMRequest:
     tools: tuple[Mapping[str, Any], ...] = ()
     max_output_tokens: int = 512
     timeout_seconds: float | None = None
+    provider_options: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
