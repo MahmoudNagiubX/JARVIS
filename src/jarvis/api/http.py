@@ -84,6 +84,10 @@ class CoreHttpServer:
         session_cookie_name = self._session_cookie_name
 
         class Handler(BaseHTTPRequestHandler):
+            # Browser WebSocket clients require an HTTP/1.1 upgrade response;
+            # BaseHTTPRequestHandler defaults to HTTP/1.0.
+            protocol_version = "HTTP/1.1"
+
             def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
                 parsed = urlparse(self.path)
                 route = self._route(parsed.path)

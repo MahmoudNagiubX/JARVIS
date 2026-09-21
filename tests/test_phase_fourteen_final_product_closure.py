@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -179,6 +180,154 @@ class TestPhaseFourteenFinalProductClosure:
             },
         )
         assert revoked.code == 401
+
+    def test_shared_database_reads_are_serialized_during_background_writes(self) -> None:
+        """Browser polling must not observe a half-completed SQLite operation."""
+
+        errors: list[str] = []
+        stop = threading.Event()
+
+        def writer() -> None:
+            try:
+                for index in range(120):
+                    with self.runtime.database.transaction() as database:
+                        database.execute(
+                            "INSERT INTO owners(id, display_name, status, created_at) VALUES (?, ?, ?, ?)",
+                            (f"database-stress-owner-{index}", "stress", "active", "2026-01-01T00:00:00+00:00"),
+                        )
+                        time.sleep(0.0005)
+            except Exception as exc:  # pragma: no cover - asserted below
+                errors.append(f"writer:{exc.__class__.__name__}")
+            finally:
+                stop.set()
+
+        def reader() -> None:
+            while not stop.is_set():
+                try:
+                    self.runtime.repository.owner_count()
+                except Exception as exc:  # pragma: no cover - asserted below
+                    errors.append(f"reader:{exc.__class__.__name__}")
+
+        readers = [threading.Thread(target=reader, daemon=True) for _ in range(4)]
+        for thread in readers:
+            thread.start()
+        worker = threading.Thread(target=writer, daemon=True)
+        worker.start()
+        worker.join(timeout=10)
+        stop.set()
+        for thread in readers:
+            thread.join(timeout=2)
+
+        assert not worker.is_alive()
+        assert errors == []
+
+    def test_owner_websocket_handshake_uses_http11_and_preserves_session(self) -> None:
+        cookie, _csrf = self.bootstrap_session()
+        host, port = self.server.address
+        sock = socket.create_connection((host, port), timeout=3)
+        try:
+            sock.sendall(
+                (
+                    f"GET /v1/experience/events/ws?topic=system_health HTTP/1.1\r\n"
+                    f"Host: {host}:{port}\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                    "Sec-WebSocket-Version: 13\r\n"
+                    f"Cookie: {cookie}\r\n\r\n"
+                ).encode("ascii")
+            )
+            response = sock.recv(1024).decode("ascii", "replace")
+        finally:
+            sock.close()
+
+        assert response.split("\r\n", 1)[0] == "HTTP/1.1 101 Switching Protocols"
+        session_response, _session = request_json(
+            self.base,
+            "/v1/auth/session",
+            headers={"Cookie": cookie},
+        )
+        assert session_response.status == 200
+
+    def test_normal_owner_bootstrap_chat_refresh_path_remains_authenticated(self) -> None:
+        cookie, csrf = self.bootstrap_session()
+
+        session_response, _session = request_json(
+            self.base,
+            "/v1/auth/session",
+            headers={"Cookie": cookie},
+        )
+        assert session_response.status == 200
+        state_response, _state = request_json(
+            self.base,
+            f"/v1/experience/state?owner_id={self.identity.owner_id}",
+            headers={"Cookie": cookie},
+        )
+        assert state_response.status == 200
+        conversations_response, _conversations = request_json(
+            self.base,
+            "/v1/conversations",
+            headers={"Cookie": cookie},
+        )
+        assert conversations_response.status == 200
+
+        message_response, started = request_json(
+            self.base,
+            "/v1/messages/start",
+            method="POST",
+            payload={"text": "hi", "client_message_id": "browser-session-closure"},
+            headers={
+                "Cookie": cookie,
+                "X-JARVIS-CSRF": csrf,
+                "Content-Type": "application/json",
+            },
+        )
+        assert message_response.status == 202
+        conversation_id = str(started["conversation_id"])
+        run_id = str(started["run_id"])
+
+        messages_response, _messages = request_json(
+            self.base,
+            f"/v1/conversations/{conversation_id}/messages",
+            headers={"Cookie": cookie},
+        )
+        assert messages_response.status == 200
+
+        deadline = time.monotonic() + 5
+        last_state = "queued"
+        while time.monotonic() < deadline:
+            run_response, run = request_json(
+                self.base,
+                f"/v1/runs/{run_id}",
+                headers={"Cookie": cookie},
+            )
+            assert run_response.status == 200
+            last_state = str(run.get("state", "queued"))
+            if last_state in {"succeeded", "failed", "cancelled", "paused"}:
+                break
+            time.sleep(0.05)
+        assert last_state in {"succeeded", "failed", "cancelled", "paused"}
+
+        refresh_response, refreshed = request_json(
+            self.base,
+            "/v1/auth/session/refresh",
+            method="POST",
+            payload={},
+            headers={
+                "Cookie": cookie,
+                "X-JARVIS-CSRF": csrf,
+                "Content-Type": "application/json",
+            },
+        )
+        assert refresh_response.status == 200
+        refreshed_cookie = refresh_response.headers["Set-Cookie"].split(";", 1)[0]
+        refreshed_conversations, _ = request_json(
+            self.base,
+            "/v1/conversations",
+            headers={"Cookie": refreshed_cookie},
+        )
+        assert refreshed_conversations.status == 200
+        assert refreshed["owner_id"] == self.identity.owner_id
 
     def test_pending_approval_projection_contains_backend_run_correlation_and_is_redacted(self) -> None:
         session = self.runtime.repository.create_session(self.identity.owner_id, self.device_id)

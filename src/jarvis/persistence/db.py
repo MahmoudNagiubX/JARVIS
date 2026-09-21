@@ -654,6 +654,72 @@ CREATE INDEX IF NOT EXISTS idx_routine_runs_owner ON routine_runs(owner_id, star
 """
 
 
+class _LockedCursor:
+    """Serialize cursor operations for the shared SQLite connection."""
+
+    def __init__(self, cursor: sqlite3.Cursor, lock: RLock) -> None:
+        self._cursor = cursor
+        self._lock = lock
+
+    def fetchone(self) -> sqlite3.Row | None:
+        with self._lock:
+            return self._cursor.fetchone()
+
+    def fetchmany(self, size: int = -1) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._cursor.fetchmany(size)
+
+    def fetchall(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._cursor.fetchall()
+
+    def __iter__(self):
+        with self._lock:
+            return iter(self._cursor.fetchall())
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._cursor, name)
+
+
+class _LockedConnection:
+    """Small locking proxy that keeps raw SQLite access behind the DB lock."""
+
+    def __init__(self, connection: sqlite3.Connection, lock: RLock) -> None:
+        self._connection = connection
+        self._lock = lock
+
+    def execute(self, *args: object, **kwargs: object) -> _LockedCursor:
+        with self._lock:
+            return _LockedCursor(self._connection.execute(*args, **kwargs), self._lock)
+
+    def executemany(self, *args: object, **kwargs: object) -> _LockedCursor:
+        with self._lock:
+            return _LockedCursor(self._connection.executemany(*args, **kwargs), self._lock)
+
+    def executescript(self, *args: object, **kwargs: object) -> _LockedCursor:
+        with self._lock:
+            return _LockedCursor(self._connection.executescript(*args, **kwargs), self._lock)
+
+    def commit(self) -> None:
+        with self._lock:
+            self._connection.commit()
+
+    def rollback(self) -> None:
+        with self._lock:
+            self._connection.rollback()
+
+    def backup(self, *args: object, **kwargs: object) -> None:
+        with self._lock:
+            self._connection.backup(*args, **kwargs)
+
+    def close(self) -> None:
+        with self._lock:
+            self._connection.close()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._connection, name)
+
+
 class SQLiteDatabase:
     """Thread-safe local database connection with one explicit schema."""
 
@@ -661,11 +727,12 @@ class SQLiteDatabase:
         self.path = path
         if path != ":memory:":
             Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(path, check_same_thread=False)
-        self.connection.row_factory = sqlite3.Row
+        self._lock = RLock()
+        self._raw_connection = sqlite3.connect(path, check_same_thread=False)
+        self._raw_connection.row_factory = sqlite3.Row
+        self.connection = _LockedConnection(self._raw_connection, self._lock)
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.executescript(SCHEMA)
-        self._lock = RLock()
         self._closed = False
 
     @property
@@ -673,7 +740,7 @@ class SQLiteDatabase:
         return self._closed
 
     @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
+    def transaction(self) -> Iterator[_LockedConnection]:
         if self._closed:
             raise RuntimeError("database is closed")
         with self._lock:
@@ -687,7 +754,7 @@ class SQLiteDatabase:
                 self.connection.commit()
 
     @contextmanager
-    def read_lock(self) -> Iterator[sqlite3.Connection]:
+    def read_lock(self) -> Iterator[_LockedConnection]:
         """Serialize connection reads with writes on the shared connection."""
 
         if self._closed:
