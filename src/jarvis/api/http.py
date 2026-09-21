@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
+from secrets import token_hex
 import time
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
@@ -45,12 +46,20 @@ class CoreHttpServer:
         self.application = application
         self.stream_tickets = StreamTicketService()
         self.desktop_sessions = DesktopSessionService()
+        # Cookies are host-scoped, not port-scoped. A stale JARVIS tab from a
+        # previous loopback server could otherwise overwrite the live server's
+        # cookie and turn a valid owner session into principal_not_found.
+        self._session_cookie_name = f"jarvis_session_{token_hex(8)}"
         self._message_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="jarvis-message")
         self.server = ThreadingHTTPServer((host, port), self._handler())
 
     @property
     def address(self) -> tuple[str, int]:
         return self.server.server_address[:2]
+
+    @property
+    def session_cookie_name(self) -> str:
+        return self._session_cookie_name
 
     def serve_forever(self) -> None:
         self.server.serve_forever()
@@ -72,6 +81,7 @@ class CoreHttpServer:
         message_executor = self._message_executor
         public_get_routes = self.PUBLIC_GET_ROUTES
         stream_get_routes = self._STREAM_GET_ROUTES
+        session_cookie_name = self._session_cookie_name
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
@@ -918,7 +928,7 @@ class CoreHttpServer:
                 return route == "/app" or route.startswith("/app/")
 
             def _desktop_session(self) -> Any | None:
-                return desktop_sessions.get_session(self._cookie("jarvis_session"))
+                return desktop_sessions.get_session(self._cookie(session_cookie_name))
 
             def _cookie(self, name: str) -> str | None:
                 parsed = SimpleCookie()
@@ -932,7 +942,7 @@ class CoreHttpServer:
             @staticmethod
             def _session_cookie(token: str, expires_at: Any) -> str:
                 max_age = max(1, int((expires_at - datetime.now(UTC)).total_seconds()))
-                return f"jarvis_session={token}; Max-Age={max_age}; HttpOnly; SameSite=Strict; Path=/"
+                return f"{session_cookie_name}={token}; Max-Age={max_age}; HttpOnly; SameSite=Strict; Path=/"
 
             def _serve_app_asset(self, relative: str) -> None:
                 root = CoreHttpServer._APP_STATIC_ROOT.resolve()

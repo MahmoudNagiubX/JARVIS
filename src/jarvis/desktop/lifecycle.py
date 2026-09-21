@@ -649,6 +649,13 @@ class JarvisDesktopLifecycle:
         )
 
     async def _model_status(self, runtime: Any) -> tuple[Any | None, bool]:
+        # The supervisor is the authority for a product-owned local runtime.
+        # Hybrid mode still owns and starts the local server, so consulting a
+        # routed provider here can report a false negative during desktop
+        # startup even while the supervisor is ready.
+        if getattr(runtime.models, "runtime_supervisor", None) is not None:
+            status = await runtime.models.runtime_health()
+            return status, bool(status and status.ready)
         if runtime.config.model_provider in {"llama_cpp", "gguf"}:
             status = await runtime.models.runtime_health()
             return status, bool(status and status.ready)

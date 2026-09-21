@@ -6,6 +6,11 @@ The normal product entry point is:
 pythonw.exe -m jarvis.desktop
 ```
 
+The product voice environment must also carry the optional `desktop` extra
+(`pystray==0.19.5` and `Pillow>=10,<13`) for the real Windows tray icon and
+its menu callbacks. Without that optional extra, the code remains safe in
+headless/test hosts but the product tray is intentionally unavailable.
+
 The developer entry point remains `python -m jarvis.voice.live` and continues
 to use its explicit environment contract. Normal desktop startup does not
 require `PYTHONPATH`, `JARVIS_VOICE_*`, copied identity/device ids, copied
@@ -49,6 +54,9 @@ required model IDs, and provider enablement only at
 provider objects and are never copied to `os.environ`. When the store is
 empty, the provider-acceptance helper retains its process-only compatibility
 path for explicit development/testing use.
+
+Each running loopback server namespaces its HttpOnly session cookie so an old
+JARVIS tab on a previous local port cannot overwrite the current owner session.
 
 If the secure credential is missing or invalid after setup, the product shows
 `DEGRADED` with `Repair This Device`. Repair uses the existing enrollment

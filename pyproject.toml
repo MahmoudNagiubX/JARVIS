@@ -42,6 +42,10 @@ voice = [
     "faster-whisper==1.2.1",
     "piper-tts==1.7.0",
 ]
+desktop = [
+    "pystray==0.19.5",
+    "Pillow>=10,<13",
+]
 
 [build-system]
 requires = ["setuptools>=68,<70"]

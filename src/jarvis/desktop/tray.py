@@ -25,11 +25,15 @@ class TrayController:
         self,
         lifecycle: JarvisDesktopLifecycle,
         *,
-        open_callback: Callable[[], None] | None = None,
+        open_callback: Callable[[], Any] | None = None,
+        settings_callback: Callable[[], Any] | None = None,
+        diagnostics_callback: Callable[[], Any] | None = None,
         run_async: Callable[[Awaitable[Any]], Any] | None = None,
     ) -> None:
         self.lifecycle = lifecycle
         self.open_callback = open_callback
+        self.settings_callback = settings_callback
+        self.diagnostics_callback = diagnostics_callback
         self.run_async = run_async
         self.menu = TrayMenu("JARVIS - Ready")
         self.icon: Any | None = None
@@ -67,6 +71,14 @@ class TrayController:
             return self._run(self.lifecycle.stop())
         if item == "Mute Output":
             return self.lifecycle.status
+        if item == "Diagnostics":
+            if self.diagnostics_callback:
+                return self.diagnostics_callback()
+            return None
+        if item == "Settings":
+            if self.settings_callback:
+                return self.settings_callback()
+            return None
         return None
 
     async def _restart(self) -> Any:
@@ -88,8 +100,17 @@ class TrayController:
             return
         image = Image.new("RGBA", (32, 32), (8, 11, 16, 255))
         ImageDraw.Draw(image).ellipse((4, 4, 28, 28), outline=(103, 232, 249, 255), width=2)
-        self.icon = pystray.Icon("JARVIS", image, self.menu.title)
+        menu = pystray.Menu(
+            *(pystray.MenuItem(item, self._menu_callback(item)) for item in self.menu.items)
+        )
+        self.icon = pystray.Icon("JARVIS", image, self.menu.title, menu=menu)
         self.icon.run_detached()
+
+    def _menu_callback(self, item: str) -> Callable[[Any, Any], Any]:
+        def callback(_icon: Any, _menu_item: Any) -> Any:
+            return self.invoke(item)
+
+        return callback
 
     def stop(self) -> None:
         self.running = False

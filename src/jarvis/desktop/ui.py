@@ -89,6 +89,7 @@ class DesktopWindow:
         self.run_async = run_async or asyncio.run
         self.view_model = DesktopViewModel(lifecycle)
         self.root: Any | None = None
+        self._ui_thread_id: int | None = None
         self.state_label: Any | None = None
         self.detail_label: Any | None = None
         self.body: Any | None = None
@@ -129,6 +130,8 @@ class DesktopWindow:
         return tuple(actions)
 
     def _build(self) -> bool:
+        if self.root is not None:
+            return True
         try:
             import tkinter as tk
             from tkinter import ttk
@@ -136,6 +139,7 @@ class DesktopWindow:
             self._build_error = exc
             return False
         self.root = tk.Tk()
+        self._ui_thread_id = threading.get_ident()
         self.root.title("JARVIS")
         self.root.geometry("720x720")
         self.root.configure(bg="#080b10")
@@ -151,6 +155,11 @@ class DesktopWindow:
         style.configure("JARVIS.TButton", padding=7)
         return True
 
+    def ensure_root(self) -> bool:
+        """Create the one native root before tray callbacks can arrive."""
+
+        return self._build()
+
     def show_setup(self, on_complete: Callable[[], None] | None = None) -> bool:
         if not self._build():
             return False
@@ -158,9 +167,12 @@ class DesktopWindow:
         return True
 
     def show_status(self) -> bool:
+        if self.root is not None and not self._on_ui_thread():
+            return self._queue_ui(self.show_status)
         if not self._build():
             return False
         self._render_product_panel(setup=False)
+        self._restore_window()
         return True
 
     def _render_product_panel(self, *, setup: bool, on_complete: Callable[[], None] | None = None) -> None:
@@ -621,6 +633,9 @@ class DesktopWindow:
         wizard.after(100, poll)
 
     def show_diagnostics(self) -> None:
+        if self.root is not None and not self._on_ui_thread():
+            self._queue_ui(self.show_diagnostics)
+            return
         if self.root is None:
             return
         from tkinter import messagebox
@@ -650,6 +665,29 @@ class DesktopWindow:
         if self.detail_label is not None:
             self.detail_label.configure(text=value)
 
+    def _on_ui_thread(self) -> bool:
+        return self._ui_thread_id is None or threading.get_ident() == self._ui_thread_id
+
+    def _queue_ui(self, callback: Callable[[], Any]) -> bool:
+        if self.root is None:
+            return False
+        try:
+            self.root.after(0, callback)
+        except Exception:
+            return False
+        return True
+
+    def _restore_window(self) -> None:
+        if self.root is None:
+            return
+        for method_name in ("deiconify", "lift", "focus_force"):
+            method = getattr(self.root, method_name, None)
+            if callable(method):
+                try:
+                    method()
+                except Exception:
+                    pass
+
     def run(self) -> None:
         if self.root is not None:
             self.root.mainloop()
@@ -672,6 +710,7 @@ class DesktopWindow:
         if self.root is not None:
             self.root.destroy()
             self.root = None
+            self._ui_thread_id = None
 
 
 def _selector_label(selector: VoiceDeviceSelector) -> str:

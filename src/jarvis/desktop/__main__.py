@@ -63,9 +63,17 @@ def main() -> None:
             if lifecycle.runtime is not None:
                 submit(lifecycle.stop())
             return
-        tray = TrayController(lifecycle)
-        tray.start()
         window = DesktopWindow(lifecycle, run_async=submit)
+        if not window.ensure_root():
+            return
+        tray = TrayController(
+            lifecycle,
+            open_callback=lifecycle.open_hud,
+            settings_callback=window.show_status,
+            diagnostics_callback=window.show_diagnostics,
+            run_async=submit,
+        )
+        tray.start()
         if status.phase.value == "setup_required":
             if not window.show_setup(on_complete=lambda: submit(lifecycle.start())):
                 return

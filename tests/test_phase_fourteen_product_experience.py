@@ -87,10 +87,41 @@ class TestPhaseFourteenProductExperience:
             payload={"bootstrap": token},
         )
         cookie = response.headers.get("Set-Cookie", "").split(";", 1)[0]
-        assert cookie.startswith("jarvis_session=")
+        assert cookie.startswith(f"{self.server.session_cookie_name}=")
         assert "httponly" in response.headers.get("Set-Cookie", "").casefold()
         assert "credential" not in json.dumps(session).casefold()
         return cookie, str(session["csrf_token"])
+
+    def test_loopback_server_sessions_are_isolated_from_stale_other_server_cookies(self) -> None:
+        second = CoreHttpServer(CoreApplication(self.runtime), port=0)
+        second_thread = threading.Thread(target=second.serve_forever, daemon=True)
+        second_thread.start()
+        second_base = f"http://{second.address[0]}:{second.address[1]}"
+        try:
+            first_cookie, _csrf = self._bootstrap_session()
+            second_token = second.issue_desktop_bootstrap(
+                self.credential,
+                self.device_id,
+                self.identity.identity_id,
+            )
+            second_response, _second_session = _request(
+                second_base,
+                "/v1/auth/desktop-session",
+                method="POST",
+                payload={"bootstrap": second_token},
+            )
+            second_cookie = second_response.headers["Set-Cookie"].split(";", 1)[0]
+            assert self.server.session_cookie_name != second.session_cookie_name
+
+            response, session = _request(
+                self.base,
+                "/v1/auth/session",
+                headers={"Cookie": f"{first_cookie}; {second_cookie}"},
+            )
+            assert response.status == 200
+            assert session["owner_id"] == self.identity.owner_id
+        finally:
+            second.shutdown()
 
     def test_command_center_is_a_local_static_shell_and_legacy_hud_stays_available(self) -> None:
         response, shell = _raw_request(self.base, "/v1/app")
