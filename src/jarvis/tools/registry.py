@@ -329,14 +329,20 @@ def register_computer_tools(
         if resolved is None:
             return ToolResult(ToolResultStatus.DENIED, error_code="target_device_missing")
         target, adapter = resolved
+        execute_kwargs: dict[str, object] = {
+            "target_device": target,
+            "execution_adapter": adapter,
+            "session_id": context.session_id,
+            "correlation_id": context.correlation_id,
+        }
+        timing_sink = context.metadata.get("_native_action_timing")
+        if callable(timing_sink):
+            execute_kwargs["timing_sink"] = timing_sink
         result = await computer_actions.execute(
             ComputerAction(action, dict(parameters), False),
             context.identity,
             context.device,
-            target_device=target,
-            execution_adapter=adapter,
-            session_id=context.session_id,
-            correlation_id=context.correlation_id,
+            **execute_kwargs,
         )
         try:
             status = ToolResultStatus(result.status)

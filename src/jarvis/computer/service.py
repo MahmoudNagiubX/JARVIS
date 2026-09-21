@@ -13,7 +13,7 @@ import platform
 import shutil
 import subprocess
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -122,7 +122,12 @@ class WindowsNativeComputerController:
             if capability is ComputerCapability.APPLICATION_STATUS:
                 return await asyncio.to_thread(self._application_status, action.parameters, context.device.device_id)
             if capability is ComputerCapability.OPEN_APPLICATION:
-                return await asyncio.to_thread(self._open_application, action.parameters, context.device.device_id)
+                return await asyncio.to_thread(
+                    self._open_application,
+                    action.parameters,
+                    context.device.device_id,
+                    context.metadata.get("_native_action_timing"),
+                )
             if capability is ComputerCapability.FOCUS_APPLICATION:
                 return await asyncio.to_thread(self._focus_application, action.parameters, context.device.device_id)
             if capability is ComputerCapability.OPEN_FILE:
@@ -249,7 +254,12 @@ class WindowsNativeComputerController:
         }
         return ComputerResult("succeeded", payload, verified=prepared.status in {"ready", "denied"})
 
-    def _open_application(self, parameters: Mapping[str, Any], device_id: str = "") -> ComputerResult:
+    def _open_application(
+        self,
+        parameters: Mapping[str, Any],
+        device_id: str = "",
+        timing_sink: object | None = None,
+    ) -> ComputerResult:
         # Keep the old private unit-test seam callable for historical tests
         # that construct this controller with ``__new__``.  A production
         # controller always has an application registry and therefore takes
@@ -270,8 +280,12 @@ class WindowsNativeComputerController:
             )
         existing = self._select_application_window(app, self._matching_application_windows(app, device_id))
         if existing is not None:
+            if callable(timing_sink):
+                timing_sink("launch_dispatched")
             return self._focus_verified_application_window(app, existing, device_id, mode="focused")
         try:
+            if callable(timing_sink):
+                timing_sink("launch_dispatched")
             subprocess.Popen([str(prepared.target), *prepared.arguments], shell=False, close_fds=True)
         except OSError:
             return ComputerResult("failed", error_code="application_launch_failed")
@@ -1277,6 +1291,7 @@ class ComputerActionService:
         execution_adapter: str | None = None,
         session_id: str = "computer",
         correlation_id: str | None = None,
+        timing_sink: Callable[[str], None] | None = None,
     ) -> ComputerResult:
         correlation = correlation_id or f"computer-{uuid4()}"
         target = target_device or device
@@ -1331,6 +1346,8 @@ class ComputerActionService:
                 "reason": decision.reason_code,
             },
         )
+        if timing_sink is not None:
+            timing_sink("authority_decided")
         trusted_visual_target: VisualTarget | None = None
         if decision.effect.value != "allow":
             if decision.effect.value == "require_approval" and self.approvals is not None:
@@ -1431,6 +1448,7 @@ class ComputerActionService:
             session_id,
             correlation,
             trusted_visual_target=trusted_visual_target,
+            timing_sink=timing_sink,
         )
 
     async def decide(
@@ -1819,6 +1837,7 @@ class ComputerActionService:
         correlation: str,
         approval_id: str | None = None,
         trusted_visual_target: VisualTarget | None = None,
+        timing_sink: Callable[[str], None] | None = None,
     ) -> ComputerResult:
         metadata = {
             "request_device_id": request_device.device_id,
@@ -1828,6 +1847,8 @@ class ComputerActionService:
         controller_metadata = dict(metadata)
         if adapter == "local" and trusted_visual_target is not None:
             controller_metadata["_internal_visual_target"] = trusted_visual_target
+        if timing_sink is not None:
+            controller_metadata["_native_action_timing"] = timing_sink
         await self._emit("computer.action_requested", identity.owner_id, correlation, {"action": action.action, **metadata})
         await self._emit("computer.action_started", identity.owner_id, correlation, {"action": action.action, **metadata}, EventState.ACCEPTED)
         result = await self.controller.execute(

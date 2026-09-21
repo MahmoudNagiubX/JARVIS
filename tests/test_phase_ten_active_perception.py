@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import platform
 import unittest
 from dataclasses import replace
@@ -95,6 +96,87 @@ class _WindowIdentityUser32:
         del hwnd, size
         buffer.value = self.window_class
         return len(self.window_class)
+
+
+class _ForegroundFallbackUser32:
+    def __init__(self) -> None:
+        self.foreground = 200
+        self.attached: set[int] = set()
+        self.attach_calls: list[tuple[int, int, bool]] = []
+
+    def IsWindow(self, hwnd: int) -> bool:
+        return hwnd in {100, 200}
+
+    def IsWindowVisible(self, hwnd: int) -> bool:
+        return self.IsWindow(hwnd)
+
+    def GetWindowThreadProcessId(self, hwnd: int, process_id) -> int:
+        process_id._obj.value = 10 if hwnd == 100 else 20
+        return 10 if hwnd == 100 else 20
+
+    def GetClassNameW(self, hwnd: int, buffer, size: int) -> int:
+        del hwnd, size
+        buffer.value = "TestWindow"
+        return len(buffer.value)
+
+    def IsIconic(self, hwnd: int) -> bool:
+        del hwnd
+        return False
+
+    def ShowWindow(self, hwnd: int, command: int) -> bool:
+        del hwnd, command
+        return True
+
+    def GetForegroundWindow(self) -> int:
+        return self.foreground
+
+    def BringWindowToTop(self, hwnd: int) -> bool:
+        del hwnd
+        return True
+
+    def SetForegroundWindow(self, hwnd: int) -> bool:
+        if 10 in self.attached and 20 in self.attached:
+            self.foreground = hwnd
+            return True
+        return False
+
+    def AttachThreadInput(self, current: int, target: int, attach: bool) -> bool:
+        self.attach_calls.append((current, target, attach))
+        if attach:
+            self.attached.add(target)
+        else:
+            self.attached.discard(target)
+        return True
+
+
+class _ForegroundFallbackKernel32:
+    def GetCurrentThreadId(self) -> int:
+        return 30
+
+
+def test_windows_focus_uses_bounded_foreground_thread_fallback() -> None:
+    provider = WindowsDesktopProvider.__new__(WindowsDesktopProvider)
+    provider.available = True
+    provider._user32 = _ForegroundFallbackUser32()
+    provider._kernel32 = _ForegroundFallbackKernel32()
+    provider._window_refs = {
+        "window-test": _WindowHandle(
+            100,
+            10,
+            hashlib.sha256(b"Test title").hexdigest(),
+            "TestWindow",
+            datetime.now(UTC) + timedelta(seconds=45),
+        ),
+    }
+
+    assert provider.focus_window("window-test") is True
+    assert provider._user32.foreground == 100
+    assert provider._user32.attach_calls == [
+        (30, 20, True),
+        (30, 10, True),
+        (30, 10, False),
+        (30, 20, False),
+    ]
 
 
 class _Model:

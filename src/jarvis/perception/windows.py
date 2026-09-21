@@ -108,9 +108,46 @@ class WindowsDesktopProvider:
         if not self.available:
             return False
         hwnd = self._resolve_window_ref(window_ref)
-        if not self._user32.SetForegroundWindow(hwnd):
+        # Restore a minimized target before attempting the foreground handoff.
+        # A background JARVIS worker thread is not always allowed to call
+        # SetForegroundWindow directly (Windows foreground-lock policy). The
+        # short AttachThreadInput fallback below joins only the current,
+        # foreground, and target queues for this one bounded handoff, then
+        # always detaches them again.
+        if self._user32.IsIconic(hwnd):
+            self._user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        if self._activate_window(hwnd):
+            return True
+
+        foreground = int(self._user32.GetForegroundWindow() or 0)
+        target_thread = self._window_thread_id(hwnd)
+        foreground_thread = self._window_thread_id(foreground) if foreground else 0
+        current_thread = int(self._kernel32.GetCurrentThreadId()) if self._kernel32 is not None else 0
+        if not target_thread or not current_thread:
             return False
+
+        attached: list[int] = []
+        try:
+            for thread_id in dict.fromkeys((foreground_thread, target_thread)):
+                if thread_id and thread_id != current_thread and self._user32.AttachThreadInput(current_thread, thread_id, True):
+                    attached.append(thread_id)
+            return self._activate_window(hwnd)
+        finally:
+            for thread_id in reversed(attached):
+                self._user32.AttachThreadInput(current_thread, thread_id, False)
+
+    def _activate_window(self, hwnd: int) -> bool:
+        """Attempt and independently verify one foreground activation."""
+
+        self._user32.BringWindowToTop(hwnd)
+        self._user32.SetForegroundWindow(hwnd)
         return int(self._user32.GetForegroundWindow() or 0) == hwnd
+
+    def _window_thread_id(self, hwnd: int) -> int:
+        if not hwnd:
+            return 0
+        process_id = wintypes.DWORD()
+        return int(self._user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id)) or 0)
 
     def is_foreground(self, hwnd: int) -> bool:
         return self.available and int(self._user32.GetForegroundWindow() or 0) == int(hwnd)
@@ -266,6 +303,10 @@ class WindowsDesktopProvider:
         self._user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
         self._user32.SetForegroundWindow.argtypes = [wintypes.HWND]
         self._user32.SetForegroundWindow.restype = wintypes.BOOL
+        self._user32.BringWindowToTop.argtypes = [wintypes.HWND]
+        self._user32.BringWindowToTop.restype = wintypes.BOOL
+        self._user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+        self._user32.AttachThreadInput.restype = wintypes.BOOL
         self._user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
         self._user32.ShowWindow.restype = wintypes.BOOL
         self._user32.IsIconic.argtypes = [wintypes.HWND]
@@ -294,6 +335,7 @@ class WindowsDesktopProvider:
         self._kernel32.OpenProcess.restype = ctypes.c_void_p
         self._kernel32.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
         self._kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        self._kernel32.GetCurrentThreadId.restype = wintypes.DWORD
         self._kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
         self._kernel32.CloseHandle.restype = wintypes.BOOL
 

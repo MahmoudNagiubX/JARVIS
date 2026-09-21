@@ -17,6 +17,7 @@ from .authority.approvals.service import DurableApprovalEngine
 from .authority.identity.service import IdentityService as RuntimeIdentityService
 from .authority.permissions.engine import PolicyPermissionEngine
 from .agents.runtime.runtime import AgentRuntime
+from .agents.routing.native_app_fast_path import NativeAppFastPath
 from .autonomy.policy import AutonomyPolicy
 from .capabilities.registry import CapabilityRegistry
 from .communications.hub import CommunicationsHub, LocalCommunicationChannel
@@ -387,7 +388,16 @@ def create_runtime(
     _register_capabilities(capabilities)
     desktop_context = ActiveDesktopContextService(world_state)
     context = ContextAssembler(memory, world_state, goals, proactive, personalization, registry, offline, capabilities, desktop_context)
-    agent = AgentRuntime(repository, event_bus, models, tool_service, max_steps=effective_config.max_agent_steps, context_assembler=context)
+    native_app_fast_path = NativeAppFastPath(application_registry, tool_service)
+    agent = AgentRuntime(
+        repository,
+        event_bus,
+        models,
+        tool_service,
+        max_steps=effective_config.max_agent_steps,
+        context_assembler=context,
+        native_app_fast_path=native_app_fast_path,
+    )
     scheduler = BackgroundScheduler()
     runtime_ref: dict[str, JarvisRuntime] = {}
     workspace_context = WorkspaceContextService(world_state)

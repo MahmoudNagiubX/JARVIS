@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -22,6 +23,7 @@ from ...persistence.repositories import RuntimeRepository
 from ...tools.service import ToolCallResult, ToolExecutionService, ToolExecutionStatus
 from ...tools.selection import ToolSchemaSelector
 from ..routing.router import RequestRouter
+from ..routing.native_app_fast_path import NativeAppFastPath, NativeAppFastPathResult
 
 
 class AgentRunState(StrEnum):
@@ -60,6 +62,7 @@ class AgentRuntime:
         *,
         max_steps: int = 3,
         context_assembler: ContextAssembler | None = None,
+        native_app_fast_path: NativeAppFastPath | None = None,
     ) -> None:
         self.repository = repository
         self.event_bus = event_bus
@@ -68,6 +71,7 @@ class AgentRuntime:
         self.router = RequestRouter()
         self.max_steps = max(1, min(max_steps, 10))
         self.context_assembler = context_assembler
+        self.native_app_fast_path = native_app_fast_path
         self.tool_selector = ToolSchemaSelector(tools.registry)
         self._tasks: dict[str, asyncio.Task[AgentRunOutcome]] = {}
         self._cancelled: set[str] = set()
@@ -224,6 +228,7 @@ class AgentRuntime:
         messages_override: list[LLMMessage] | None = None,
         ephemeral_results: dict[int, ToolCallResult] | None = None,
     ) -> AgentRunOutcome:
+        request_received_ns = time.monotonic_ns()
         task = asyncio.current_task()
         if task:
             self._tasks[run_id] = task
@@ -236,6 +241,28 @@ class AgentRuntime:
             messages = messages_override or self._history(run)
             ephemeral_results = dict(ephemeral_results or {})
             context_snapshot = await self.context_assembler.assemble(identity, device, messages[-1].content, session_id=run.session_id) if self.context_assembler else None
+            if (
+                self.native_app_fast_path is not None
+                and messages
+                and messages[-1].role is LLMRole.USER
+            ):
+                native_result = await self.native_app_fast_path.execute(
+                    messages[-1].content,
+                    identity,
+                    device,
+                    session_id=run.session_id,
+                    correlation_id=run.correlation_id,
+                    run_id=run.id,
+                    request_received_ns=request_received_ns,
+                )
+                if native_result.handled:
+                    return await self._finish_native_app_fast_path(
+                        run,
+                        native_result,
+                        messages,
+                        context_snapshot,
+                        ephemeral_results,
+                    )
             for _step in range(self.max_steps):
                 if run_id in self._cancelled:
                     raise asyncio.CancelledError
@@ -345,6 +372,91 @@ class AgentRuntime:
         finally:
             self._tasks.pop(run_id, None)
             self._cancelled.discard(run_id)
+
+    async def _finish_native_app_fast_path(
+        self,
+        run: RunRecord,
+        result: NativeAppFastPathResult,
+        messages: list[LLMMessage],
+        context_snapshot: object | None,
+        ephemeral_results: dict[int, ToolCallResult],
+    ) -> AgentRunOutcome:
+        tool_result = result.tool_result
+        display_name = result.display_name or result.application_query or "Application"
+        verified = bool(tool_result is not None and tool_result.verified)
+        if result.outcome == "paused":
+            pending_approval_id = tool_result.approval_id if tool_result is not None else None
+            self.repository.update_run(
+                run.id,
+                status="paused",
+                pending_approval_id=pending_approval_id,
+                context_json=self._run_context(messages, context_snapshot, ephemeral_results),
+                latency_ms=result.timings_ms.get("verification_completed"),
+            )
+            await self._emit(
+                "run.paused",
+                EventCategory.AGENT,
+                run,
+                {
+                    "native_app": True,
+                    "app_ref": result.app_ref,
+                    "pending_approval_id": pending_approval_id,
+                    "timings_ms": dict(result.timings_ms),
+                },
+            )
+            return AgentRunOutcome(
+                run.id,
+                run.conversation_id,
+                run.session_id,
+                AgentRunState.PAUSED,
+                response=f"Opening {display_name}…",
+                pending_approval_id=pending_approval_id,
+                context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else None,
+            )
+
+        if result.outcome == "succeeded":
+            response = f"{display_name} opened. Verified." if verified else "Launch sent. Completed · Unverified"
+            state = AgentRunState.SUCCEEDED
+            failure_code = None
+        else:
+            response = f"{display_name} did not open."
+            state = AgentRunState.FAILED
+            failure_code = result.reason or (tool_result.error_code if tool_result is not None else None) or "native_application_action_failed"
+
+        assistant = self.repository.create_message(run.conversation_id, run.session_id, run.id, None, "assistant", response)
+        self.repository.update_run(
+            run.id,
+            status=state.value,
+            completed_at=datetime.now(UTC),
+            failure_code=failure_code,
+            latency_ms=result.timings_ms.get("verification_completed"),
+            context_json=self._run_context(messages, context_snapshot, ephemeral_results),
+        )
+        event_type = "run.completed" if state is AgentRunState.SUCCEEDED else "run.failed"
+        await self._emit(
+            event_type,
+            EventCategory.AGENT,
+            run,
+            {
+                "assistant_message_id": assistant.id,
+                "native_app": True,
+                "app_ref": result.app_ref,
+                "verified": verified,
+                "timings_ms": dict(result.timings_ms),
+                "reason": failure_code,
+            },
+            state=EventState.COMPLETED if state is AgentRunState.SUCCEEDED else EventState.FAILED,
+        )
+        return AgentRunOutcome(
+            run.id,
+            run.conversation_id,
+            run.session_id,
+            state,
+            response=response,
+            assistant_message_id=assistant.id,
+            error_code=failure_code,
+            context_snapshot=context_snapshot if isinstance(context_snapshot, dict) else None,
+        )
 
     def _history(self, run: RunRecord) -> list[LLMMessage]:
         history = [LLMMessage(LLMRole.SYSTEM, "You are JARVIS. Use only declared tools and report factual outcomes. When the user explicitly refers to the current screen/window/page and a perception tool is available, observe before answering. For active application or window metadata, use desktop.context.read; use screen.observe or screen.latest only when pixels, a region, or a cached screen observation is explicitly requested. Arabic metadata requests such as 'شوف الشاشة', 'إيه اللي قدامي؟', and 'بص على الشاشة' and mixed requests such as 'شوف الscreen' must use desktop.context.read first. Never guess visual state.")]
