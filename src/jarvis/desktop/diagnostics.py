@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..local_model_identity import REQUIRED_LOCAL_MODEL
 from ..models.routing import ModelRoute
 from ..browser.profile import BrowserProfilePolicy, BrowserProfilePolicyError, validate_brave_executable_path
 from .assets import VoiceAssetManager
@@ -24,6 +25,72 @@ class DiagnosticResult:
 class DesktopDiagnostics:
     def __init__(self, lifecycle: JarvisDesktopLifecycle) -> None:
         self.lifecycle = lifecycle
+
+    def voice_preflight(self) -> dict[str, object]:
+        """Run bounded voice readiness checks without opening audio streams."""
+
+        checks: list[DiagnosticResult] = []
+        try:
+            settings = DesktopProductConfig.load(self.lifecycle.config_path)
+        except ProductConfigError as exc:
+            checks.append(DiagnosticResult("configuration", "FAIL", str(exc)[:120]))
+            return _preflight_document(checks)
+
+        has_identity = bool(settings.identity_id and settings.device_id)
+        checks.append(DiagnosticResult("identity", "PASS" if has_identity else "FAIL", "" if has_identity else "identity_or_device_missing"))
+        try:
+            credential_present = bool(self.lifecycle._secret_store().get(PRODUCT_SECRET_KEY))
+            checks.append(DiagnosticResult("secure_credential", "PASS" if credential_present else "FAIL", "" if credential_present else "credential_missing"))
+        except (OSError, SecretStoreUnavailable):
+            checks.append(DiagnosticResult("secure_credential", "FAIL", "secure_store_unavailable"))
+
+        voice_python = self.lifecycle._voice_python()
+        checks.append(DiagnosticResult("voice_environment", "PASS" if voice_python is not None else "FAIL", "" if voice_python is not None else "voice_venv_missing"))
+
+        for selector, direction, name in (
+            (settings.input_device, "input", "input_device"),
+            (settings.output_device, "output", "output_device"),
+        ):
+            if selector is None:
+                checks.append(DiagnosticResult(name, "FAIL", "selector_missing"))
+                continue
+            try:
+                # resolve() enumerates descriptors only; no stream is opened and
+                # no PCM is retained.
+                self.lifecycle.audio_catalog.resolve(selector, direction)
+            except Exception:
+                checks.append(DiagnosticResult(name, "FAIL", "voice_device_missing"))
+            else:
+                checks.append(DiagnosticResult(name, "PASS"))
+
+        try:
+            assets = self.lifecycle.asset_manager.configured_or_discovered(settings.voice_config())
+            checks.extend(
+                DiagnosticResult(f"{item.name}_asset", "PASS" if item.ready else "FAIL", item.reason)
+                for item in assets.statuses()
+            )
+        except Exception:
+            checks.extend(
+                DiagnosticResult(name, "FAIL", "voice_asset_validation_failed")
+                for name in ("wake_asset", "vad_asset", "stt_asset", "english_tts_asset", "arabic_tts_asset")
+            )
+
+        try:
+            references = self.lifecycle.model_discovery.discover()
+            executable = settings.llama_cpp_server_path or references.executable_path
+            model = settings.llama_cpp_model_path or references.model_path
+            ready = (
+                settings.model_alias == REQUIRED_LOCAL_MODEL
+                and executable is not None
+                and executable.is_file()
+                and model is not None
+                and model.is_file()
+            )
+            checks.append(DiagnosticResult("brain", "PASS" if ready else "FAIL", "" if ready else "local_model_or_runtime_missing"))
+        except Exception:
+            checks.append(DiagnosticResult("brain", "FAIL", "local_model_preflight_failed"))
+
+        return _preflight_document(checks)
 
     async def run(self) -> tuple[DiagnosticResult, ...]:
         results: list[DiagnosticResult] = []
@@ -195,3 +262,19 @@ class DesktopDiagnostics:
             f"channels={len(channels)}" if channels else "no_channels_configured",
         ))
         return results
+
+
+def _preflight_document(checks: list[DiagnosticResult]) -> dict[str, object]:
+    statuses = [item.status for item in checks]
+    overall = "FAIL" if "FAIL" in statuses else ("PARTIAL" if "PARTIAL" in statuses else "PASS")
+    return {
+        "title": "VOICE PREFLIGHT",
+        "overall": overall,
+        "checks": [
+            {"name": item.name, "status": item.status, "reason": item.reason}
+            for item in checks
+        ],
+        "capture_started": False,
+        "raw_audio_persisted": False,
+        "cloud_speech_called": False,
+    }

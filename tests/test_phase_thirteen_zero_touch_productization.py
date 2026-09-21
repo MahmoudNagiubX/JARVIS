@@ -263,16 +263,106 @@ def test_single_instance_lock_rejects_second_owner_and_releases(tmp_path: Path) 
 def test_voice_assets_discover_exact_local_names_and_never_auto_provision(tmp_path: Path) -> None:
     root = tmp_path / "voice"
     (root / "faster-whisper-en").mkdir(parents=True)
+    (root / "faster-whisper-en" / "config.json").write_text("{}", encoding="utf-8")
+    (root / "faster-whisper-en" / "model.bin").write_bytes(b"model")
     (root / "wake").mkdir(parents=True)
+    (root / "wake" / "melspectrogram.onnx").write_bytes(b"asset")
     (root / "wake" / "embedding_model.onnx").write_bytes(b"asset")
-    for name in ("hey-wake.onnx", "silero-vad.onnx", "voice-en.onnx", "voice-ar.onnx"):
+    (root / "wake" / "hey-wake.onnx").write_bytes(b"asset")
+    for name in ("silero-vad.onnx",):
         (root / name).write_bytes(b"asset")
+    for name in ("voice-en.onnx", "voice-ar.onnx"):
+        (root / name).write_bytes(b"asset")
+        (root / (name + ".json")).write_text("{}", encoding="utf-8")
     assets = VoiceAssetManager(root).configured_or_discovered(DesktopProductConfig().voice_config())
     assert assets.ready
     with pytest.raises(AssetProvisioningUnavailable):
         VoiceAssetManager(root).provision()
     with pytest.raises(AssetProvisioningCancelled):
         VoiceAssetManager(root).provision(lambda *_: None, cancelled=lambda: True)
+
+
+def test_voice_assets_resolve_configured_stt_root_to_real_faster_whisper_model(tmp_path: Path) -> None:
+    root = tmp_path / "voice"
+    stt_root = root / "stt"
+    model_dir = stt_root / "faster-whisper-small"
+    model_dir.mkdir(parents=True)
+    (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    (model_dir / "model.bin").write_bytes(b"model")
+
+    config = DesktopProductConfig(stt_model_path=stt_root).voice_config()
+    assets = VoiceAssetManager(root).configured_or_discovered(config)
+
+    assert assets.stt_model_path == model_dir
+
+
+def test_voice_preflight_is_bounded_and_resolves_devices_without_opening_audio(tmp_path: Path) -> None:
+    root = tmp_path / "voice"
+    wake = root / "wake"
+    stt = root / "stt" / "faster-whisper-small"
+    tts_en = root / "tts" / "en"
+    tts_ar = root / "tts" / "ar"
+    for directory in (wake, stt, tts_en, tts_ar, root / "venv" / "Scripts"):
+        directory.mkdir(parents=True)
+    for name in ("hey_jarvis.onnx", "melspectrogram.onnx", "embedding_model.onnx"):
+        (wake / name).write_bytes(b"asset")
+    (root / "vad.onnx").write_bytes(b"asset")
+    (stt / "config.json").write_text("{}", encoding="utf-8")
+    (stt / "model.bin").write_bytes(b"model")
+    for path in (tts_en / "en.onnx", tts_ar / "ar.onnx"):
+        path.write_bytes(b"voice")
+        Path(str(path) + ".json").write_text("{}", encoding="utf-8")
+    (root / "venv" / "Scripts" / "python.exe").write_bytes(b"python")
+
+    class NoOpenCatalog:
+        def __init__(self) -> None:
+            self.resolved: list[tuple[VoiceDeviceSelector, str]] = []
+
+        def resolve(self, selector: VoiceDeviceSelector, direction: str) -> int:
+            self.resolved.append((selector, direction))
+            return 7
+
+    catalog = NoOpenCatalog()
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    executable = runtime_root / "llama-server.exe"
+    executable.write_bytes(b"server")
+    model_root = tmp_path / "models"
+    model_root.mkdir()
+    model = model_root / "Qwen3.5-4B-Heretic-Q4_K_M.gguf"
+    model.write_bytes(b"model")
+    settings = DesktopProductConfig(
+        identity_id="identity-1",
+        device_id="device-1",
+        input_device=VoiceDeviceSelector("api", "mic"),
+        output_device=VoiceDeviceSelector("api", "speaker"),
+        wake_model_path=wake / "hey_jarvis.onnx",
+        vad_model_path=root / "vad.onnx",
+        stt_model_path=root / "stt",
+        tts_en_model_path=tts_en / "en.onnx",
+        tts_ar_model_path=tts_ar / "ar.onnx",
+        llama_cpp_server_path=executable,
+        llama_cpp_model_path=model,
+    )
+    store = MemorySecretStore()
+    store.set(PRODUCT_SECRET_KEY, "credential")
+    lifecycle = JarvisDesktopLifecycle(
+        config_path=tmp_path / "config" / "settings.json",
+        secret_store=store,
+        asset_manager=VoiceAssetManager(root),
+        audio_catalog=catalog,
+        startup_manager=UserStartupManager(tmp_path / "startup"),
+        model_discovery=LocalModelDiscovery(runtime_root=runtime_root, model_roots=(model_root,)),
+    )
+    settings.save(lifecycle.config_path)
+
+    result = DesktopDiagnostics(lifecycle).voice_preflight()
+
+    assert result["overall"] == "PASS"
+    assert result["capture_started"] is False
+    assert result["raw_audio_persisted"] is False
+    assert all(item["status"] == "PASS" for item in result["checks"])
+    assert catalog.resolved == [(settings.input_device, "input"), (settings.output_device, "output")]
 
 
 def test_local_model_discovery_is_bounded_and_references_existing_files(tmp_path: Path) -> None:

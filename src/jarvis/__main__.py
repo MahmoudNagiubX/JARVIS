@@ -84,6 +84,27 @@ def _cloud_key_states() -> tuple[dict[str, str], int]:
     return states, 0
 
 
+def _voice_preflight_action() -> int:
+    """Print silent product-owned voice readiness without starting runtime/audio."""
+
+    from .desktop.diagnostics import DesktopDiagnostics
+    from .desktop.lifecycle import JarvisDesktopLifecycle
+
+    try:
+        result = DesktopDiagnostics(JarvisDesktopLifecycle()).voice_preflight()
+    except Exception as exc:
+        result = {
+            "title": "VOICE PREFLIGHT",
+            "overall": "FAIL",
+            "checks": [{"name": "preflight", "status": "FAIL", "reason": exc.__class__.__name__}],
+            "capture_started": False,
+            "raw_audio_persisted": False,
+            "cloud_speech_called": False,
+        }
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0 if result.get("overall") == "PASS" else 1
+
+
 def _secure_provider_keys_for_runtime() -> dict[str, str] | None:
     """Prefer configured protected keys for a fresh normal CLI runtime.
 
@@ -768,6 +789,7 @@ def main() -> None:
     parser.add_argument("--set-cloud-key", choices=("groq", "gemini"), help="store one cloud key using a hidden prompt")
     parser.add_argument("--delete-cloud-key", choices=("groq", "gemini"), help="delete one cloud key from the secure store")
     parser.add_argument("--cloud-key-status", action="store_true", help="show safe cloud key configured/missing states")
+    parser.add_argument("--voice-preflight", action="store_true", help="run bounded voice readiness checks without opening audio")
     parser.add_argument("--status", action="store_true", help="print runtime status")
     parser.add_argument("--serve", action="store_true", help="serve the loopback HTTP API")
     parser.add_argument("--port", type=int, default=8787, help="loopback HTTP port")
@@ -801,6 +823,16 @@ def main() -> None:
         states, exit_code = _cloud_key_states()
         print(json.dumps(states, ensure_ascii=False, sort_keys=True))
         raise SystemExit(exit_code)
+    if args.voice_preflight:
+        runtime_actions = (
+            args.text, args.model_smoke, args.model_probe, args.model_architecture,
+            args.model_provider_probe, args.set_cloud_key, args.delete_cloud_key,
+            args.cloud_key_status, args.status, args.serve, args.serve_node,
+            args.backup, args.verify_backup, args.restore_backup,
+        )
+        if any(bool(value) for value in runtime_actions):
+            parser.error("--voice-preflight must be used by itself")
+        raise SystemExit(_voice_preflight_action())
     if args.backup or args.verify_backup or args.restore_backup:
         config = JarvisConfig.from_env()
         if args.backup:

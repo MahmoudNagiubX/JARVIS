@@ -55,6 +55,28 @@ sanitized evidence boundary. Its automated closure is recorded in
 speaker, bilingual, follow-up, and barge-in steps in the app. No automated
 product test is a physical voice claim.
 
+## Voice preflight update — 2026-09-21
+
+The product now exposes `python -m jarvis --voice-preflight` for a bounded,
+non-speaking readiness check. The check uses the existing desktop settings,
+secure device credential, exact host/name selectors, local voice asset
+validation, and exact `Qwen3.5-4B-Heretic` runtime/model references. It only
+enumerates audio descriptors; it does not open a continuous stream, retain
+PCM, call cloud speech, or record physical PASS.
+
+On the inspected NIGHTFURY workstation, the provisioned voice environment,
+identity/credential, current microphone and soundcore output selector,
+OpenWakeWord auxiliary files, Silero VAD, `faster-whisper-small`, both Piper
+sidecars, and the local Heretic brain all returned `PASS`. The isolated local
+STT, wake, VAD, and both TTS model loads also passed. This remains software
+readiness evidence only: the owner still must observe the speaker, microphone,
+wake, English, Egyptian Arabic, mixed-language, follow-up, barge-in, and
+privacy/device-recovery steps in the installed UI.
+
+The Windows Startup entry and product settings currently request desktop
+autostart. That is reported as a separate owner choice; this work does not
+silently claim or enable microphone-login acceptance.
+
 ## Native installed-application acceptance — 2026-09-19
 
 The native application addendum is code-backed at `5a0ea52`. The installed-app

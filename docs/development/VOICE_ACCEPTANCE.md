@@ -17,7 +17,7 @@ python -m unittest tests.test_phase_thirteen_physical_voice -v
 It proves authority, privacy, bounded queue, state, and adapter contracts; it
 does not prove a human can hear or be understood by the selected hardware.
 
-The pre-physical matrix currently contains 25 passing tests. It also proves
+The pre-physical matrix currently contains 30 passing tests. It also proves
 that wake listening times out without speech or an agent run; actual VAD speech
 cancels that timeout; a new wake replaces it; and stop or configured-device
 recovery cancels it. Empty STT sleeps after an initial wake, preserves the
@@ -52,3 +52,26 @@ The zero-touch final remediation also validates the tracked secure store,
 clean-archive imports, the exact product interpreter without `PYTHONPATH`, the
 secret-free Startup VBS and Start Menu shortcut, the UI seams, and the
 single-instance second-launch boundary.
+
+## Bounded product preflight
+
+Before opening the microphone continuously, run the silent product-owned
+preflight from the provisioned local voice environment:
+
+```powershell
+$env:PYTHONPATH = 'C:\Jarivs\00_final\jarvis\src'
+& "$env:LOCALAPPDATA\JARVIS\voice\venv\Scripts\python.exe" -m jarvis --voice-preflight
+```
+
+It reads the existing desktop settings and secure device credential, checks
+the exact configured input/output selectors by descriptor enumeration only,
+validates the wake/VAD/faster-whisper/Piper asset shape, and checks the exact
+local Heretic runtime/model references. It does not start the runtime, open a
+continuous audio stream, retain PCM, or call cloud speech. A nonzero result is
+not physical acceptance; it is a readiness blocker to fix or hand to the
+owner.
+
+The STT setting may point at the JARVIS-owned `voice\stt` root. The resolver
+now selects the actual loadable `faster-whisper-small` directory beneath it;
+the preflight will not report a parent directory as ready when
+`config.json`/`model.bin` are missing.

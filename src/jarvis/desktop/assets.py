@@ -41,10 +41,7 @@ class VoiceAssetSet:
             ("english_tts", self.tts_en_model_path),
             ("arabic_tts", self.tts_ar_model_path),
         )
-        return tuple(
-            VoiceAssetStatus(name, path, bool(path and path.exists()), "ready" if path and path.exists() else "missing")
-            for name, path in values
-        )
+        return tuple(_status(name, path) for name, path in values)
 
     @property
     def ready(self) -> bool:
@@ -84,7 +81,7 @@ class VoiceAssetManager:
         return VoiceAssetSet(
             _configured(config.wake_model_path, ("wake", "openwake", "hey_jarvis"), {".onnx"}) or _find(files, ("wake", "openwake", "hey_jarvis"), {".onnx"}),
             _configured(config.vad_model_path, ("silero", "vad"), {".onnx", ".jit"}) or _find(files, ("silero", "vad"), {".onnx", ".jit"}),
-            _configured(config.stt_model_path, ("whisper", "stt"), None) or _find_stt(directories, files),
+            _configured_stt(config.stt_model_path) or _find_stt(directories),
             _configured(config.tts_en_model_path, ("en", "english"), {".onnx"}) or _find(files, ("en", "english"), {".onnx"}),
             _configured(config.tts_ar_model_path, ("ar", "arabic"), {".onnx"}) or _find(files, ("ar", "arabic"), {".onnx"}),
         )
@@ -142,8 +139,45 @@ def _configured(path: Path | None, needles: tuple[str, ...], suffixes: set[str] 
     return None
 
 
-def _find_stt(directories: tuple[Path, ...], files: tuple[Path, ...]) -> Path | None:
+def _find_stt(directories: tuple[Path, ...]) -> Path | None:
     for item in sorted(directories, key=lambda value: str(value).casefold()):
-        if any(token in item.name.casefold() for token in ("whisper", "faster-whisper", "stt")):
+        if _is_stt_model_directory(item) and any(token in item.name.casefold() for token in ("whisper", "faster-whisper", "stt")):
             return item
-    return _find(files, ("whisper", "stt"), {".bin", ".ct2", ".gguf"})
+    return None
+
+
+def _configured_stt(path: Path | None) -> Path | None:
+    """Resolve a configured STT root to a loadable faster-whisper directory."""
+
+    if path is None or not path.exists():
+        return None
+    if _is_stt_model_directory(path):
+        return path
+    if not path.is_dir():
+        return None
+    children = sorted((item for item in path.iterdir() if item.is_dir()), key=lambda value: str(value).casefold())
+    for child in children:
+        if _is_stt_model_directory(child) and any(token in child.name.casefold() for token in ("whisper", "faster-whisper", "stt")):
+            return child
+    return None
+
+
+def _is_stt_model_directory(path: Path) -> bool:
+    return path.is_dir() and (path / "config.json").is_file() and (path / "model.bin").is_file()
+
+
+def _status(name: str, path: Path | None) -> VoiceAssetStatus:
+    if path is None or not path.exists():
+        return VoiceAssetStatus(name, path, False, "missing")
+    if name == "wake":
+        if path.is_file() and (path.parent / "melspectrogram.onnx").is_file() and (path.parent / "embedding_model.onnx").is_file():
+            return VoiceAssetStatus(name, path, True, "ready")
+        return VoiceAssetStatus(name, path, False, "wake_auxiliary_missing")
+    if name == "stt":
+        return VoiceAssetStatus(name, path, _is_stt_model_directory(path), "ready" if _is_stt_model_directory(path) else "stt_model_incomplete")
+    if name in {"english_tts", "arabic_tts"}:
+        sidecar = Path(str(path) + ".json")
+        ready = path.is_file() and sidecar.is_file()
+        return VoiceAssetStatus(name, path, ready, "ready" if ready else "tts_sidecar_missing")
+    ready = path.is_file()
+    return VoiceAssetStatus(name, path, ready, "ready" if ready else "invalid_file")
