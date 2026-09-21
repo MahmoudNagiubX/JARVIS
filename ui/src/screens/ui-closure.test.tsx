@@ -91,6 +91,24 @@ describe('Phase 14 final closure screens', () => {
     expect(post).toHaveBeenCalledWith('/runs/run-1/cancel')
   })
 
+  it('shows the exact native application while the canonical run is opening', async () => {
+    window.location.hash = '#/chat'
+    const post = vi.fn(async (path: string) => path === '/messages/start'
+      ? { run_id: 'run-native', conversation_id: 'conversation-native', session_id: 'session-native', state: 'queued' }
+      : {})
+    const api = apiFor(baseProjection, post, {
+      '/conversations/conversation-native/messages': { messages: [] },
+      '/runs/run-native': { run_id: 'run-native', conversation_id: 'conversation-native', state: 'running' },
+    })
+    render(<App api={api} initialSession={session} />)
+
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Message JARVIS' }), { target: { value: 'Open Notion' } })
+    fireEvent.click(screen.getByRole('button', { name: /Send message/ }))
+
+    expect(await screen.findByText(/Opening Notion/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancel run' })).toBeEnabled()
+  })
+
   it('renders activity from the run-scoped activity endpoint', async () => {
     window.location.hash = '#/chat'
     const projection = { ...baseProjection }

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { NAV_GROUPS, labelForPath } from '../../app/routes'
+import { NAV_GROUPS, PRIMARY_NAV_GROUPS, labelForPath } from '../../app/routes'
 import { useJarvis } from '../../app/context'
 import { dateValue, list, record, statusText, stringValue, tone } from '../../lib/format'
 import { StatusBadge } from '../common/Primitives'
@@ -206,7 +206,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           {/* Collapsible Cinematic Nav Rail */}
           <aside className={`sidebar ${drawerOpen ? 'open' : ''}`} aria-label="Primary navigation">
             <div className="sidebar-scroll">
-              {NAV_GROUPS.map((group) => (
+              {PRIMARY_NAV_GROUPS.map((group) => (
                 <div className="nav-group" key={group.label}>
                   <span className="nav-label">{group.label}</span>
                   {group.items.map((item) => (
@@ -215,7 +215,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                       to={item.path}
                       end={item.path === '/'}
                       title={item.label}
-                      aria-label={item.label}
+                      aria-label={item.label === 'Converse' ? 'Converse (Chat)' : item.label}
                       className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
                       onClick={() => setDrawerOpen(false)}
                     >
@@ -239,6 +239,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               ))}
             </div>
             <div className="sidebar-footer">
+              <span className="sr-only">Workspace</span>
               <span className="status-line">
                 <i className="connection-dot live" />
                 Session Active

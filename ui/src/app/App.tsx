@@ -7,7 +7,7 @@ import { AppContext, emptyScreenData, type ScreenData } from './context'
 import { AppShell } from '../components/layout/AppShell'
 import { ErrorBoundary } from '../components/common/ErrorBoundary'
 import { initialUiState, uiReducer } from '../state/store'
-import { ActivityScreen, ApprovalsScreen, BrowserScreen, ChatScreen, ContextScreen, DevicesScreen, EngineeringScreen, HomeScreen, MemoryScreen, MissionsScreen, NotificationsScreen, OperationsScreen, ResearchScreen, sessionRefreshDelay, SettingsScreen, SkillsScreen } from '../screens/Screens'
+import { ActivityScreen, ApprovalsScreen, AutomationsScreen, BrowserScreen, ChatScreen, ContextScreen, DevicesScreen, EngineeringScreen, HomeScreen, MemoryScreen, MissionsScreen, NotificationsScreen, OperationsScreen, ResearchScreen, WorkScreen, sessionRefreshDelay, SettingsScreen, SkillsScreen } from '../screens/Screens'
 
 export interface AppProps {
   api?: ApiClient
@@ -50,10 +50,13 @@ function Workspace({ api, initialSession }: { api: ApiClient; initialSession?: J
       } else if (path === '/context') {
         const payload = await api.get<Record<string, unknown>>('/context')
         setScreenDataState((current) => ({ ...current, context: record(payload) }))
-      } else if (path === '/research') {
+      } else if (path === '/research' || path === '/work') {
         const payload = await api.get<{ runs?: unknown[] }>('/research/runs')
         setScreenDataState((current) => ({ ...current, research: list(payload.runs) }))
-      } else if (path === '/settings') {
+      } else if (path === '/automations') {
+        const payload = await api.get<{ automations?: unknown[] }>('/automations')
+        setScreenDataState((current) => ({ ...current, automations: list(payload.automations) }))
+      } else if (path === '/settings' || path === '/system') {
         const [health, profile, applications] = await Promise.all([
           api.get<Record<string, unknown>>('/health'),
           api.get<Record<string, unknown>>('/personalization/profile'),
@@ -139,7 +142,7 @@ function Workspace({ api, initialSession }: { api: ApiClient; initialSession?: J
   if (!session && ui.loading) return <div className="boot-screen"><div className="boot-orb"><i /></div><span>Establishing the local owner session…</span></div>
   if (!session && !ui.loading) return <div className="fatal-screen"><div className="boot-orb"><i /></div><h1>JARVIS is waiting for a local session</h1><p>{ui.error || 'Open the Command Center from the desktop launcher.'}</p></div>
   return <AppContext.Provider value={value}><ErrorBoundary><AppShell><Routes>
-    <Route path="/" element={<HomeScreen />} /><Route path="/chat" element={<ChatScreen />} /><Route path="/missions" element={<MissionsScreen />} /><Route path="/memory" element={<MemoryScreen />} /><Route path="/context" element={<ContextScreen />} /><Route path="/operations" element={<OperationsScreen />} /><Route path="/research" element={<ResearchScreen />} /><Route path="/engineering" element={<EngineeringScreen />} /><Route path="/browser" element={<BrowserScreen />} /><Route path="/skills" element={<SkillsScreen />} /><Route path="/devices" element={<DevicesScreen />} /><Route path="/notifications" element={<NotificationsScreen />} /><Route path="/approvals" element={<ApprovalsScreen />} /><Route path="/activity" element={<ActivityScreen />} /><Route path="/settings" element={<SettingsScreen />} /><Route path="*" element={<Navigate to="/" replace />} />
+    <Route path="/" element={<HomeScreen />} /><Route path="/chat" element={<ChatScreen />} /><Route path="/work" element={<WorkScreen />} /><Route path="/automations" element={<AutomationsScreen />} /><Route path="/system" element={<SettingsScreen />} /><Route path="/missions" element={<MissionsScreen />} /><Route path="/memory" element={<MemoryScreen />} /><Route path="/context" element={<ContextScreen />} /><Route path="/operations" element={<OperationsScreen />} /><Route path="/research" element={<ResearchScreen />} /><Route path="/engineering" element={<EngineeringScreen />} /><Route path="/browser" element={<BrowserScreen />} /><Route path="/skills" element={<SkillsScreen />} /><Route path="/devices" element={<DevicesScreen />} /><Route path="/notifications" element={<NotificationsScreen />} /><Route path="/approvals" element={<ApprovalsScreen />} /><Route path="/activity" element={<ActivityScreen />} /><Route path="/settings" element={<SettingsScreen />} /><Route path="*" element={<Navigate to="/" replace />} />
   </Routes></AppShell></ErrorBoundary></AppContext.Provider>
 }
 

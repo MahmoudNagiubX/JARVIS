@@ -12,10 +12,11 @@ export interface ScreenData {
   health: JsonRecord
   applications: JsonRecord[]
   profile: JsonRecord
+  automations: JsonRecord[]
 }
 
 export const emptyScreenData: ScreenData = {
-  conversations: [], messages: [], memories: [], research: [], context: {}, health: {}, applications: [], profile: {},
+  conversations: [], messages: [], memories: [], research: [], context: {}, health: {}, applications: [], profile: {}, automations: [],
 }
 
 export interface AppContextValue {

@@ -149,6 +149,90 @@ export function HomeScreen() {
   )
 }
 
+export function WorkScreen() {
+  const { projection } = useJarvis()
+  const state = record(projection)
+  const missions = projectionList(state, 'missions')
+  const research = projectionList(state, 'research')
+  const engineering = projectionList(state, 'engineering')
+
+  return (
+    <div className="screen area-screen work-screen">
+      <SectionHeading
+        eyebrow="WORK"
+        title="Make progress with JARVIS."
+        description="Missions, evidence, and project work stay grouped here so the command surface stays quiet."
+        action={<Link className="button primary" to="/missions">Open work queue</Link>}
+      />
+      <div className="area-overview">
+        <div><span className="area-overview-label">Active missions</span><strong>{missions.length}</strong><span>Canonical mission state</span></div>
+        <div><span className="area-overview-label">Research runs</span><strong>{research.length}</strong><span>Persisted evidence ledger</span></div>
+        <div><span className="area-overview-label">Worker sessions</span><strong>{engineering.length}</strong><span>Local engineering authority</span></div>
+      </div>
+      <div className="screen-grid two area-index-grid">
+        <FramePanel title="Missions" eyebrow="PLAN AND EXECUTE" status={missions.length ? 'active' : 'idle'}>
+          {missions.length ? missions.slice(0, 4).map((item) => (
+            <div className="compact-row" key={stringValue(item.mission_id || item.id)}>
+              <div><strong>{stringValue(item.title || item.request, 'Untitled mission')}</strong><span>{stringValue(item.current_step, 'Ready for the next step')}</span></div>
+              <StatusBadge value={item.status} />
+            </div>
+          )) : <EmptyState title="No active missions" detail="Create bounded work when you are ready." />}
+          <Link className="text-link" to="/missions">Inspect missions</Link>
+        </FramePanel>
+        <FramePanel title="Evidence and projects" eyebrow="RESEARCH / ENGINEERING" status={research.length || engineering.length ? 'active' : 'idle'}>
+          <div className="compact-row"><div><strong>Research</strong><span>Evidence-led local and web work</span></div><Link className="text-link" to="/research">Open</Link></div>
+          <div className="compact-row"><div><strong>Engineering</strong><span>Bounded worker sessions and artifacts</span></div><Link className="text-link" to="/engineering">Open</Link></div>
+          <div className="compact-row"><div><strong>Browser</strong><span>Controlled browser authority</span></div><Link className="text-link" to="/browser">Open</Link></div>
+        </FramePanel>
+      </div>
+    </div>
+  )
+}
+
+export function AutomationsScreen() {
+  const { projection, screenData } = useJarvis()
+  const state = record(projection)
+  const operations = projectionRecord(state, 'operations')
+  const focus = projectionRecord(state, 'focus')
+  const automations = screenData.automations.length ? screenData.automations : projectionList(state, 'automations')
+  const followups = projectionList(state, 'follow_ups')
+
+  return (
+    <div className="screen area-screen automations-screen">
+      <SectionHeading
+        eyebrow="AUTOMATIONS"
+        title="Quiet systems that keep moving."
+        description="Rules, attention, and follow-ups remain visible without turning the command center into a dashboard."
+        action={<Link className="button secondary" to="/operations">Open operations detail</Link>}
+      />
+      <div className="area-overview">
+        <div><span className="area-overview-label">Rules</span><strong>{automations.length}</strong><span>{automations.length ? 'Configured' : 'None configured'}</span></div>
+        <div><span className="area-overview-label">Follow-ups</span><strong>{followups.length}</strong><span>{followups.length ? 'Needs attention' : 'Nothing due'}</span></div>
+        <div><span className="area-overview-label">Current mode</span><strong>{stringValue(record(operations.mode).mode, 'Normal')}</strong><span>{focus ? 'Focus session active' : 'No focus session'}</span></div>
+      </div>
+      <div className="screen-grid two area-index-grid">
+        <FramePanel title="Automation rules" eyebrow="CANONICAL OPERATIONS" status={automations.length ? 'enabled' : 'idle'}>
+          {automations.length ? automations.slice(0, 8).map((item, index) => (
+            <div className="compact-row" key={stringValue(item.rule_id || item.id, String(index))}>
+              <div><strong>{stringValue(item.name || item.rule_id, 'Automation rule')}</strong><span>{stringValue(item.description, 'Bounded product rule')}</span></div>
+              <StatusBadge value={item.enabled ? 'enabled' : 'paused'} />
+            </div>
+          )) : <EmptyState title="No automations configured" detail="Rules appear when the canonical automation service creates them." />}
+        </FramePanel>
+        <FramePanel title="Attention queue" eyebrow="FOLLOW-UPS" status={followups.length ? 'pending' : 'clear'}>
+          {followups.length ? followups.slice(0, 6).map((item, index) => (
+            <div className="compact-row" key={stringValue(item.follow_up_id || item.id, String(index))}>
+              <div><strong>{stringValue(item.subject || item.title, 'Follow-up')}</strong><span>{dateValue(item.due_at || item.created_at)}</span></div>
+              <StatusBadge value={item.status || 'active'} />
+            </div>
+          )) : <EmptyState title="No active follow-ups" detail="JARVIS will surface owner attention here when it is due." />}
+          <Link className="text-link" to="/notifications">Review notifications</Link>
+        </FramePanel>
+      </div>
+    </div>
+  )
+}
+
 function MissionPreview({ missions }: { missions: JsonRecord[] }) {
   return <div className="mission-preview">{missions.slice(0, 4).map((mission) => <div className="mission-preview-row" key={stringValue(mission.mission_id || mission.id)}><span className="mission-preview-pip" /><div><strong>{stringValue(mission.title || mission.request, 'Untitled mission')}</strong><small>{stringValue(mission.current_step, 'No active step')}</small></div><StatusBadge value={mission.status} /></div>)}</div>
 }
@@ -163,6 +247,8 @@ export function ChatScreen() {
   const [selected, setSelected] = useState('')
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
+  const [pendingPresentation, setPendingPresentation] = useState<'opening' | 'thinking' | null>(null)
+  const [pendingApplication, setPendingApplication] = useState<string | null>(null)
   const [activeRun, setActiveRun] = useState<ActiveRun | null>(null)
   const [messageError, setMessageError] = useState('')
   const [activities, setActivities] = useState<Record<string, JsonRecord[]>>({})
@@ -220,9 +306,15 @@ export function ChatScreen() {
           if (disposed) return
           setActiveRun((current) => current?.runId === activeRun.runId ? null : current)
           setSending(false)
+          setPendingPresentation(null)
+          setPendingApplication(null)
           return
         }
-        if (state === 'paused') setSending(false)
+        if (state === 'paused') {
+          setSending(false)
+          setPendingPresentation(null)
+          setPendingApplication(null)
+        }
         timer = window.setTimeout(() => void reconcile(), 200)
       } catch {
         if (!disposed) timer = window.setTimeout(() => void reconcile(), 500)
@@ -240,6 +332,10 @@ export function ChatScreen() {
     const text = draft.trim()
     if (!text || sending) return
     setSending(true)
+    // Presentation only: the server remains the sole native-intent authority.
+    const nativeCommand = text.match(/^(?:open|launch|start|افتح|شغل)\s+([^\n]+)$/i)
+    setPendingPresentation(nativeCommand ? 'opening' : 'thinking')
+    setPendingApplication(nativeCommand?.[1]?.trim() || null)
     setMessageError('')
     try {
       const result = await api.post<JsonRecord>('/messages/start', {
@@ -253,9 +349,15 @@ export function ChatScreen() {
       if (runId) setActiveRun({ runId, conversationId, state: stringValue(result.state, 'queued') })
       setDraft('')
       await refreshConversation(conversationId)
-      if (!runId) setSending(false)
+      if (!runId) {
+        setSending(false)
+        setPendingPresentation(null)
+        setPendingApplication(null)
+      }
     } catch (error) {
       setSending(false)
+      setPendingPresentation(null)
+      setPendingApplication(null)
       setMessageError(error instanceof Error ? error.message : 'Message failed.')
     }
   }
@@ -306,13 +408,16 @@ export function ChatScreen() {
               <span className="eyebrow">NEURAL EXCHANGE</span>
               <h2>{conversation ? stringValue(conversation.title, 'Conversation') : 'New conversation'}</h2>
             </div>
-            <StatusBadge value={activeRun?.state === 'paused' ? 'approval' : sending ? 'processing' : 'ready'} />
+            <StatusBadge value={activeRun?.state === 'paused' ? 'approval' : sending ? pendingPresentation || 'processing' : 'ready'} />
           </div>
 
           {messageError && <div className="inline-error" role="alert">{messageError}</div>}
           {activeRun?.state === 'paused' && <div className="notice" role="status">Run paused pending approval.</div>}
 
           <RunInbox runs={inboxRuns} />
+          {sending && pendingPresentation === 'opening' && (
+            <div className="native-action-status" role="status">Opening {pendingApplication || 'the application'}…</div>
+          )}
 
           <div className="message-list" aria-live="polite">
             {screenData.messages.length ? (
