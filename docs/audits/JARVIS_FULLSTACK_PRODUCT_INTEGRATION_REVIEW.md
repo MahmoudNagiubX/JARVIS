@@ -134,6 +134,7 @@ Steps:
 - Native installed app: `Open Notion` completed through the fast path and returned `Notion opened. Verified.`
 - Arabic native fixture: `افتح Notion` completed through the same fast path and returned `Notion opened. Verified.`
 - Database receipts for all three native runs have `model_id = NULL`; tool calls are `computer.open_application`; `window_verified = true`.
+- Final desktop restart evidence: one supervisor-owned `llama-server.exe` is parented by the fresh JARVIS process, loopback `/health` returned `ok`, the configured alias was `Qwen3.5-4B-Heretic`, and a bounded `hi` generation returned non-empty content with `finish_reason=stop` (512-token budget; observed latency 8748.7 ms).
 - The first foreground-lock failure was reproduced before the bounded `AttachThreadInput` fallback. After the fix, `tests/test_phase_ten_active_perception.py` passed 32 tests and the real Calculator/Notion receipts passed.
 - Rendered review was performed against the packaged product at 1920×1080, 1440×900, 1366×768, and 768×1024. The narrow view uses the mobile header, hides the inspector/rails, and retains the primary command surface.
 - Approval UI is preserved as a real owner-scoped empty/pending surface; no stale pending approval existed in the live owner database during this pass. Canonical approval regression coverage remains in the Python and frontend suites.
